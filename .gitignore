@@ -1,0 +1,12 @@
+# Reference material; do not commit.
+FlaLDF/
+ld-decode-tools/
+ld-compress
+
+# Local build outputs.
+build/
+build-*/
+cmake-build-*/
+
+# Local/editor noise.
+.DS_Store
