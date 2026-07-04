@@ -51,6 +51,10 @@ The current implementation provides:
 - Optional frame-level threading for the native FLAC backends using a bounded
   worker pool with ordered output.
 - Optional OpenCL device enumeration.
+- A hardware-optional OpenCL analysis smoke path for FLACCL-compatible mono
+  task buffers, including fixed/constant wasted-bits and residual-size kernels.
+  This has been validated on a Linux/NVIDIA OpenCL host; macOS currently builds
+  the optional OpenCL path but has no local usable OpenCL device.
 
 The OpenCL/FlaLDF-derived GPU compression backend is not implemented yet.
 

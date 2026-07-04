@@ -32,6 +32,10 @@ provides the deprecated but still linkable OpenCL framework used by the optional
 `devices` command. If OpenCL is unavailable or intentionally unwanted, configure
 with `-DLDCOMPRESS_ENABLE_OPENCL=OFF`.
 
+Apple has deprecated OpenCL and current macOS systems may build the OpenCL path
+without exposing any usable OpenCL devices. Treat OpenCL runtime validation as a
+Linux-first task; macOS GPU acceleration should be a later Metal backend.
+
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build --parallel
@@ -88,6 +92,34 @@ Common optional package names:
 | Debian/Ubuntu | `ocl-icd-opencl-dev`, `opencl-headers`, optional `clinfo` |
 | Fedora/RHEL-family | `ocl-icd-devel`, `opencl-headers`, optional `clinfo` |
 | Arch Linux | `ocl-icd`, `opencl-headers`, optional `clinfo` |
+
+### Linux OpenCL Validation Record
+
+The current OpenCL analysis smoke tests were validated on `smaug`:
+
+- OS/kernel: Debian amd64, `Linux smaug 6.12.94+deb13-amd64`.
+- OpenCL platform: NVIDIA CUDA, OpenCL 3.0 CUDA 13.3.44.
+- Driver: NVIDIA `610.43.02`.
+- Devices reported by `ld-compress-ng devices`:
+  - `[0] NVIDIA GeForce RTX 4070 SUPER`, 56 compute units,
+    12,481,134,592 bytes global memory.
+  - `[1] NVIDIA GeForce RTX 5070 Ti`, 70 compute units,
+    16,652,042,240 bytes global memory.
+
+Validation commands:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLDCOMPRESS_ENABLE_OPENCL=ON
+cmake --build build --parallel
+build/ld-compress-ng devices
+build/test_opencl_analysis
+ctest --test-dir build --output-on-failure
+```
+
+Observed result: `build/test_opencl_analysis` exited successfully without skip
+messages, and the default CTest suite passed `9/9` tests. The test currently
+selects the first available OpenCL device, so this validates device `[0]` unless
+future tests add explicit multi-device coverage.
 
 CPU-only configure on Linux is the same as macOS:
 

@@ -81,6 +81,10 @@ Implemented:
 - Hardware-optional OpenCL fixed/constant analysis smoke using FLACCL-derived
   wasted-bits and residual-size estimation kernels, with LGPL notices preserved
   in the local kernel source.
+- Linux OpenCL validation on `smaug`, Debian 13-era amd64 kernel
+  `6.12.94+deb13-amd64`, NVIDIA OpenCL 3.0 CUDA runtime. The OpenCL analysis
+  smoke tests compiled and ran on an RTX 4070 SUPER / RTX 5070 Ti host, and the
+  full default CTest suite passed.
 - Frame-level threading for native FLAC encoding with ordered output and bounded
   in-flight work.
 - Native decision stats for subframe type, fixed/LPC predictor order, Rice
@@ -115,6 +119,9 @@ Real-fixture sweep result:
 
 Immediate engineering focus:
 
+- Continue OpenCL-heavy development on the Linux/NVIDIA host now that macOS has
+  no usable local OpenCL device. Treat OpenCL as the Linux-first GPU path and
+  keep Metal for macOS as a later optional backend.
 - Continue native FLAC compatibility hardening using `reference/rfc9639.txt`
   and `reference/flac/` as read-only references.
 - Revisit direct `reference/decode-orc/` integration if that tree gains
@@ -251,7 +258,9 @@ provided.
   exact Rice partition search, and parity characterization against the scalar
   exact-cost selector still need to be ported. Kernel code copied or adapted
   from FLACCL must keep the original LGPL-2.1-or-later notices and local
-  modification notes.
+  modification notes. The current fixed/constant OpenCL smoke has been validated
+  on Linux/NVIDIA hardware; macOS currently has no local OpenCL device for
+  runtime kernel validation.
 - Extend the initial OpenCL platform/device enumeration into explicit device
   selection for GPU compression. Done for CLI plumbing and metadata selection;
   real compression still awaits the FlaLDF-derived encoder port.
