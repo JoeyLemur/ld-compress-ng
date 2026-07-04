@@ -58,6 +58,7 @@ ld-compress-ng compress INPUT [OUTPUT]
 ld-compress-ng decompress INPUT [OUTPUT]
 ld-compress-ng verify INPUT [--source ORIGINAL.lds]
 ld-compress-ng convert --pack|--unpack INPUT [OUTPUT]
+ld-compress-ng bench INPUT
 ld-compress-ng devices
 ```
 
@@ -74,6 +75,9 @@ Initial behavior:
   LDS stream, and can compare against an original `.lds` file when provided.
 - `convert` exposes the LDS packing/unpacking logic directly for diagnostics and
   test fixtures.
+- `bench` compares the CPU/libFLAC path with native FLAC backends across selected
+  thread counts, using temporary outputs so performance and compression-ratio
+  checks do not require hand-managed files.
 - `devices` lists available OpenCL platforms/devices when OpenCL support is
   built, and remains an enumeration scaffold until GPU compression exists.
 
@@ -135,6 +139,8 @@ provided.
   dependency set and optional OpenCL packages.
 - Add CI or a local equivalent for generated fixtures.
 - Add performance checks against the old shell pipeline.
+- Keep a lightweight benchmark subcommand for local CPU/native backend
+  comparisons across arm64 and amd64/x86_64 hosts.
 - Document compatibility with historical `.ldf`, `.raw.oga`, and `.flac.ldf`
   files.
 - Consider CPU-specific optimizations such as SIMD or tuned block processing only

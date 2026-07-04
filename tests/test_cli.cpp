@@ -198,6 +198,9 @@ void test_cli(const std::filesystem::path& exe)
     require(read_file(empty_native_fixed_out).empty(), "empty native-fixed FLAC produced decoded LDS bytes");
     run_fails(shell_quote(exe) + " compress --backend opencl " + shell_quote(lds) + " " + shell_quote(opencl_output));
     require(!std::filesystem::exists(opencl_output), "unimplemented OpenCL backend wrote output");
+    run_ok(shell_quote(exe) + " bench --threads 1,2 " + shell_quote(lds));
+    run_fails(shell_quote(exe) + " bench --threads 0 " + shell_quote(lds));
+    run_fails(shell_quote(exe) + " bench --threads 1,,2 " + shell_quote(lds));
     run_ok(shell_quote(exe) + " devices");
 
     std::filesystem::remove_all(temp_dir);

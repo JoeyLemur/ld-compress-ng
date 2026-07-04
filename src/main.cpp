@@ -4,14 +4,18 @@
 #include "lds_codec.h"
 #include "opencl_devices.h"
 
+#include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -23,6 +27,7 @@ struct Options {
     bool container_explicit = false;
     unsigned level = 11;
     unsigned threads = 1;
+    std::vector<unsigned> bench_threads;
     ldcompress::CompressionBackend backend = ldcompress::CompressionBackend::CpuLibFlac;
     ldcompress::FlacContainer container = ldcompress::FlacContainer::Ogg;
     std::string input;
@@ -38,6 +43,7 @@ struct Options {
         << "  ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng verify [--source ORIGINAL.lds] INPUT\n"
         << "  ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]\n"
+        << "  ld-compress-ng bench [--threads 1,4,8] INPUT\n"
         << "  ld-compress-ng devices\n"
         << "  ld-compress-ng --help\n";
     std::exit(exit_code);
@@ -161,6 +167,24 @@ unsigned parse_threads(std::string_view text)
     }
     if (threads == 0U || threads > 1024U) {
         throw std::runtime_error("thread count must be 1..1024");
+    }
+    return threads;
+}
+
+std::vector<unsigned> parse_thread_list(std::string_view text)
+{
+    std::vector<unsigned> threads;
+    std::size_t offset = 0;
+    while (offset <= text.size()) {
+        const std::size_t comma = text.find(',', offset);
+        const std::string_view item = comma == std::string_view::npos
+            ? text.substr(offset)
+            : text.substr(offset, comma - offset);
+        threads.push_back(parse_threads(item));
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        offset = comma + 1;
     }
     return threads;
 }
@@ -337,6 +361,38 @@ Options parse_convert(int argc, char** argv)
     return options;
 }
 
+Options parse_bench(int argc, char** argv)
+{
+    Options options;
+    std::vector<std::string> positional;
+
+    for (int i = 2; i < argc; ++i) {
+        const std::string_view arg(argv[i]);
+        if (arg == "--threads") {
+            if (++i >= argc) {
+                throw std::runtime_error("--threads requires a value");
+            }
+            options.bench_threads = parse_thread_list(argv[i]);
+        } else if (arg == "--help" || arg == "-h") {
+            usage(0);
+        } else if (!arg.empty() && arg.front() == '-') {
+            throw std::runtime_error("unknown option: " + std::string(arg));
+        } else {
+            positional.emplace_back(arg);
+        }
+    }
+
+    if (positional.size() != 1) {
+        throw std::runtime_error("bench expects exactly one INPUT");
+    }
+    if (options.bench_threads.empty()) {
+        options.bench_threads.push_back(1);
+    }
+
+    options.input = positional[0];
+    return options;
+}
+
 class HashingStreambuf final : public std::streambuf {
 public:
     std::uint64_t bytes() const { return bytes_; }
@@ -430,6 +486,155 @@ int run_convert(const Options& options)
     std::cerr << "converted " << stats.input_bytes << " bytes to "
               << stats.output_bytes << " bytes (" << stats.samples
               << " samples)\n";
+    return 0;
+}
+
+std::filesystem::path make_bench_temp_dir()
+{
+    const auto base = std::filesystem::temp_directory_path();
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    for (unsigned attempt = 0; attempt < 100; ++attempt) {
+        const auto candidate = base /
+            ("ld-compress-ng-bench-" + std::to_string(stamp) + "-" + std::to_string(attempt));
+        std::error_code ec;
+        if (std::filesystem::create_directory(candidate, ec)) {
+            return candidate;
+        }
+        if (ec) {
+            throw std::runtime_error("could not create benchmark temp directory: " +
+                candidate.string() + ": " + ec.message());
+        }
+    }
+    throw std::runtime_error("could not allocate benchmark temp directory");
+}
+
+class ScopedDirectory final {
+public:
+    explicit ScopedDirectory(std::filesystem::path path) : path_(std::move(path)) {}
+
+    ScopedDirectory(const ScopedDirectory&) = delete;
+    ScopedDirectory& operator=(const ScopedDirectory&) = delete;
+
+    ~ScopedDirectory()
+    {
+        std::error_code ec;
+        std::filesystem::remove_all(path_, ec);
+    }
+
+    const std::filesystem::path& path() const { return path_; }
+
+private:
+    std::filesystem::path path_;
+};
+
+struct BenchCase {
+    ldcompress::CompressionBackend backend;
+    ldcompress::FlacContainer container;
+    unsigned threads;
+};
+
+struct BenchResult {
+    const char* backend;
+    unsigned threads;
+    ldcompress::ConversionStats stats;
+    double elapsed_seconds;
+};
+
+BenchResult run_bench_case(
+    const std::string& input_path,
+    const std::filesystem::path& output_path,
+    const BenchCase& bench_case)
+{
+    std::ifstream input(input_path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("could not open input: " + input_path);
+    }
+
+    const ldcompress::CompressionOptions compress_options {
+        .backend = bench_case.backend,
+        .container = bench_case.container,
+        .compression_level = 11,
+        .sample_rate = 40000,
+        .thread_count = bench_case.threads,
+    };
+
+    const auto started = std::chrono::steady_clock::now();
+    const auto stats = ldcompress::compress_lds(input, output_path.string(), compress_options);
+    const auto finished = std::chrono::steady_clock::now();
+    const std::chrono::duration<double> elapsed = finished - started;
+
+    return BenchResult {
+        .backend = ldcompress::backend_name(bench_case.backend),
+        .threads = bench_case.threads,
+        .stats = stats,
+        .elapsed_seconds = elapsed.count(),
+    };
+}
+
+void print_bench_result(const BenchResult& result)
+{
+    const double ratio = result.stats.input_bytes == 0
+        ? 0.0
+        : static_cast<double>(result.stats.output_bytes) /
+            static_cast<double>(result.stats.input_bytes);
+    const double mib_per_second = result.elapsed_seconds <= 0.0
+        ? 0.0
+        : (static_cast<double>(result.stats.input_bytes) / (1024.0 * 1024.0)) /
+            result.elapsed_seconds;
+
+    std::cout << std::left << std::setw(17) << result.backend
+              << std::right << std::setw(9) << result.threads
+              << std::setw(14) << result.stats.input_bytes
+              << std::setw(15) << result.stats.output_bytes
+              << std::setw(12) << result.stats.samples
+              << std::setw(10) << std::fixed << std::setprecision(4) << ratio
+              << std::setw(11) << std::fixed << std::setprecision(3) << result.elapsed_seconds
+              << std::setw(11) << std::fixed << std::setprecision(2) << mib_per_second
+              << '\n';
+}
+
+int run_bench(const Options& options)
+{
+    ScopedDirectory temp_dir(make_bench_temp_dir());
+
+    std::vector<BenchCase> cases {
+        {
+            .backend = ldcompress::CompressionBackend::CpuLibFlac,
+            .container = ldcompress::FlacContainer::Ogg,
+            .threads = 1,
+        },
+        {
+            .backend = ldcompress::CompressionBackend::NativeVerbatimFlac,
+            .container = ldcompress::FlacContainer::Native,
+            .threads = 1,
+        },
+    };
+
+    for (const unsigned threads : options.bench_threads) {
+        cases.push_back(BenchCase {
+            .backend = ldcompress::CompressionBackend::NativeFixedFlac,
+            .container = ldcompress::FlacContainer::Native,
+            .threads = threads,
+        });
+    }
+
+    std::cout << std::left << std::setw(17) << "backend"
+              << std::right << std::setw(9) << "threads"
+              << std::setw(14) << "input_bytes"
+              << std::setw(15) << "output_bytes"
+              << std::setw(12) << "samples"
+              << std::setw(10) << "ratio"
+              << std::setw(11) << "elapsed_s"
+              << std::setw(11) << "mib_per_s"
+              << '\n';
+
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        const auto output_path = temp_dir.path() /
+            ("case-" + std::to_string(i) +
+                (cases[i].container == ldcompress::FlacContainer::Native ? ".flac.ldf" : ".ldf"));
+        print_bench_result(run_bench_case(options.input, output_path, cases[i]));
+    }
+
     return 0;
 }
 
@@ -529,6 +734,9 @@ int main(int argc, char** argv)
         }
         if (command == "convert") {
             return run_convert(parse_convert(argc, argv));
+        }
+        if (command == "bench") {
+            return run_bench(parse_bench(argc, argv));
         }
         if (command == "devices") {
             return run_devices(argc, argv);
