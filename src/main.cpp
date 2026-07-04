@@ -32,6 +32,8 @@ struct Options {
     unsigned native_frame_samples = 4608;
     unsigned native_max_lpc_order = 8;
     std::vector<unsigned> bench_threads;
+    std::vector<unsigned> bench_frame_samples;
+    std::vector<unsigned> bench_lpc_orders;
     ldcompress::CompressionBackend backend = ldcompress::CompressionBackend::CpuLibFlac;
     ldcompress::FlacContainer container = ldcompress::FlacContainer::Ogg;
     std::string input;
@@ -47,7 +49,7 @@ struct Options {
         << "  ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng verify [--source ORIGINAL.lds] INPUT\n"
         << "  ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]\n"
-        << "  ld-compress-ng bench [--threads 1,4,8] [--frame-samples N] [--lpc-order N] INPUT\n"
+        << "  ld-compress-ng bench [--threads 1,4,8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] INPUT\n"
         << "  ld-compress-ng devices\n"
         << "  ld-compress-ng --help\n";
     std::exit(exit_code);
@@ -219,6 +221,28 @@ std::vector<unsigned> parse_thread_list(std::string_view text)
         offset = comma + 1;
     }
     return threads;
+}
+
+std::vector<unsigned> parse_bounded_unsigned_list(
+    std::string_view text,
+    std::string_view name,
+    unsigned min_value,
+    unsigned max_value)
+{
+    std::vector<unsigned> values;
+    std::size_t offset = 0;
+    while (offset <= text.size()) {
+        const std::size_t comma = text.find(',', offset);
+        const std::string_view item = comma == std::string_view::npos
+            ? text.substr(offset)
+            : text.substr(offset, comma - offset);
+        values.push_back(parse_bounded_unsigned(item, name, min_value, max_value));
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        offset = comma + 1;
+    }
+    return values;
 }
 
 Options parse_compress(int argc, char** argv)
@@ -431,13 +455,13 @@ Options parse_bench(int argc, char** argv)
             if (++i >= argc) {
                 throw std::runtime_error("--frame-samples requires a value");
             }
-            options.native_frame_samples = parse_bounded_unsigned(
+            options.bench_frame_samples = parse_bounded_unsigned_list(
                 argv[i], "native FLAC frame sample count", 16, 4608);
         } else if (arg == "--lpc-order") {
             if (++i >= argc) {
                 throw std::runtime_error("--lpc-order requires a value");
             }
-            options.native_max_lpc_order = parse_bounded_unsigned(
+            options.bench_lpc_orders = parse_bounded_unsigned_list(
                 argv[i], "native FLAC max LPC order", 0, 12);
         } else if (arg == "--help" || arg == "-h") {
             usage(0);
@@ -453,6 +477,12 @@ Options parse_bench(int argc, char** argv)
     }
     if (options.bench_threads.empty()) {
         options.bench_threads.push_back(1);
+    }
+    if (options.bench_frame_samples.empty()) {
+        options.bench_frame_samples.push_back(options.native_frame_samples);
+    }
+    if (options.bench_lpc_orders.empty()) {
+        options.bench_lpc_orders.push_back(options.native_max_lpc_order);
     }
 
     options.input = positional[0];
@@ -642,11 +672,17 @@ struct BenchCase {
     unsigned threads;
     unsigned native_frame_samples;
     unsigned native_max_lpc_order;
+    bool show_frame_samples;
+    bool show_lpc_order;
 };
 
 struct BenchResult {
     const char* backend;
     unsigned threads;
+    unsigned native_frame_samples;
+    unsigned native_max_lpc_order;
+    bool show_frame_samples;
+    bool show_lpc_order;
     ldcompress::ConversionStats stats;
     double elapsed_seconds;
 };
@@ -679,9 +715,23 @@ BenchResult run_bench_case(
     return BenchResult {
         .backend = ldcompress::backend_name(bench_case.backend),
         .threads = bench_case.threads,
+        .native_frame_samples = bench_case.native_frame_samples,
+        .native_max_lpc_order = bench_case.native_max_lpc_order,
+        .show_frame_samples = bench_case.show_frame_samples,
+        .show_lpc_order = bench_case.show_lpc_order,
         .stats = stats,
         .elapsed_seconds = elapsed.count(),
     };
+}
+
+void print_optional_unsigned(unsigned value, bool show_value, int width)
+{
+    std::cout << std::right << std::setw(width);
+    if (show_value) {
+        std::cout << value;
+    } else {
+        std::cout << '-';
+    }
 }
 
 void print_bench_result(const BenchResult& result)
@@ -696,8 +746,10 @@ void print_bench_result(const BenchResult& result)
             result.elapsed_seconds;
 
     std::cout << std::left << std::setw(17) << result.backend
-              << std::right << std::setw(9) << result.threads
-              << std::setw(14) << result.stats.input_bytes
+              << std::right << std::setw(9) << result.threads;
+    print_optional_unsigned(result.native_frame_samples, result.show_frame_samples, 15);
+    print_optional_unsigned(result.native_max_lpc_order, result.show_lpc_order, 10);
+    std::cout << std::setw(14) << result.stats.input_bytes
               << std::setw(15) << result.stats.output_bytes
               << std::setw(12) << result.stats.samples
               << std::setw(10) << std::fixed << std::setprecision(4) << ratio
@@ -717,28 +769,43 @@ int run_bench(const Options& options)
             .threads = 1,
             .native_frame_samples = 4608,
             .native_max_lpc_order = 8,
-        },
-        {
-            .backend = ldcompress::CompressionBackend::NativeVerbatimFlac,
-            .container = ldcompress::FlacContainer::Native,
-            .threads = 1,
-            .native_frame_samples = options.native_frame_samples,
-            .native_max_lpc_order = options.native_max_lpc_order,
+            .show_frame_samples = false,
+            .show_lpc_order = false,
         },
     };
 
-    for (const unsigned threads : options.bench_threads) {
+    for (const unsigned frame_samples : options.bench_frame_samples) {
         cases.push_back(BenchCase {
-            .backend = ldcompress::CompressionBackend::NativeFixedFlac,
+            .backend = ldcompress::CompressionBackend::NativeVerbatimFlac,
             .container = ldcompress::FlacContainer::Native,
-            .threads = threads,
-            .native_frame_samples = options.native_frame_samples,
-            .native_max_lpc_order = options.native_max_lpc_order,
+            .threads = 1,
+            .native_frame_samples = frame_samples,
+            .native_max_lpc_order = 0,
+            .show_frame_samples = true,
+            .show_lpc_order = false,
         });
+    }
+
+    for (const unsigned frame_samples : options.bench_frame_samples) {
+        for (const unsigned lpc_order : options.bench_lpc_orders) {
+            for (const unsigned threads : options.bench_threads) {
+                cases.push_back(BenchCase {
+                    .backend = ldcompress::CompressionBackend::NativeFixedFlac,
+                    .container = ldcompress::FlacContainer::Native,
+                    .threads = threads,
+                    .native_frame_samples = frame_samples,
+                    .native_max_lpc_order = lpc_order,
+                    .show_frame_samples = true,
+                    .show_lpc_order = true,
+                });
+            }
+        }
     }
 
     std::cout << std::left << std::setw(17) << "backend"
               << std::right << std::setw(9) << "threads"
+              << std::setw(15) << "frame_samples"
+              << std::setw(10) << "lpc_order"
               << std::setw(14) << "input_bytes"
               << std::setw(15) << "output_bytes"
               << std::setw(12) << "samples"

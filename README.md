@@ -54,7 +54,7 @@ ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--l
 ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]
 ld-compress-ng verify [--source ORIGINAL.lds] INPUT
 ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]
-ld-compress-ng bench [--threads 1,4,8] [--frame-samples N] [--lpc-order N] INPUT
+ld-compress-ng bench [--threads 1,4,8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] INPUT
 ld-compress-ng devices
 ```
 
@@ -93,6 +93,8 @@ Benchmarking:
 
 - `bench` runs the CPU/libFLAC Ogg path, the native-verbatim path, and the
   native-fixed path for each requested thread count, then prints bytes, ratio,
-  elapsed seconds, and MiB/s.
+  elapsed seconds, and MiB/s. For native backend tuning, `bench` accepts
+  comma-separated `--frame-samples` and `--lpc-order` lists and runs the
+  native-fixed cross product.
 - Benchmark output files are temporary and removed after each run; use
   `compress` when you want to keep the encoded result.

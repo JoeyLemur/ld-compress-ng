@@ -230,8 +230,11 @@ void test_cli(const std::filesystem::path& exe)
     require(!std::filesystem::exists(opencl_output), "unimplemented OpenCL backend wrote output");
     run_ok(shell_quote(exe) + " bench --threads 1,2 " + shell_quote(lds));
     run_ok(shell_quote(exe) + " bench --threads 1 --frame-samples 2048 --lpc-order 12 " + shell_quote(lds));
+    run_ok(shell_quote(exe) + " bench --threads 1,2 --frame-samples 1024,2048 --lpc-order 0,8 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --threads 0 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --threads 1,,2 " + shell_quote(lds));
+    run_fails(shell_quote(exe) + " bench --frame-samples 1024,15 " + shell_quote(lds));
+    run_fails(shell_quote(exe) + " bench --lpc-order 0,13 " + shell_quote(lds));
     run_ok(shell_quote(exe) + " devices");
 
     std::filesystem::remove_all(temp_dir);
