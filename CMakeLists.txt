@@ -12,6 +12,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 include(CTest)
 
 option(LDCOMPRESS_ENABLE_OPENCL "Enable OpenCL device enumeration support" ON)
+option(LDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS "Enable opt-in tests against external real LDS fixtures" OFF)
+set(LDCOMPRESS_REAL_FIXTURE_DIR "" CACHE PATH "Directory containing external .lds fixtures for opt-in real-fixture tests")
 
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
@@ -160,4 +162,25 @@ if(BUILD_TESTING)
     )
 
     add_test(NAME cli COMMAND test_cli $<TARGET_FILE:ld-compress-ng>)
+
+    if(LDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS)
+        if(NOT LDCOMPRESS_REAL_FIXTURE_DIR)
+            message(FATAL_ERROR "LDCOMPRESS_REAL_FIXTURE_DIR must be set when LDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS=ON")
+        endif()
+        if(NOT IS_DIRECTORY "${LDCOMPRESS_REAL_FIXTURE_DIR}")
+            message(FATAL_ERROR "LDCOMPRESS_REAL_FIXTURE_DIR is not a directory: ${LDCOMPRESS_REAL_FIXTURE_DIR}")
+        endif()
+
+        add_executable(test_real_fixtures
+            tests/test_real_fixtures.cpp
+        )
+
+        target_link_libraries(test_real_fixtures
+            PRIVATE
+                ldcompress_core
+        )
+
+        add_test(NAME real_fixtures COMMAND test_real_fixtures "${LDCOMPRESS_REAL_FIXTURE_DIR}")
+        set_tests_properties(real_fixtures PROPERTIES LABELS real-fixtures)
+    endif()
 endif()

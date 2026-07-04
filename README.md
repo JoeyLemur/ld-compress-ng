@@ -28,6 +28,8 @@ optional; when CMake cannot find it, the CPU compressor still builds and
 `ld-compress-ng` itself does not depend on Qt, ffmpeg, `.NET`, Mono, FlaLDF,
 OpenSSL, or `ld-lds-converter`. Some of those tools remain useful for regenerating
 legacy reference fixtures, but they are not normal build or runtime dependencies.
+Ignored real RF fixtures can be exercised with the opt-in CMake real-fixture
+suite documented in `BUILD.md`.
 
 ## Current Status
 

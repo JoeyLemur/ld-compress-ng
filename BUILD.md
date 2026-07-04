@@ -123,6 +123,26 @@ build/ld-compress-ng devices
 ctest --test-dir build --output-on-failure
 ```
 
+## Opt-In Real Fixture Regression
+
+Normal tests use generated or embedded fixtures and do not require real RF
+captures. If ignored reference data is available locally, configure a separate
+build with the real-fixture suite enabled:
+
+```sh
+cmake -S . -B build-real-fixtures -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DLDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS=ON \
+    -DLDCOMPRESS_REAL_FIXTURE_DIR=reference/testdata/ld-decode-testdata-ci/1cf698d2025e8515e9ef57e34adaf85a194da96a
+cmake --build build-real-fixtures --parallel
+ctest --test-dir build-real-fixtures -L real-fixtures --output-on-failure
+```
+
+The real-fixture test recursively finds `.lds` files under the configured
+directory, verifies matching legacy `.ldf` files when present, and round-trips
+each fixture through the CPU/libFLAC and threaded native-fixed backends. It
+prints ratio and timing columns as a local regression scoreboard. The fixture
+tree remains ignored by Git.
+
 ## Legacy Fixture Regeneration
 
 Committed tests do not require `ffmpeg` or `ld-lds-converter`; the legacy Ogg

@@ -150,6 +150,9 @@ provided.
 - Add performance checks against the old shell pipeline.
 - Keep a lightweight benchmark subcommand for local CPU/native backend
   comparisons across arm64 and amd64/x86_64 hosts.
+- Keep an opt-in real-fixture regression suite for ignored reference captures so
+  default tests remain self-contained while native tuning has a repeatable
+  scoreboard.
 - Use benchmark sweeps across frame sizes, LPC orders, Rice partition orders,
   and thread counts before changing native compression defaults.
 - Document compatibility with historical `.ldf`, `.raw.oga`, and `.flac.ldf`
