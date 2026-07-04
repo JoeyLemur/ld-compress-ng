@@ -176,12 +176,46 @@ void validate_best_method_plan(const OpenClMonoAnalysisTaskPlan& plan)
             throw std::runtime_error("OpenCL mono analysis selected task index is out of range");
         }
     }
+
+    const auto frame_count = plan.selected_tasks.size() / plan.estimate_tasks_per_frame;
+    for (std::size_t frame = 0; frame < frame_count; ++frame) {
+        const auto task_base = frame * plan.residual_tasks_per_frame;
+        const auto& first_task = plan.residual_tasks.at(task_base);
+        for (std::size_t i = 1; i < plan.residual_tasks_per_frame; ++i) {
+            const auto& task = plan.residual_tasks.at(task_base + i);
+            if (task.data.samplesOffs != first_task.data.samplesOffs ||
+                task.data.blocksize != first_task.data.blocksize ||
+                task.data.obits != first_task.data.obits) {
+                throw std::runtime_error("OpenCL mono analysis frame task group mixes sample ranges");
+            }
+        }
+
+        const auto selected_base = frame * plan.estimate_tasks_per_frame;
+        for (std::size_t i = 0; i < plan.estimate_tasks_per_frame; ++i) {
+            const auto selected = static_cast<std::size_t>(
+                plan.selected_tasks.at(selected_base + i));
+            if (selected < task_base ||
+                selected >= task_base + plan.residual_tasks_per_frame) {
+                throw std::runtime_error("OpenCL mono analysis selected task crosses frame group");
+            }
+        }
+    }
 }
 
 std::size_t mono_plan_frame_count(const OpenClMonoAnalysisTaskPlan& plan)
 {
     validate_best_method_plan(plan);
     return plan.selected_tasks.size() / plan.estimate_tasks_per_frame;
+}
+
+bool signed_value_fits_bits(std::int32_t value, unsigned bits)
+{
+    if (bits == 0 || bits > 31) {
+        return false;
+    }
+    const auto min_value = -(std::int64_t {1} << (bits - 1U));
+    const auto max_value = (std::int64_t {1} << (bits - 1U)) - 1;
+    return value >= min_value && value <= max_value;
 }
 
 void validate_fixed_constant_analysis_inputs(
@@ -221,6 +255,54 @@ void validate_fixed_constant_analysis_inputs(
         }
         if (task.data.shift < 0 || task.data.shift > 30) {
             throw std::runtime_error("OpenCL mono fixed/constant analysis task shift is unsupported");
+        }
+    }
+}
+
+void validate_lpc_analysis_inputs(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan)
+{
+    const auto frame_count = mono_plan_frame_count(plan);
+    if (frame_count == 0) {
+        throw std::runtime_error("OpenCL mono LPC analysis has no frames");
+    }
+
+    for (const auto& task : plan.residual_tasks) {
+        if (task.data.type != kFlacClSubframeLpc) {
+            throw std::runtime_error("OpenCL mono LPC analysis received non-LPC task");
+        }
+        if (task.data.residualOrder <= 0 ||
+            task.data.residualOrder > static_cast<std::int32_t>(kFlacClMaxOrder)) {
+            throw std::runtime_error("OpenCL mono LPC analysis received invalid LPC order");
+        }
+        if (task.data.obits != static_cast<std::int32_t>(kOpenClAnalysisBitsPerSample)) {
+            throw std::runtime_error("OpenCL mono LPC analysis currently supports 16-bit tasks only");
+        }
+        if (task.data.blocksize <= 0 ||
+            static_cast<std::size_t>(task.data.blocksize) > kOpenClAnalysisMaxBlockSize) {
+            throw std::runtime_error("OpenCL mono LPC analysis block size is unsupported");
+        }
+        if (task.data.residualOrder >= task.data.blocksize) {
+            throw std::runtime_error("OpenCL mono LPC analysis LPC order exceeds block size");
+        }
+        if (task.data.samplesOffs < 0 ||
+            static_cast<std::size_t>(task.data.samplesOffs) > samples.size() ||
+            static_cast<std::size_t>(task.data.blocksize) >
+                samples.size() - static_cast<std::size_t>(task.data.samplesOffs)) {
+            throw std::runtime_error("OpenCL mono LPC analysis task samples are out of range");
+        }
+        if (task.data.shift < 0 || task.data.shift > 15) {
+            throw std::runtime_error("OpenCL mono LPC analysis task shift is unsupported");
+        }
+        if (task.data.cbits <= 0 || task.data.cbits > 15) {
+            throw std::runtime_error("OpenCL mono LPC analysis coefficient precision is unsupported");
+        }
+        for (int i = 0; i < task.data.residualOrder; ++i) {
+            if (!signed_value_fits_bits(task.coefs[static_cast<std::size_t>(i)],
+                    static_cast<unsigned>(task.data.cbits))) {
+                throw std::runtime_error("OpenCL mono LPC analysis coefficient does not fit precision");
+            }
         }
     }
 }
@@ -647,8 +729,8 @@ const char* mono_analysis_kernel_source()
  * - Reduced to mono analysis kernels used by the native LaserDisc RF encoder.
  * - Uses the FLACCLSubframeTask ABI but omits stereo, LPC autocorrelation,
  *   Rice-output, and bitstream output kernels.
- * - Keeps the CPU-style one-work-item estimate path and adds exact fixed/Rice
- *   partition analysis for fixed/constant parity testing.
+ * - Keeps the CPU-style one-work-item estimate path and adds exact fixed/LPC
+ *   Rice partition analysis for scalar parity testing.
  */
 
 #define FLACCL_CPU
@@ -911,6 +993,46 @@ long ldcompressFixedResidual(__global const int* data, int pos, int order, int w
     }
 }
 
+long ldcompressArithmeticShiftRight(long value, int shift)
+{
+    if (shift == 0)
+        return value;
+    if (value >= 0)
+        return value >> shift;
+    const long divisor = (long)1 << shift;
+    return -(((-value) + divisor - 1) >> shift);
+}
+
+long ldcompressLpcResidual(__global const int* data, int pos, FLACCLSubframeTask task)
+{
+    const int order = task.data.residualOrder;
+    long sum = 0;
+    for (int i = 0; i < order; i++)
+    {
+        sum += (long)task.coefs[i] *
+            ldcompressShiftedSample(data, pos - order + i, task.data.wbits);
+    }
+    const long predicted = ldcompressArithmeticShiftRight(sum, task.data.shift);
+    return ldcompressShiftedSample(data, pos, task.data.wbits) - predicted;
+}
+
+long ldcompressResidual(__global const int* data, int pos, FLACCLSubframeTask task)
+{
+    if (task.data.type == LPC)
+        return ldcompressLpcResidual(data, pos, task);
+    return ldcompressFixedResidual(
+        data, pos, task.data.residualOrder, task.data.wbits);
+}
+
+int ldcompressSignedValueFitsBits(int value, int bits)
+{
+    if (bits <= 0 || bits > 31)
+        return 0;
+    const int minValue = -(1 << (bits - 1));
+    const int maxValue = (1 << (bits - 1)) - 1;
+    return value >= minValue && value <= maxValue;
+}
+
 int ldcompressValidPartitionOrder(int blocksize, int predictorOrder, int partitionOrder)
 {
     const int partitionCount = 1 << partitionOrder;
@@ -923,8 +1045,7 @@ ulong ldcompressBestRiceBitsForPartition(
     __global const int* data,
     int partitionStart,
     int residualCount,
-    int order,
-    int wbits)
+    FLACCLSubframeTask task)
 {
     ulong bitCounts[MAX_RICE_PARAM + 1];
     for (int parameter = 0; parameter <= MAX_RICE_PARAM; parameter++)
@@ -932,8 +1053,7 @@ ulong ldcompressBestRiceBitsForPartition(
 
     for (int i = 0; i < residualCount; i++)
     {
-        const long residual = ldcompressFixedResidual(
-            data, partitionStart + i, order, wbits);
+        const long residual = ldcompressResidual(data, partitionStart + i, task);
         const ulong folded = ldcompressFoldResidual(residual);
         for (int parameter = 0; parameter <= MAX_RICE_PARAM; parameter++)
             bitCounts[parameter] += folded >> parameter;
@@ -947,7 +1067,7 @@ ulong ldcompressBestRiceBitsForPartition(
 }
 
 __kernel __attribute__((reqd_work_group_size(1, 1, 1)))
-void ldcompressAnalyzeFixedConstantExact(
+void ldcompressAnalyzeSubframeExact(
     __global const int* samples,
     __global const int* selectedTasks,
     __global FLACCLSubframeTask* tasks,
@@ -979,11 +1099,30 @@ void ldcompressAnalyzeFixedConstantExact(
         return;
     }
 
-    if (task.data.type != Fixed || ro < 0 || ro > 4 || ro >= bs)
+    if ((task.data.type != Fixed && task.data.type != LPC) ||
+        ro < 0 ||
+        ro >= bs ||
+        (task.data.type == Fixed && ro > 4) ||
+        (task.data.type == LPC && (ro == 0 || ro > MAX_ORDER || task.data.shift < 0 || task.data.shift > 15 ||
+                                      task.data.cbits <= 0 || task.data.cbits > 15)))
     {
         task.data.size = 0x7fffffff;
         tasks[selectedTask] = task;
         return;
+    }
+
+    if (task.data.type == LPC)
+    {
+        int coefficientsValid = 1;
+        for (int i = 0; i < ro; i++)
+            if (!ldcompressSignedValueFitsBits(task.coefs[i], task.data.cbits))
+                coefficientsValid = 0;
+        if (!coefficientsValid)
+        {
+            task.data.size = 0x7fffffff;
+            tasks[selectedTask] = task;
+            return;
+        }
     }
 
     ulong bestBits = 0xffffffffffffffffUL;
@@ -996,12 +1135,20 @@ void ldcompressAnalyzeFixedConstantExact(
 
         const int partitionCount = 1 << partitionOrder;
         const int partitionSamples = bs >> partitionOrder;
-        ulong bits =
-            8UL +
-            ((ulong)ro * (ulong)obits) +
-            2UL +
-            4UL +
-            (wbits == 0 ? 0UL : (ulong)wbits);
+        ulong bits = task.data.type == LPC
+            ? 8UL +
+                (wbits == 0 ? 0UL : (ulong)wbits) +
+                ((ulong)ro * (ulong)obits) +
+                4UL +
+                5UL +
+                ((ulong)ro * (ulong)task.data.cbits) +
+                2UL +
+                4UL
+            : 8UL +
+                ((ulong)ro * (ulong)obits) +
+                2UL +
+                4UL +
+                (wbits == 0 ? 0UL : (ulong)wbits);
 
         for (int partition = 0; partition < partitionCount; partition++)
         {
@@ -1013,7 +1160,7 @@ void ldcompressAnalyzeFixedConstantExact(
                 : partition * partitionSamples;
             bits += 4UL;
             bits += ldcompressBestRiceBitsForPartition(
-                data, partitionStart, residualCount, ro, wbits);
+                data, partitionStart, residualCount, task);
         }
 
         if (bits < bestBits)
@@ -1549,8 +1696,8 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
 
     ClKernel wasted_kernel(clCreateKernel(program.get(), "ldcompressFindWastedBits", &status));
     require_cl(status, "clCreateKernel(ldcompressFindWastedBits)");
-    ClKernel exact_kernel(clCreateKernel(program.get(), "ldcompressAnalyzeFixedConstantExact", &status));
-    require_cl(status, "clCreateKernel(ldcompressAnalyzeFixedConstantExact)");
+    ClKernel exact_kernel(clCreateKernel(program.get(), "ldcompressAnalyzeSubframeExact", &status));
+    require_cl(status, "clCreateKernel(ldcompressAnalyzeSubframeExact)");
     ClKernel choose_kernel(clCreateKernel(program.get(), "ldcompressChooseBestMethod", &status));
     require_cl(status, "clCreateKernel(ldcompressChooseBestMethod)");
 
@@ -1619,7 +1766,151 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
     const std::size_t estimate_global_work_size = plan.selected_tasks.size();
     require_cl(clEnqueueNDRangeKernel(queue.get(), exact_kernel.get(), 1, nullptr,
                    &estimate_global_work_size, &one, 0, nullptr, nullptr),
-        "clEnqueueNDRangeKernel(ldcompressAnalyzeFixedConstantExact)");
+        "clEnqueueNDRangeKernel(ldcompressAnalyzeSubframeExact)");
+
+    require_cl(clSetKernelArg(choose_kernel.get(), 0, sizeof(best_mem), &best_mem),
+        "clSetKernelArg(choose.tasks_out)");
+    require_cl(clSetKernelArg(choose_kernel.get(), 1, sizeof(tasks_mem), &tasks_mem),
+        "clSetKernelArg(choose.tasks)");
+    require_cl(clSetKernelArg(choose_kernel.get(), 2, sizeof(selected_mem), &selected_mem),
+        "clSetKernelArg(choose.selectedTasks)");
+    require_cl(clSetKernelArg(choose_kernel.get(), 3, sizeof(task_count), &task_count),
+        "clSetKernelArg(choose.taskCount)");
+
+    require_cl(clEnqueueNDRangeKernel(queue.get(), choose_kernel.get(), 1, nullptr,
+                   &frame_global_work_size, nullptr, 0, nullptr, nullptr),
+        "clEnqueueNDRangeKernel(ldcompressChooseBestMethod)");
+
+    require_cl(clEnqueueReadBuffer(queue.get(), tasks_buffer.get(), CL_TRUE, 0,
+                   analyzed_tasks.size() * sizeof(FlacClSubframeTask), analyzed_tasks.data(),
+                   0, nullptr, nullptr),
+        "clEnqueueReadBuffer(tasks)");
+    require_cl(clEnqueueReadBuffer(queue.get(), best_buffer.get(), CL_TRUE, 0,
+                   best_tasks.size() * sizeof(FlacClSubframeTask), best_tasks.data(),
+                   0, nullptr, nullptr),
+        "clEnqueueReadBuffer(tasks_out)");
+    require_cl(clFinish(queue.get()), "clFinish");
+
+    return OpenClMonoFixedConstantAnalysisResult {
+        .analyzed_tasks = std::move(analyzed_tasks),
+        .best_tasks = std::move(best_tasks),
+        .device_name = selected_device.name,
+    };
+#else
+    (void)samples;
+    (void)plan;
+    (void)requested_device_index;
+    (void)max_rice_partition_order;
+    throw std::runtime_error("OpenCL support was not built");
+#endif
+}
+
+OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_analysis(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    std::optional<std::size_t> requested_device_index,
+    unsigned max_rice_partition_order)
+{
+#if LDCOMPRESS_HAVE_OPENCL
+    validate_lpc_analysis_inputs(samples, plan);
+    if (max_rice_partition_order > kExactMaxRicePartitionOrder) {
+        throw std::runtime_error("OpenCL LPC analysis max Rice partition order must be 0..8");
+    }
+
+    const auto selected_device = choose_opencl_device(requested_device_index);
+
+    cl_int status = CL_SUCCESS;
+    ClContext context(clCreateContext(nullptr, 1, &selected_device.id, nullptr, nullptr, &status));
+    require_cl(status, "clCreateContext");
+
+    ClCommandQueue queue(clCreateCommandQueue(context.get(), selected_device.id, 0, &status));
+    require_cl(status, "clCreateCommandQueue");
+
+    const char* source = mono_analysis_kernel_source();
+    const std::size_t source_length = std::char_traits<char>::length(source);
+    ClProgram program(clCreateProgramWithSource(context.get(), 1, &source, &source_length, &status));
+    require_cl(status, "clCreateProgramWithSource");
+
+    const cl_int build_status = clBuildProgram(program.get(), 1, &selected_device.id, nullptr, nullptr, nullptr);
+    if (build_status != CL_SUCCESS) {
+        const auto log = program_build_log(program.get(), selected_device.id);
+        throw std::runtime_error("clBuildProgram failed: " + cl_error_name(build_status) +
+            (log.empty() ? std::string {} : "\n" + log));
+    }
+
+    ClKernel wasted_kernel(clCreateKernel(program.get(), "ldcompressFindWastedBits", &status));
+    require_cl(status, "clCreateKernel(ldcompressFindWastedBits)");
+    ClKernel exact_kernel(clCreateKernel(program.get(), "ldcompressAnalyzeSubframeExact", &status));
+    require_cl(status, "clCreateKernel(ldcompressAnalyzeSubframeExact)");
+    ClKernel choose_kernel(clCreateKernel(program.get(), "ldcompressChooseBestMethod", &status));
+    require_cl(status, "clCreateKernel(ldcompressChooseBestMethod)");
+
+    ClMem samples_buffer(clCreateBuffer(context.get(),
+        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        samples.size() * sizeof(std::int32_t),
+        const_cast<std::int32_t*>(samples.data()),
+        &status));
+    require_cl(status, "clCreateBuffer(samples)");
+
+    ClMem tasks_buffer(clCreateBuffer(context.get(),
+        CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+        plan.residual_tasks.size() * sizeof(FlacClSubframeTask),
+        const_cast<FlacClSubframeTask*>(plan.residual_tasks.data()),
+        &status));
+    require_cl(status, "clCreateBuffer(tasks)");
+
+    ClMem selected_buffer(clCreateBuffer(context.get(),
+        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        plan.selected_tasks.size() * sizeof(std::int32_t),
+        const_cast<std::int32_t*>(plan.selected_tasks.data()),
+        &status));
+    require_cl(status, "clCreateBuffer(selectedTasks)");
+
+    const auto frame_count = plan.selected_tasks.size() / plan.estimate_tasks_per_frame;
+    std::vector<FlacClSubframeTask> analyzed_tasks(plan.residual_tasks.size());
+    std::vector<FlacClSubframeTask> best_tasks(frame_count);
+    ClMem best_buffer(clCreateBuffer(context.get(),
+        CL_MEM_WRITE_ONLY,
+        best_tasks.size() * sizeof(FlacClSubframeTask),
+        nullptr,
+        &status));
+    require_cl(status, "clCreateBuffer(tasks_out)");
+
+    cl_mem tasks_mem = tasks_buffer.get();
+    cl_mem samples_mem = samples_buffer.get();
+    cl_mem selected_mem = selected_buffer.get();
+    cl_mem best_mem = best_buffer.get();
+    const auto task_count = static_cast<std::int32_t>(plan.estimate_tasks_per_frame);
+
+    require_cl(clSetKernelArg(wasted_kernel.get(), 0, sizeof(tasks_mem), &tasks_mem),
+        "clSetKernelArg(wasted.tasks)");
+    require_cl(clSetKernelArg(wasted_kernel.get(), 1, sizeof(samples_mem), &samples_mem),
+        "clSetKernelArg(wasted.samples)");
+    require_cl(clSetKernelArg(wasted_kernel.get(), 2, sizeof(task_count), &task_count),
+        "clSetKernelArg(wasted.tasksPerChannel)");
+
+    const std::size_t one = 1;
+    const std::size_t frame_global_work_size = frame_count;
+    require_cl(clEnqueueNDRangeKernel(queue.get(), wasted_kernel.get(), 1, nullptr,
+                   &frame_global_work_size, &one, 0, nullptr, nullptr),
+        "clEnqueueNDRangeKernel(ldcompressFindWastedBits)");
+
+    const auto max_rice_partition_order_arg =
+        static_cast<std::int32_t>(max_rice_partition_order);
+    require_cl(clSetKernelArg(exact_kernel.get(), 0, sizeof(samples_mem), &samples_mem),
+        "clSetKernelArg(exact.samples)");
+    require_cl(clSetKernelArg(exact_kernel.get(), 1, sizeof(selected_mem), &selected_mem),
+        "clSetKernelArg(exact.selectedTasks)");
+    require_cl(clSetKernelArg(exact_kernel.get(), 2, sizeof(tasks_mem), &tasks_mem),
+        "clSetKernelArg(exact.tasks)");
+    require_cl(clSetKernelArg(exact_kernel.get(), 3, sizeof(max_rice_partition_order_arg),
+                   &max_rice_partition_order_arg),
+        "clSetKernelArg(exact.maxRicePartitionOrder)");
+
+    const std::size_t estimate_global_work_size = plan.selected_tasks.size();
+    require_cl(clEnqueueNDRangeKernel(queue.get(), exact_kernel.get(), 1, nullptr,
+                   &estimate_global_work_size, &one, 0, nullptr, nullptr),
+        "clEnqueueNDRangeKernel(ldcompressAnalyzeSubframeExact)");
 
     require_cl(clSetKernelArg(choose_kernel.get(), 0, sizeof(best_mem), &best_mem),
         "clSetKernelArg(choose.tasks_out)");

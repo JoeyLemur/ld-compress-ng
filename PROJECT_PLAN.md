@@ -93,6 +93,8 @@ Implemented:
   vectors.
 - Device-free FLACCL LPC task oracle that maps scalar per-order LPC analysis
   into task ABI fields with FLACCL coefficient ordering.
+- Hardware-optional OpenCL LPC exact residual/Rice analysis parity for
+  pre-populated scalar LPC tasks.
 - Linux OpenCL validation on `smaug`, Debian 13-era amd64 kernel
   `6.12.94+deb13-amd64`, NVIDIA OpenCL 3.0 CUDA runtime. The OpenCL analysis
   smoke tests compiled and ran on an RTX 4070 SUPER / RTX 5070 Ti host, and the
@@ -272,14 +274,15 @@ provided.
   OpenCL devices. Done for exact fixed/constant OpenCL kernel analysis parity
   against that scalar oracle, including Rice partition search and partition
   order limits. Done for scalar best/per-order LPC analysis records and a
-  device-free FLACCL LPC task oracle with coefficient-order conversion. OpenCL
-  LPC autocorrelation, coefficient generation, residual analysis, and parity
-  characterization against the scalar exact-cost selector still need to be
-  ported. Kernel code copied or adapted from FLACCL must keep the original
-  LGPL-2.1-or-later notices and local modification notes. The current
-  fixed/constant OpenCL exact parity test has been validated on Linux/NVIDIA
-  hardware; macOS currently has no local OpenCL device for runtime kernel
-  validation.
+  device-free FLACCL LPC task oracle with coefficient-order conversion. Done
+  for OpenCL exact LPC residual/Rice partition analysis of pre-populated LPC
+  tasks against the scalar oracle. OpenCL LPC autocorrelation, coefficient
+  generation, broader multi-task LPC parity characterization, and integration
+  into the encoder path still need to be ported. Kernel code copied or adapted
+  from FLACCL must keep the original LGPL-2.1-or-later notices and local
+  modification notes. The current fixed/constant and pre-populated LPC OpenCL
+  exact parity tests have been validated on Linux/NVIDIA hardware; macOS
+  currently has no local OpenCL device for runtime kernel validation.
 - Extend the initial OpenCL platform/device enumeration into explicit device
   selection for GPU compression. Done for CLI plumbing and metadata selection;
   real compression still awaits the FlaLDF-derived encoder port.

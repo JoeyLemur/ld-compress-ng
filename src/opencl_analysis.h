@@ -90,6 +90,12 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
     std::optional<std::size_t> requested_device_index = std::nullopt,
     unsigned max_rice_partition_order = 5);
 
+OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_analysis(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    std::optional<std::size_t> requested_device_index = std::nullopt,
+    unsigned max_rice_partition_order = 5);
+
 OpenClMonoFixedConstantAnalysisResult analyze_mono_fixed_constant_exact(
     const std::vector<std::int32_t>& samples,
     const OpenClMonoAnalysisTaskPlan& plan,

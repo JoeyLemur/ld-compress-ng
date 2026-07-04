@@ -9,6 +9,7 @@
 #include <iostream>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -28,6 +29,20 @@ void require_throws(Fn&& fn, const char* message)
         fn();
     } catch (const std::runtime_error&) {
         return;
+    }
+    throw std::runtime_error(message);
+}
+
+template <typename Fn>
+void require_throws_containing(Fn&& fn, const char* expected, const char* message)
+{
+    try {
+        fn();
+    } catch (const std::runtime_error& ex) {
+        if (std::string(ex.what()).find(expected) != std::string::npos) {
+            return;
+        }
+        throw std::runtime_error(message);
     }
     throw std::runtime_error(message);
 }
@@ -152,6 +167,32 @@ void require_analysis_matches(
     for (std::size_t i = 0; i < expected.best_tasks.size(); ++i) {
         require_task_matches_task(actual.best_tasks[i], expected.best_tasks[i], label);
     }
+}
+
+void require_lpc_task_matches(
+    const ldcompress::opencl_detail::FlacClSubframeTask& actual,
+    const ldcompress::opencl_detail::FlacClSubframeTask& expected,
+    const char* label)
+{
+    require_task_matches_task(actual, expected, label);
+    require(actual.data.shift == expected.data.shift, label);
+    require(actual.data.cbits == expected.data.cbits, label);
+    for (int i = 0; i < expected.data.residualOrder; ++i) {
+        require(actual.coefs[static_cast<std::size_t>(i)] ==
+                expected.coefs[static_cast<std::size_t>(i)],
+            label);
+    }
+}
+
+ldcompress::opencl_detail::OpenClMonoAnalysisTaskPlan make_single_lpc_task_plan(
+    const ldcompress::opencl_detail::FlacClSubframeTask& task)
+{
+    ldcompress::opencl_detail::OpenClMonoAnalysisTaskPlan plan;
+    plan.residual_tasks.push_back(task);
+    plan.selected_tasks.push_back(0);
+    plan.residual_tasks_per_frame = 1;
+    plan.estimate_tasks_per_frame = 1;
+    return plan;
 }
 
 void test_flaccl_abi_layout()
@@ -460,6 +501,60 @@ void test_scalar_exact_lpc_task_analysis()
         "scalar exact LPC task analysis returned a task for a too-small frame");
 }
 
+void test_opencl_lpc_analysis_input_validation()
+{
+    using namespace ldcompress::opencl_detail;
+
+    if (!ldcompress::opencl_support_built()) {
+        std::cout << "OpenCL LPC input validation skipped: OpenCL support was not built\n";
+        return;
+    }
+
+    OpenClMonoAnalysisTaskOptions options;
+    options.frame_samples = 512;
+    options.max_lpc_order = 12;
+    options.include_constant = false;
+    options.min_fixed_order = 0;
+    options.max_fixed_order = 4;
+
+    const auto samples = make_lpc_friendly_samples();
+    const ldcompress::FlacFrameInfo frame_info {
+        .frame_number = 0,
+        .sample_rate = 40000,
+        .bits_per_sample = 16,
+        .max_lpc_order = 12,
+        .lpc_coefficient_precision = 12,
+        .max_rice_partition_order = 5,
+    };
+    const auto best_lpc = ldcompress::analyze_mono_lpc_frame(samples, frame_info);
+    require(best_lpc.has_value(), "native LPC analysis did not return a validation candidate");
+    const auto expected_task = analyze_mono_lpc_exact_task(
+        samples, 0, options, best_lpc->order, 12, 5);
+    require(expected_task.has_value(), "scalar exact LPC validation task was not produced");
+
+    auto bad_coefficient_task = *expected_task;
+    bad_coefficient_task.data.cbits = 4;
+    bad_coefficient_task.coefs[0] = 8;
+    auto bad_coefficient_plan = make_single_lpc_task_plan(bad_coefficient_task);
+    require_throws_containing([&] {
+        (void)run_opencl_mono_lpc_analysis(samples, bad_coefficient_plan, std::nullopt, 5);
+    }, "coefficient does not fit precision",
+        "OpenCL LPC analysis accepted a coefficient outside cbits");
+
+    auto two_frames = samples;
+    two_frames.insert(two_frames.end(), samples.begin(), samples.end());
+    OpenClMonoAnalysisTaskPlan mixed_group_plan;
+    mixed_group_plan.residual_tasks = { *expected_task, *expected_task };
+    mixed_group_plan.residual_tasks[1].data.samplesOffs = 512;
+    mixed_group_plan.selected_tasks = { 0, 1 };
+    mixed_group_plan.residual_tasks_per_frame = 2;
+    mixed_group_plan.estimate_tasks_per_frame = 2;
+    require_throws_containing([&] {
+        (void)run_opencl_mono_lpc_analysis(two_frames, mixed_group_plan, std::nullopt, 5);
+    }, "frame task group mixes sample ranges",
+        "OpenCL LPC analysis accepted mixed frame task sample ranges");
+}
+
 void test_opencl_best_method_smoke()
 {
     using namespace ldcompress::opencl_detail;
@@ -595,6 +690,60 @@ void test_opencl_fixed_constant_analysis_smoke()
         "OpenCL exact partition search did not improve fixed task size");
 }
 
+void test_opencl_lpc_analysis_smoke()
+{
+    using namespace ldcompress::opencl_detail;
+
+    if (!ldcompress::opencl_support_built()) {
+        std::cout << "OpenCL LPC analysis smoke skipped: OpenCL support was not built\n";
+        return;
+    }
+
+    const auto device_index = first_available_opencl_device_index();
+    if (!device_index.has_value()) {
+        std::cout << "OpenCL LPC analysis smoke skipped: no available OpenCL device\n";
+        return;
+    }
+
+    OpenClMonoAnalysisTaskOptions options;
+    options.frame_samples = 512;
+    options.max_lpc_order = 12;
+    options.include_constant = false;
+    options.min_fixed_order = 0;
+    options.max_fixed_order = 4;
+
+    const auto samples = make_lpc_friendly_samples();
+    const ldcompress::FlacFrameInfo frame_info {
+        .frame_number = 0,
+        .sample_rate = 40000,
+        .bits_per_sample = 16,
+        .max_lpc_order = 12,
+        .lpc_coefficient_precision = 12,
+        .max_rice_partition_order = 5,
+    };
+    const auto best_lpc = ldcompress::analyze_mono_lpc_frame(samples, frame_info);
+    require(best_lpc.has_value(), "native LPC analysis did not return a candidate for OpenCL test");
+    const auto expected_task = analyze_mono_lpc_exact_task(
+        samples, 0, options, best_lpc->order, 12, 5);
+    require(expected_task.has_value(), "scalar exact LPC task analysis did not return a task for OpenCL test");
+
+    auto input_task = *expected_task;
+    input_task.data.size = 16 * 512;
+    input_task.data.abits = 0;
+    input_task.data.porder = 99;
+
+    auto plan = make_single_lpc_task_plan(input_task);
+
+    const auto result = run_opencl_mono_lpc_analysis(samples, plan, device_index, 5);
+    require(!result.device_name.empty(), "OpenCL LPC result did not report a device");
+    require(result.analyzed_tasks.size() == 1, "OpenCL LPC analyzed task count mismatch");
+    require(result.best_tasks.size() == 1, "OpenCL LPC best task count mismatch");
+    require_lpc_task_matches(result.analyzed_tasks[0], *expected_task,
+        "OpenCL exact LPC analyzed task diverged from scalar oracle");
+    require_lpc_task_matches(result.best_tasks[0], *expected_task,
+        "OpenCL exact LPC best task diverged from scalar oracle");
+}
+
 }  // namespace
 
 int main()
@@ -607,8 +756,10 @@ int main()
         test_scalar_exact_fixed_constant_analysis();
         test_scalar_exact_rice_partition_search();
         test_scalar_exact_lpc_task_analysis();
+        test_opencl_lpc_analysis_input_validation();
         test_opencl_best_method_smoke();
         test_opencl_fixed_constant_analysis_smoke();
+        test_opencl_lpc_analysis_smoke();
     } catch (const std::exception& ex) {
         std::cerr << "test_opencl_analysis: " << ex.what() << '\n';
         return 1;
