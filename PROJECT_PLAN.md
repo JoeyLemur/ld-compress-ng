@@ -120,6 +120,8 @@ provided.
   search before optimized partition ranges or GPU residual work.
 - Add scalar subframe selection so native FLAC can choose constant, fixed/Rice,
   or verbatim subframes per frame before adding heavier predictors.
+- Add FLAC wasted-bits support so native subframes can avoid storing the low
+  zero bits that are inherent in unpacked 10-bit LDS samples.
 - Add opt-in frame-level threading for native FLAC encoding. Keep output ordered
   by frame number and keep bounded in-flight work so large captures do not turn
   into unbounded memory use.
@@ -163,6 +165,7 @@ provided.
   search or GPU acceleration.
 - Verify native subframe selection for constant, fixed/Rice, and verbatim
   fallback frames.
+- Verify native wasted-bits encoding with libFLAC decode parity.
 - Verify threaded native FLAC output is byte-for-byte identical to the
   single-threaded output for generated fixtures.
 - For the OpenCL phase, test device enumeration, explicit device selection, CPU

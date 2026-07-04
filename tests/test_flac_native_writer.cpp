@@ -90,6 +90,13 @@ unsigned read_bits(std::string_view bytes, std::size_t bit_offset, unsigned bit_
 struct FirstFrameFixedInfo {
     unsigned order = 0;
     unsigned partition_order = 0;
+    unsigned wasted_bits = 0;
+};
+
+struct FirstFrameSubframeInfo {
+    unsigned type = 0;
+    unsigned wasted_bits = 0;
+    std::size_t sample_data_bit_offset = 0;
 };
 
 std::size_t first_frame_subframe_bit_offset()
@@ -105,20 +112,49 @@ unsigned first_frame_subframe_type(const std::filesystem::path& flac_path)
     return read_bits(bytes, first_frame_subframe_bit_offset() + 1U, 6);
 }
 
-FirstFrameFixedInfo first_frame_fixed_info(const std::filesystem::path& flac_path)
+FirstFrameSubframeInfo first_frame_subframe_info(const std::filesystem::path& flac_path)
 {
     const auto bytes = read_file(flac_path);
     const auto subframe_bit_offset = first_frame_subframe_bit_offset();
-    const auto type = first_frame_subframe_type(flac_path);
-    if (type < 8 || type > 12) {
+    FirstFrameSubframeInfo info {
+        .type = read_bits(bytes, subframe_bit_offset + 1U, 6),
+        .wasted_bits = 0,
+        .sample_data_bit_offset = subframe_bit_offset + 8U,
+    };
+
+    if (read_bits(bytes, subframe_bit_offset + 7U, 1) != 0) {
+        unsigned leading_zeroes = 0;
+        while (read_bits(bytes, info.sample_data_bit_offset + leading_zeroes, 1) == 0) {
+            ++leading_zeroes;
+        }
+        info.wasted_bits = leading_zeroes + 1U;
+        info.sample_data_bit_offset += leading_zeroes + 1U;
+    }
+
+    return info;
+}
+
+unsigned first_frame_wasted_bits(const std::filesystem::path& flac_path)
+{
+    return first_frame_subframe_info(flac_path).wasted_bits;
+}
+
+FirstFrameFixedInfo first_frame_fixed_info(const std::filesystem::path& flac_path)
+{
+    const auto bytes = read_file(flac_path);
+    const auto subframe_info = first_frame_subframe_info(flac_path);
+    if (subframe_info.type < 8 || subframe_info.type > 12) {
         throw std::runtime_error("first frame did not use a fixed predictor subframe");
     }
-    const auto order = type - 8;
+    const auto order = subframe_info.type - 8;
+    const auto effective_bits_per_sample = 16U - subframe_info.wasted_bits;
     const auto partition_order_bit_offset =
-        subframe_bit_offset + 8U + (static_cast<std::size_t>(order) * 16U) + 2U;
+        subframe_info.sample_data_bit_offset +
+        (static_cast<std::size_t>(order) * effective_bits_per_sample) + 2U;
     return FirstFrameFixedInfo {
         .order = order,
         .partition_order = read_bits(bytes, partition_order_bit_offset, 4),
+        .wasted_bits = subframe_info.wasted_bits,
     };
 }
 
@@ -162,7 +198,8 @@ void verify_fixed_rice_round_trip(
     const std::filesystem::path& flac_path,
     const std::vector<std::int32_t>& samples,
     unsigned expected_order,
-    unsigned expected_partition_order)
+    unsigned expected_partition_order,
+    int expected_wasted_bits = -1)
 {
     write_fixed_rice_file(flac_path, samples);
     const auto frame_info = first_frame_fixed_info(flac_path);
@@ -170,6 +207,10 @@ void verify_fixed_rice_round_trip(
         "native fixed/Rice writer chose an unexpected fixed predictor order");
     require(frame_info.partition_order == expected_partition_order,
         "native fixed/Rice writer chose an unexpected Rice partition order");
+    if (expected_wasted_bits >= 0) {
+        require(frame_info.wasted_bits == static_cast<unsigned>(expected_wasted_bits),
+            "native fixed/Rice writer chose an unexpected wasted-bits count");
+    }
 
     std::ostringstream decoded;
     const auto stats = ldcompress::decompress_flac_to_lds(flac_path.string(), decoded);
@@ -183,11 +224,16 @@ void verify_fixed_rice_round_trip(
 void verify_selected_round_trip(
     const std::filesystem::path& flac_path,
     const std::vector<std::int32_t>& samples,
-    unsigned expected_type)
+    unsigned expected_type,
+    int expected_wasted_bits = -1)
 {
     write_fixed_rice_file(flac_path, samples, ldcompress::write_mono_best_frame);
     require(first_frame_subframe_type(flac_path) == expected_type,
         "native best-frame writer chose an unexpected subframe type");
+    if (expected_wasted_bits >= 0) {
+        require(first_frame_wasted_bits(flac_path) == static_cast<unsigned>(expected_wasted_bits),
+            "native best-frame writer chose an unexpected wasted-bits count");
+    }
 
     std::ostringstream decoded;
     const auto stats = ldcompress::decompress_flac_to_lds(flac_path.string(), decoded);
@@ -237,6 +283,8 @@ void test_native_verbatim_round_trip()
 
     require(ldcompress::detect_flac_container(flac_path.string()) == ldcompress::FlacContainer::Native,
         "native writer output was not detected as native FLAC");
+    require(first_frame_wasted_bits(flac_path) == 6,
+        "native verbatim writer did not mark LDS low zero bits as wasted");
 
     std::ostringstream decoded;
     const auto stats = ldcompress::decompress_flac_to_lds(flac_path.string(), decoded);
@@ -264,7 +312,7 @@ void test_native_fixed_rice_round_trip()
     verify_fixed_rice_round_trip(temp_dir / "order2.flac", {
         0, 64, 128, 192, 256, 320, 384, 448,
         512, 576, 640, 704, 768, 832, 896, 960,
-    }, 2, 0);
+    }, 2, 0, 6);
 
     std::vector<std::int32_t> quadratic;
     std::vector<std::int32_t> cubic;
@@ -299,15 +347,15 @@ void test_native_best_subframe_selection()
     std::filesystem::create_directory(temp_dir);
 
     verify_selected_round_trip(temp_dir / "constant.flac",
-        std::vector<std::int32_t>(16, -4096), 0);
+        std::vector<std::int32_t>(16, -4096), 0, 12);
     verify_selected_round_trip(temp_dir / "fixed.flac", {
         0, 64, 128, 192, 256, 320, 384, 448,
         512, 576, 640, 704, 768, 832, 896, 960,
-    }, 10);
+    }, 10, 6);
     verify_selected_round_trip(temp_dir / "verbatim.flac", {
         32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
         32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
-    }, 1);
+    }, 1, 6);
 
     std::filesystem::remove_all(temp_dir);
 }

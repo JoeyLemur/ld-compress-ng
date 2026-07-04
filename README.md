@@ -67,9 +67,10 @@ Defaults:
   stone for the future native/GPU encoder, not the final compressed path.
 - `--backend native-fixed` writes native FLAC `.flac.ldf` output using scalar
   subframe selection: constant for flat frames, fixed prediction/Rice residuals
-  with partition-order search `0..4` when useful, and verbatim fallback when
-  fixed/Rice would be larger. It is a correctness milestone for the native/GPU
-  path, not tuned compression yet.
+  with partition-order search `0..4` when useful, wasted-bits handling for the
+  low zero bits in LDS-derived PCM, and verbatim fallback when fixed/Rice would
+  be larger. It is a correctness milestone for the native/GPU path, not tuned
+  compression yet.
 - `--threads N` is currently supported for native FLAC backends and parallelizes
   frame encoding while preserving output order. It defaults to `1`.
 - `--backend opencl` is reserved for the future FlaLDF-derived native FLAC path

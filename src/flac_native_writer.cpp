@@ -245,6 +245,9 @@ unsigned choose_rice_parameter(
 struct FixedRiceSubframe {
     unsigned order = 0;
     unsigned partition_order = 0;
+    unsigned wasted_bits = 0;
+    unsigned effective_bits_per_sample = 0;
+    std::vector<std::int32_t> shifted_samples;
     std::vector<unsigned> rice_parameters;
     std::vector<std::int64_t> residuals;
     std::uint64_t bits = 0;
@@ -261,6 +264,73 @@ std::uint64_t verbatim_subframe_bits(std::size_t block_size, unsigned bits_per_s
 {
     constexpr unsigned kSubframeHeaderBits = 8;
     return kSubframeHeaderBits + (static_cast<std::uint64_t>(block_size) * bits_per_sample);
+}
+
+std::uint64_t subframe_wasted_bits_overhead(unsigned wasted_bits)
+{
+    return wasted_bits == 0 ? 0 : wasted_bits;
+}
+
+std::uint64_t verbatim_subframe_bits(
+    std::size_t block_size,
+    unsigned bits_per_sample,
+    unsigned wasted_bits)
+{
+    return verbatim_subframe_bits(block_size, bits_per_sample - wasted_bits) +
+        subframe_wasted_bits_overhead(wasted_bits);
+}
+
+unsigned sample_trailing_zero_bits(std::int32_t sample, unsigned bits_per_sample)
+{
+    if (sample == 0) {
+        return bits_per_sample;
+    }
+
+    const auto mask = bits_per_sample == 64
+        ? std::numeric_limits<std::uint64_t>::max()
+        : ((std::uint64_t {1} << bits_per_sample) - 1U);
+    auto raw = static_cast<std::uint64_t>(sample) & mask;
+
+    unsigned zeros = 0;
+    while ((raw & 1U) == 0U && zeros < bits_per_sample) {
+        raw >>= 1U;
+        ++zeros;
+    }
+    return zeros;
+}
+
+unsigned common_wasted_bits(
+    const std::vector<std::int32_t>& samples,
+    unsigned bits_per_sample)
+{
+    unsigned wasted_bits = bits_per_sample;
+    for (const auto sample : samples) {
+        wasted_bits = std::min(wasted_bits,
+            sample_trailing_zero_bits(sample, bits_per_sample));
+        if (wasted_bits == 0) {
+            return 0;
+        }
+    }
+    return std::min(wasted_bits, bits_per_sample - 1U);
+}
+
+std::vector<std::int32_t> shift_samples(
+    const std::vector<std::int32_t>& samples,
+    unsigned wasted_bits)
+{
+    std::vector<std::int32_t> shifted;
+    shifted.reserve(samples.size());
+    if (wasted_bits == 0) {
+        shifted = samples;
+        return shifted;
+    }
+
+    const auto divisor = std::int64_t {1} << wasted_bits;
+    for (const auto sample : samples) {
+        shifted.push_back(static_cast<std::int32_t>(
+            static_cast<std::int64_t>(sample) / divisor));
+    }
+    return shifted;
 }
 
 bool valid_partition_order(std::size_t block_size, unsigned predictor_order, unsigned partition_order)
@@ -288,6 +358,7 @@ std::size_t partition_residual_count(
 std::uint64_t fixed_rice_subframe_bits(
     unsigned order,
     unsigned partition_order,
+    unsigned wasted_bits,
     const std::vector<unsigned>& rice_parameters,
     const std::vector<std::int64_t>& residuals,
     std::size_t block_size,
@@ -300,7 +371,7 @@ std::uint64_t fixed_rice_subframe_bits(
 
     std::uint64_t bits =
         kSubframeHeaderBits + (static_cast<std::uint64_t>(order) * bits_per_sample) +
-        kRiceMethodBits + kPartitionOrderBits;
+        kRiceMethodBits + kPartitionOrderBits + subframe_wasted_bits_overhead(wasted_bits);
 
     std::size_t residual_offset = 0;
     const auto partition_count = std::size_t {1} << partition_order;
@@ -322,16 +393,20 @@ FixedRiceSubframe choose_fixed_rice_subframe(
     const std::vector<std::int32_t>& samples,
     unsigned bits_per_sample)
 {
-    const auto max_order = samples.size() > 1
-        ? std::min<std::size_t>(4, samples.size() - 1)
+    const auto wasted_bits = common_wasted_bits(samples, bits_per_sample);
+    auto shifted_samples = shift_samples(samples, wasted_bits);
+    const auto effective_bits_per_sample = bits_per_sample - wasted_bits;
+
+    const auto max_order = shifted_samples.size() > 1
+        ? std::min<std::size_t>(4, shifted_samples.size() - 1)
         : 0;
 
     FixedRiceSubframe best;
     auto best_bits = std::numeric_limits<std::uint64_t>::max();
     for (unsigned order = 0; order <= max_order; ++order) {
-        auto residuals = fixed_residuals(samples, order);
+        auto residuals = fixed_residuals(shifted_samples, order);
         for (unsigned partition_order = 0; partition_order <= kMaxRicePartitionOrder; ++partition_order) {
-            if (!valid_partition_order(samples.size(), order, partition_order)) {
+            if (!valid_partition_order(shifted_samples.size(), order, partition_order)) {
                 continue;
             }
 
@@ -341,7 +416,7 @@ FixedRiceSubframe choose_fixed_rice_subframe(
             std::size_t residual_offset = 0;
             for (std::size_t partition = 0; partition < partition_count; ++partition) {
                 const auto residual_count = partition_residual_count(
-                    samples.size(), order, partition_order, partition);
+                    shifted_samples.size(), order, partition_order, partition);
                 rice_parameters.push_back(choose_rice_parameter(
                     residuals, residual_offset, residual_count));
                 residual_offset += residual_count;
@@ -351,12 +426,15 @@ FixedRiceSubframe choose_fixed_rice_subframe(
             }
 
             const auto bits = fixed_rice_subframe_bits(
-                order, partition_order, rice_parameters, residuals,
-                samples.size(), bits_per_sample);
+                order, partition_order, wasted_bits, rice_parameters, residuals,
+                shifted_samples.size(), effective_bits_per_sample);
             if (bits < best_bits) {
                 best_bits = bits;
                 best.order = order;
                 best.partition_order = partition_order;
+                best.wasted_bits = wasted_bits;
+                best.effective_bits_per_sample = effective_bits_per_sample;
+                best.shifted_samples = shifted_samples;
                 best.rice_parameters = std::move(rice_parameters);
                 best.residuals = residuals;
                 best.bits = bits;
@@ -364,6 +442,19 @@ FixedRiceSubframe choose_fixed_rice_subframe(
         }
     }
     return best;
+}
+
+void write_subframe_header(BitWriter& output, unsigned type, unsigned wasted_bits)
+{
+    output.write_bits(0, 1);
+    output.write_bits(type, 6);
+    if (wasted_bits == 0) {
+        output.write_bits(0, 1);
+        return;
+    }
+
+    output.write_bits(1, 1);
+    output.write_unary(wasted_bits - 1U);
 }
 
 void write_rice_signed(BitWriter& output, std::int64_t residual, unsigned parameter)
@@ -432,16 +523,14 @@ void write_frame_with_body(
 
 void write_fixed_rice_frame(
     std::ostream& output,
-    const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& info,
     const FixedRiceSubframe& subframe)
 {
     BitWriter frame_body;
-    frame_body.write_bits(0, 1);
-    frame_body.write_bits(0x08U + subframe.order, 6);
-    frame_body.write_bits(0, 1);
+    write_subframe_header(frame_body, 0x08U + subframe.order, subframe.wasted_bits);
     for (unsigned i = 0; i < subframe.order; ++i) {
-        frame_body.write_signed(samples[i], info.bits_per_sample);
+        frame_body.write_signed(subframe.shifted_samples[i],
+            subframe.effective_bits_per_sample);
     }
     frame_body.write_bits(0, 2);
     frame_body.write_bits(subframe.partition_order, 4);
@@ -450,7 +539,8 @@ void write_fixed_rice_frame(
     const auto partition_count = std::size_t {1} << subframe.partition_order;
     for (std::size_t partition = 0; partition < partition_count; ++partition) {
         const auto residual_count = partition_residual_count(
-            samples.size(), subframe.order, subframe.partition_order, partition);
+            subframe.shifted_samples.size(), subframe.order,
+            subframe.partition_order, partition);
         const auto rice_parameter = subframe.rice_parameters.at(partition);
         frame_body.write_bits(rice_parameter, 4);
         for (std::size_t i = 0; i < residual_count; ++i) {
@@ -462,7 +552,7 @@ void write_fixed_rice_frame(
     if (residual_offset != subframe.residuals.size()) {
         throw std::runtime_error("internal FLAC residual partition accounting error");
     }
-    write_frame_with_body(output, samples.size(), info, frame_body);
+    write_frame_with_body(output, subframe.shifted_samples.size(), info, frame_body);
 }
 
 }  // namespace
@@ -506,14 +596,19 @@ void write_mono_verbatim_frame(
     if (samples.empty()) {
         throw std::runtime_error("cannot write an empty FLAC frame");
     }
-
-    BitWriter frame_body;
-    frame_body.write_bits(0, 1);
-    frame_body.write_bits(1, 6);
-    frame_body.write_bits(0, 1);
     for (const auto sample : samples) {
         validate_sample(sample, info.bits_per_sample);
-        frame_body.write_signed(sample, info.bits_per_sample);
+    }
+
+    const auto wasted_bits = common_wasted_bits(samples, info.bits_per_sample);
+    const auto shifted_samples = shift_samples(samples, wasted_bits);
+    const auto effective_bits_per_sample = info.bits_per_sample - wasted_bits;
+
+    BitWriter frame_body;
+    write_subframe_header(frame_body, 1, wasted_bits);
+    for (const auto sample : shifted_samples) {
+        validate_sample(sample, effective_bits_per_sample);
+        frame_body.write_signed(sample, effective_bits_per_sample);
     }
     write_frame_with_body(output, samples.size(), info, frame_body);
 }
@@ -531,11 +626,13 @@ void write_mono_constant_frame(
     }
     validate_sample(samples.front(), info.bits_per_sample);
 
+    const auto wasted_bits = common_wasted_bits(samples, info.bits_per_sample);
+    const auto shifted_samples = shift_samples(samples, wasted_bits);
+    const auto effective_bits_per_sample = info.bits_per_sample - wasted_bits;
+
     BitWriter frame_body;
-    frame_body.write_bits(0, 1);
-    frame_body.write_bits(0, 6);
-    frame_body.write_bits(0, 1);
-    frame_body.write_signed(samples.front(), info.bits_per_sample);
+    write_subframe_header(frame_body, 0, wasted_bits);
+    frame_body.write_signed(shifted_samples.front(), effective_bits_per_sample);
     write_frame_with_body(output, samples.size(), info, frame_body);
 }
 
@@ -552,7 +649,7 @@ void write_mono_fixed_rice_frame(
     }
 
     const auto subframe = choose_fixed_rice_subframe(samples, info.bits_per_sample);
-    write_fixed_rice_frame(output, samples, info, subframe);
+    write_fixed_rice_frame(output, info, subframe);
 }
 
 void write_mono_best_frame(
@@ -572,10 +669,12 @@ void write_mono_best_frame(
         return;
     }
 
+    const auto wasted_bits = common_wasted_bits(samples, info.bits_per_sample);
     const auto fixed = choose_fixed_rice_subframe(samples, info.bits_per_sample);
-    const auto verbatim_bits = verbatim_subframe_bits(samples.size(), info.bits_per_sample);
+    const auto verbatim_bits = verbatim_subframe_bits(
+        samples.size(), info.bits_per_sample, wasted_bits);
     if (fixed.bits < verbatim_bits) {
-        write_fixed_rice_frame(output, samples, info, fixed);
+        write_fixed_rice_frame(output, info, fixed);
         return;
     }
     write_mono_verbatim_frame(output, samples, info);
