@@ -194,6 +194,7 @@ ldcompress::FlacSubframeDecision write_fixed_rice_file(
     const std::vector<std::int32_t>& samples,
     FrameWriter writer = ldcompress::write_mono_fixed_rice_frame,
     unsigned max_lpc_order = 12,
+    unsigned lpc_coefficient_precision = 12,
     unsigned max_rice_partition_order = 4)
 {
     std::ofstream output(flac_path, std::ios::binary);
@@ -219,6 +220,7 @@ ldcompress::FlacSubframeDecision write_fixed_rice_file(
         .sample_rate = 40000,
         .bits_per_sample = 16,
         .max_lpc_order = max_lpc_order,
+        .lpc_coefficient_precision = lpc_coefficient_precision,
         .max_rice_partition_order = max_rice_partition_order,
     };
     return writer(output, samples, frame_info);
@@ -234,7 +236,7 @@ void verify_fixed_rice_round_trip(
 {
     const auto decision = write_fixed_rice_file(
         flac_path, samples, ldcompress::write_mono_fixed_rice_frame, 12,
-        max_rice_partition_order);
+        12, max_rice_partition_order);
     require(decision.rice_partition_order == expected_partition_order,
         "native fixed/Rice writer reported an unexpected Rice partition order");
     const auto frame_info = first_frame_fixed_info(flac_path);
@@ -281,10 +283,12 @@ void verify_selected_round_trip(
 
 void verify_lpc_round_trip(
     const std::filesystem::path& flac_path,
-    const std::vector<std::int32_t>& samples)
+    const std::vector<std::int32_t>& samples,
+    unsigned lpc_coefficient_precision = 12)
 {
     const auto decision = write_fixed_rice_file(
-        flac_path, samples, ldcompress::write_mono_best_frame);
+        flac_path, samples, ldcompress::write_mono_best_frame, 12,
+        lpc_coefficient_precision, 4);
     require(decision.kind == ldcompress::FlacSubframeKind::LpcRice,
         "native best-frame writer did not choose LPC for LPC-friendly samples");
     require(decision.lpc_order >= 1 && decision.lpc_order <= 12,
@@ -410,11 +414,33 @@ void test_native_rice_partition_order_limit()
     try {
         write_fixed_rice_file(temp_dir / "too-wide.flac",
             std::vector<std::int32_t>(16, 0),
-            ldcompress::write_mono_fixed_rice_frame, 12, 9);
+            ldcompress::write_mono_fixed_rice_frame, 12, 12, 9);
     } catch (const std::runtime_error&) {
         threw = true;
     }
     require(threw, "native writer accepted an out-of-range Rice partition order");
+
+    std::filesystem::remove_all(temp_dir);
+}
+
+void test_native_lpc_precision_limit()
+{
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+        ("ld-compress-ng-native-lpc-precision-limit-test-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directory(temp_dir);
+
+    for (const unsigned precision : {0U, 16U}) {
+        bool threw = false;
+        try {
+            write_fixed_rice_file(temp_dir / (std::string("bad-precision-") +
+                    std::to_string(precision) + ".flac"),
+                make_lpc_friendly_samples(), ldcompress::write_mono_best_frame, 12, precision, 4);
+        } catch (const std::runtime_error&) {
+            threw = true;
+        }
+        require(threw, "native writer accepted an out-of-range LPC coefficient precision");
+    }
 
     std::filesystem::remove_all(temp_dir);
 }
@@ -437,6 +463,8 @@ void test_native_best_subframe_selection()
         32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
     }, 1, 6);
     verify_lpc_round_trip(temp_dir / "lpc.flac", make_lpc_friendly_samples());
+    verify_lpc_round_trip(temp_dir / "lpc-precision15.flac",
+        make_lpc_friendly_samples(), 15);
 
     std::filesystem::remove_all(temp_dir);
 }
@@ -449,6 +477,7 @@ int main()
         test_native_verbatim_round_trip();
         test_native_fixed_rice_round_trip();
         test_native_rice_partition_order_limit();
+        test_native_lpc_precision_limit();
         test_native_best_subframe_selection();
     } catch (const std::exception& ex) {
         std::cerr << "test_flac_native_writer: " << ex.what() << '\n';

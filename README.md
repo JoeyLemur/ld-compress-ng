@@ -53,11 +53,11 @@ The OpenCL/FlaLDF-derived GPU compression backend is not implemented yet.
 ## Usage
 
 ```sh
-ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--frame-samples N] [--lpc-order N] [--rice-partition-order N] [--stats] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]
+ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--frame-samples N] [--lpc-order N] [--lpc-precision N] [--rice-partition-order N] [--stats] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]
 ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]
 ld-compress-ng verify [--source ORIGINAL.lds] INPUT
 ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]
-ld-compress-ng bench [--threads 1,4,8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] [--rice-partition-order N[,N...]] INPUT
+ld-compress-ng bench [--threads 1,4,8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] [--lpc-precision N[,N...]] [--rice-partition-order N[,N...]] INPUT
 ld-compress-ng devices
 ```
 
@@ -83,6 +83,9 @@ Defaults:
 - `--lpc-order N` is currently supported for native FLAC backends and sets the
   maximum scalar LPC order considered by `native-fixed`. It defaults to `12`,
   matching the 40 kHz FLAC subset cap; `0` disables LPC.
+- `--lpc-precision N` is currently supported for native FLAC backends and sets
+  the LPC coefficient precision considered by `native-fixed`. It defaults to
+  `12`; FLAC subset-compatible values `1..15` are accepted.
 - `--rice-partition-order N` is currently supported for native FLAC backends and
   sets the maximum Rice partition order considered by `native-fixed`. It
   defaults to `4`; values `0..8` are accepted for FLAC subset compatibility.
@@ -102,7 +105,7 @@ Benchmarking:
   native-fixed path for each requested thread count, then prints bytes, ratio,
   elapsed seconds, MiB/s, and compact native decision stats for native backends.
   For native backend tuning, `bench` accepts comma-separated `--frame-samples`,
-  `--lpc-order`, and
+  `--lpc-order`, `--lpc-precision`, and
   `--rice-partition-order` lists and runs the native-fixed cross product.
 - Benchmark output files are temporary and removed after each run; use
   `compress` when you want to keep the encoded result.

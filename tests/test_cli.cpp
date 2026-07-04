@@ -130,10 +130,13 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_native_frame_samples_large = temp_dir / "fixture.bad-native-frame-samples-large.ldf";
     const auto bad_native_lpc_order = temp_dir / "fixture.bad-native-lpc-order.ldf";
     const auto bad_native_lpc_order_large = temp_dir / "fixture.bad-native-lpc-order-large.ldf";
+    const auto bad_native_lpc_precision = temp_dir / "fixture.bad-native-lpc-precision.ldf";
+    const auto bad_native_lpc_precision_large = temp_dir / "fixture.bad-native-lpc-precision-large.ldf";
     const auto bad_native_rice_partition_order = temp_dir / "fixture.bad-native-rice-partition-order.ldf";
     const auto bad_native_rice_partition_order_large = temp_dir / "fixture.bad-native-rice-partition-order-large.ldf";
     const auto bad_cpu_stats = temp_dir / "fixture.bad-cpu-stats.ldf";
     const auto bad_cpu_frame_samples = temp_dir / "fixture.bad-cpu-frame-samples.ldf";
+    const auto bad_cpu_lpc_precision = temp_dir / "fixture.bad-cpu-lpc-precision.ldf";
     const auto bad_cpu_rice_partition_order = temp_dir / "fixture.bad-cpu-rice-partition-order.ldf";
     const auto bad_cpu_threads = temp_dir / "fixture.bad-cpu-threads.ldf";
     const auto empty_lds = temp_dir / "empty.lds";
@@ -190,10 +193,10 @@ void test_cli(const std::filesystem::path& exe)
     require(read_file(native_fixed_stats_out) == fixture, "native-fixed --stats round trip changed LDS bytes");
     require(read_file(native_fixed_stats) == read_file(native_fixed),
         "native-fixed --stats output differed from normal output");
-    run_ok(shell_quote(exe) + " compress --backend native-fixed --frame-samples 2048 --lpc-order 12 --rice-partition-order 5 " + shell_quote(lds) + " " + shell_quote(native_fixed_tuned));
+    run_ok(shell_quote(exe) + " compress --backend native-fixed --frame-samples 2048 --lpc-order 12 --lpc-precision 10 --rice-partition-order 5 " + shell_quote(lds) + " " + shell_quote(native_fixed_tuned));
     run_ok(shell_quote(exe) + " decompress " + shell_quote(native_fixed_tuned) + " " + shell_quote(native_fixed_tuned_out));
     require(read_file(native_fixed_tuned_out) == fixture, "tuned native-fixed FLAC round trip changed LDS bytes");
-    run_ok(shell_quote(exe) + " compress --backend native-fixed --threads 2 --frame-samples 2048 --lpc-order 12 --rice-partition-order 5 " + shell_quote(lds) + " " + shell_quote(native_fixed_tuned_threads));
+    run_ok(shell_quote(exe) + " compress --backend native-fixed --threads 2 --frame-samples 2048 --lpc-order 12 --lpc-precision 10 --rice-partition-order 5 " + shell_quote(lds) + " " + shell_quote(native_fixed_tuned_threads));
     run_ok(shell_quote(exe) + " decompress " + shell_quote(native_fixed_tuned_threads) + " " + shell_quote(native_fixed_tuned_threads_out));
     require(read_file(native_fixed_tuned_threads_out) == fixture, "threaded tuned native-fixed FLAC round trip changed LDS bytes");
     require(read_file(native_fixed_tuned_threads) == read_file(native_fixed_tuned),
@@ -208,6 +211,10 @@ void test_cli(const std::filesystem::path& exe)
     require(!std::filesystem::exists(bad_native_lpc_order), "invalid native LPC order wrote output");
     run_fails(shell_quote(exe) + " compress --backend native-fixed --lpc-order 99999999999999999999 " + shell_quote(lds) + " " + shell_quote(bad_native_lpc_order_large));
     require(!std::filesystem::exists(bad_native_lpc_order_large), "oversized native LPC order wrote output");
+    run_fails(shell_quote(exe) + " compress --backend native-fixed --lpc-precision 0 " + shell_quote(lds) + " " + shell_quote(bad_native_lpc_precision));
+    require(!std::filesystem::exists(bad_native_lpc_precision), "invalid native LPC precision wrote output");
+    run_fails(shell_quote(exe) + " compress --backend native-fixed --lpc-precision 99999999999999999999 " + shell_quote(lds) + " " + shell_quote(bad_native_lpc_precision_large));
+    require(!std::filesystem::exists(bad_native_lpc_precision_large), "oversized native LPC precision wrote output");
     run_fails(shell_quote(exe) + " compress --backend native-fixed --rice-partition-order 9 " + shell_quote(lds) + " " + shell_quote(bad_native_rice_partition_order));
     require(!std::filesystem::exists(bad_native_rice_partition_order), "invalid native Rice partition order wrote output");
     run_fails(shell_quote(exe) + " compress --backend native-fixed --rice-partition-order 99999999999999999999 " + shell_quote(lds) + " " + shell_quote(bad_native_rice_partition_order_large));
@@ -216,6 +223,8 @@ void test_cli(const std::filesystem::path& exe)
     require(!std::filesystem::exists(bad_cpu_stats), "CPU --stats rejection wrote output");
     run_fails(shell_quote(exe) + " compress --frame-samples 2048 " + shell_quote(lds) + " " + shell_quote(bad_cpu_frame_samples));
     require(!std::filesystem::exists(bad_cpu_frame_samples), "CPU --frame-samples rejection wrote output");
+    run_fails(shell_quote(exe) + " compress --lpc-precision 10 " + shell_quote(lds) + " " + shell_quote(bad_cpu_lpc_precision));
+    require(!std::filesystem::exists(bad_cpu_lpc_precision), "CPU --lpc-precision rejection wrote output");
     run_fails(shell_quote(exe) + " compress --rice-partition-order 5 " + shell_quote(lds) + " " + shell_quote(bad_cpu_rice_partition_order));
     require(!std::filesystem::exists(bad_cpu_rice_partition_order), "CPU --rice-partition-order rejection wrote output");
     run_fails(shell_quote(exe) + " compress --threads 2 " + shell_quote(lds) + " " + shell_quote(bad_cpu_threads));
@@ -245,12 +254,13 @@ void test_cli(const std::filesystem::path& exe)
     run_fails(shell_quote(exe) + " compress --backend opencl " + shell_quote(lds) + " " + shell_quote(opencl_output));
     require(!std::filesystem::exists(opencl_output), "unimplemented OpenCL backend wrote output");
     run_ok(shell_quote(exe) + " bench --threads 1,2 " + shell_quote(lds));
-    run_ok(shell_quote(exe) + " bench --threads 1 --frame-samples 2048 --lpc-order 12 --rice-partition-order 5 " + shell_quote(lds));
-    run_ok(shell_quote(exe) + " bench --threads 1,2 --frame-samples 1024,2048 --lpc-order 0,8 --rice-partition-order 0,4 " + shell_quote(lds));
+    run_ok(shell_quote(exe) + " bench --threads 1 --frame-samples 2048 --lpc-order 12 --lpc-precision 10 --rice-partition-order 5 " + shell_quote(lds));
+    run_ok(shell_quote(exe) + " bench --threads 1,2 --frame-samples 1024,2048 --lpc-order 0,8 --lpc-precision 10,12 --rice-partition-order 0,4 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --threads 0 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --threads 1,,2 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --frame-samples 1024,15 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --lpc-order 0,13 " + shell_quote(lds));
+    run_fails(shell_quote(exe) + " bench --lpc-precision 0,16 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --rice-partition-order 0,9 " + shell_quote(lds));
     run_ok(shell_quote(exe) + " devices");
 

@@ -29,6 +29,8 @@ constexpr std::size_t kGroupsPerChunk = 8192;
 constexpr unsigned kMinimumStreamInfoBlockSize = 16;
 constexpr unsigned kMaxNativeFrameSamples = 4608;
 constexpr unsigned kMaxNativeLpcOrder = 12;
+constexpr unsigned kMinNativeLpcPrecision = 1;
+constexpr unsigned kMaxNativeLpcPrecision = 15;
 constexpr unsigned kMaxNativeRicePartitionOrder = 8;
 
 enum class NativeFrameCoding {
@@ -173,6 +175,7 @@ FlacSubframeDecision write_frame(
     std::uint64_t frame_number,
     unsigned sample_rate,
     unsigned max_lpc_order,
+    unsigned lpc_precision,
     unsigned max_rice_partition_order,
     NativeFrameCoding coding)
 {
@@ -181,6 +184,7 @@ FlacSubframeDecision write_frame(
         .sample_rate = sample_rate,
         .bits_per_sample = 16,
         .max_lpc_order = max_lpc_order,
+        .lpc_coefficient_precision = lpc_precision,
         .max_rice_partition_order = max_rice_partition_order,
     };
     switch (coding) {
@@ -207,13 +211,14 @@ EncodedFrame encode_frame(
     std::uint64_t frame_number,
     unsigned sample_rate,
     unsigned max_lpc_order,
+    unsigned lpc_precision,
     unsigned max_rice_partition_order,
     NativeFrameCoding coding)
 {
     std::ostringstream output(std::ios::out | std::ios::binary);
     const auto decision = write_frame(
         output, samples, frame_number, sample_rate, max_lpc_order,
-        max_rice_partition_order, coding);
+        lpc_precision, max_rice_partition_order, coding);
     if (!output) {
         throw std::runtime_error("failed to encode native FLAC frame");
     }
@@ -237,10 +242,12 @@ public:
         unsigned thread_count,
         unsigned sample_rate,
         unsigned max_lpc_order,
+        unsigned lpc_precision,
         unsigned max_rice_partition_order,
         NativeFrameCoding coding)
         : sample_rate_(sample_rate),
           max_lpc_order_(max_lpc_order),
+          lpc_precision_(lpc_precision),
           max_rice_partition_order_(max_rice_partition_order),
           coding_(coding)
     {
@@ -329,7 +336,8 @@ private:
 
             try {
                 auto frame = encode_frame(std::move(job.samples), job.frame_number,
-                    sample_rate_, max_lpc_order_, max_rice_partition_order_, coding_);
+                    sample_rate_, max_lpc_order_, lpc_precision_,
+                    max_rice_partition_order_, coding_);
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
                     results_.emplace(job.frame_number, std::move(frame));
@@ -352,6 +360,7 @@ private:
 
     unsigned sample_rate_ = 0;
     unsigned max_lpc_order_ = 0;
+    unsigned lpc_precision_ = 0;
     unsigned max_rice_partition_order_ = 0;
     NativeFrameCoding coding_ = NativeFrameCoding::Verbatim;
     mutable std::mutex mutex_;
@@ -375,6 +384,7 @@ ConversionStats compress_lds_to_native_flac(
     unsigned thread_count,
     unsigned frame_sample_count,
     unsigned max_lpc_order,
+    unsigned lpc_precision,
     unsigned max_rice_partition_order,
     NativeCompressionStats* native_stats)
 {
@@ -387,6 +397,10 @@ ConversionStats compress_lds_to_native_flac(
     }
     if (max_lpc_order > kMaxNativeLpcOrder) {
         throw std::runtime_error("native FLAC max LPC order must be 0..12");
+    }
+    if (lpc_precision < kMinNativeLpcPrecision ||
+        lpc_precision > kMaxNativeLpcPrecision) {
+        throw std::runtime_error("native FLAC LPC coefficient precision must be 1..15");
     }
     if (max_rice_partition_order > kMaxNativeRicePartitionOrder) {
         throw std::runtime_error("native FLAC max Rice partition order must be 0..8");
@@ -420,8 +434,8 @@ ConversionStats compress_lds_to_native_flac(
     std::unique_ptr<FrameEncoderPool> frame_pool;
     if (thread_count != 1) {
         frame_pool = std::make_unique<FrameEncoderPool>(
-            thread_count, sample_rate, max_lpc_order, max_rice_partition_order,
-            coding);
+            thread_count, sample_rate, max_lpc_order, lpc_precision,
+            max_rice_partition_order, coding);
     }
     const auto max_pending_frames = static_cast<std::size_t>(thread_count) * 2U;
 
@@ -439,7 +453,7 @@ ConversionStats compress_lds_to_native_flac(
         if (thread_count == 1) {
             const auto decision = write_frame(
                 output, samples, current_frame, sample_rate, max_lpc_order,
-                max_rice_partition_order, coding);
+                lpc_precision, max_rice_partition_order, coding);
             record_native_stats(native_stats, decision);
             ++next_frame_to_write;
             return;
@@ -496,12 +510,13 @@ ConversionStats compress_lds_to_native_verbatim_flac(
     unsigned thread_count,
     unsigned frame_samples,
     unsigned max_lpc_order,
+    unsigned lpc_precision,
     unsigned max_rice_partition_order,
     NativeCompressionStats* stats)
 {
     return compress_lds_to_native_flac(
         lds_input, output_path, sample_rate, NativeFrameCoding::Verbatim, thread_count,
-        frame_samples, max_lpc_order, max_rice_partition_order, stats);
+        frame_samples, max_lpc_order, lpc_precision, max_rice_partition_order, stats);
 }
 
 ConversionStats compress_lds_to_native_fixed_flac(
@@ -511,12 +526,13 @@ ConversionStats compress_lds_to_native_fixed_flac(
     unsigned thread_count,
     unsigned frame_samples,
     unsigned max_lpc_order,
+    unsigned lpc_precision,
     unsigned max_rice_partition_order,
     NativeCompressionStats* stats)
 {
     return compress_lds_to_native_flac(
         lds_input, output_path, sample_rate, NativeFrameCoding::FixedRice, thread_count,
-        frame_samples, max_lpc_order, max_rice_partition_order, stats);
+        frame_samples, max_lpc_order, lpc_precision, max_rice_partition_order, stats);
 }
 
 }  // namespace ldcompress

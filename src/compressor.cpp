@@ -42,6 +42,7 @@ ConversionStats compress_lds(
         return compress_lds_to_native_verbatim_flac(
             lds_input, output_path, options.sample_rate, options.thread_count,
             options.native_frame_samples, options.native_max_lpc_order,
+            options.native_lpc_precision,
             options.native_max_rice_partition_order,
             options.native_stats);
     case CompressionBackend::NativeFixedFlac:
@@ -51,6 +52,7 @@ ConversionStats compress_lds(
         return compress_lds_to_native_fixed_flac(
             lds_input, output_path, options.sample_rate, options.thread_count,
             options.native_frame_samples, options.native_max_lpc_order,
+            options.native_lpc_precision,
             options.native_max_rice_partition_order,
             options.native_stats);
     case CompressionBackend::OpenClNativeFlac:

@@ -18,7 +18,6 @@ constexpr unsigned kMaxRicePartitionOrder = 8;
 constexpr unsigned kMaxRiceParameter = 14;
 constexpr unsigned kMaxLpcOrder = 12;
 constexpr unsigned kMinLpcBlockSize = 256;
-constexpr unsigned kLpcCoefficientPrecision = 12;
 
 void write_byte(std::ostream& output, std::uint8_t byte)
 {
@@ -279,7 +278,7 @@ struct LpcRiceSubframe {
     unsigned partition_order = 0;
     unsigned wasted_bits = 0;
     unsigned effective_bits_per_sample = 0;
-    unsigned coefficient_precision = kLpcCoefficientPrecision;
+    unsigned coefficient_precision = 12;
     int quantization_shift = 0;
     std::vector<std::int32_t> shifted_samples;
     std::vector<std::int32_t> coefficients;
@@ -665,9 +664,13 @@ LpcRiceSubframe choose_lpc_rice_subframe(
     const std::vector<std::int32_t>& samples,
     unsigned bits_per_sample,
     unsigned max_lpc_order,
+    unsigned lpc_coefficient_precision,
     unsigned max_rice_partition_order)
 {
     max_rice_partition_order = checked_max_rice_partition_order(max_rice_partition_order);
+    if (lpc_coefficient_precision == 0 || lpc_coefficient_precision > 15) {
+        throw std::runtime_error("native FLAC LPC coefficient precision must be 1..15");
+    }
     LpcRiceSubframe best;
     best.bits = std::numeric_limits<std::uint64_t>::max();
 
@@ -690,7 +693,7 @@ LpcRiceSubframe choose_lpc_rice_subframe(
 
         int quantization_shift = 0;
         auto quantized_coefficients = quantize_lpc_coefficients(
-            coefficients, kLpcCoefficientPrecision, quantization_shift);
+            coefficients, lpc_coefficient_precision, quantization_shift);
         if (quantized_coefficients.size() != order || quantization_shift < 0 ||
             quantization_shift > 15) {
             continue;
@@ -719,7 +722,7 @@ LpcRiceSubframe choose_lpc_rice_subframe(
             }
 
             const auto bits = lpc_rice_subframe_bits(
-                order, partition_order, wasted_bits, kLpcCoefficientPrecision,
+                order, partition_order, wasted_bits, lpc_coefficient_precision,
                 rice_parameters, residuals, shifted_samples.size(),
                 effective_bits_per_sample);
             if (bits < best.bits) {
@@ -727,7 +730,7 @@ LpcRiceSubframe choose_lpc_rice_subframe(
                 best.partition_order = partition_order;
                 best.wasted_bits = wasted_bits;
                 best.effective_bits_per_sample = effective_bits_per_sample;
-                best.coefficient_precision = kLpcCoefficientPrecision;
+                best.coefficient_precision = lpc_coefficient_precision;
                 best.quantization_shift = quantization_shift;
                 best.shifted_samples = shifted_samples;
                 best.coefficients = quantized_coefficients;
@@ -1050,7 +1053,7 @@ FlacSubframeDecision write_mono_best_frame(
         samples, info.bits_per_sample, info.max_rice_partition_order);
     const auto lpc = choose_lpc_rice_subframe(
         samples, info.bits_per_sample, info.max_lpc_order,
-        info.max_rice_partition_order);
+        info.lpc_coefficient_precision, info.max_rice_partition_order);
     const auto verbatim_bits = verbatim_subframe_bits(
         samples.size(), info.bits_per_sample, wasted_bits);
     if (lpc.bits < fixed.bits && lpc.bits < verbatim_bits) {

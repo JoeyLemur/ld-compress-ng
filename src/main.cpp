@@ -31,10 +31,12 @@ struct Options {
     unsigned threads = 1;
     unsigned native_frame_samples = 4608;
     unsigned native_max_lpc_order = 12;
+    unsigned native_lpc_precision = 12;
     unsigned native_max_rice_partition_order = 4;
     std::vector<unsigned> bench_threads;
     std::vector<unsigned> bench_frame_samples;
     std::vector<unsigned> bench_lpc_orders;
+    std::vector<unsigned> bench_lpc_precisions;
     std::vector<unsigned> bench_rice_partition_orders;
     ldcompress::CompressionBackend backend = ldcompress::CompressionBackend::CpuLibFlac;
     ldcompress::FlacContainer container = ldcompress::FlacContainer::Ogg;
@@ -47,11 +49,11 @@ struct Options {
 {
     std::ostream& out = exit_code == 0 ? std::cout : std::cerr;
     out << "Usage:\n"
-        << "  ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--frame-samples N] [--lpc-order N] [--rice-partition-order N] [--stats] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]\n"
+        << "  ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--frame-samples N] [--lpc-order N] [--lpc-precision N] [--rice-partition-order N] [--stats] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng verify [--source ORIGINAL.lds] INPUT\n"
         << "  ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]\n"
-        << "  ld-compress-ng bench [--threads 1,4,8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] [--rice-partition-order N[,N...]] INPUT\n"
+        << "  ld-compress-ng bench [--threads 1,4,8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] [--lpc-precision N[,N...]] [--rice-partition-order N[,N...]] INPUT\n"
         << "  ld-compress-ng devices\n"
         << "  ld-compress-ng --help\n";
     std::exit(exit_code);
@@ -296,6 +298,12 @@ Options parse_compress(int argc, char** argv)
             }
             options.native_max_lpc_order = parse_bounded_unsigned(
                 argv[i], "native FLAC max LPC order", 0, 12);
+        } else if (arg == "--lpc-precision") {
+            if (++i >= argc) {
+                throw std::runtime_error("--lpc-precision requires a value");
+            }
+            options.native_lpc_precision = parse_bounded_unsigned(
+                argv[i], "native FLAC LPC coefficient precision", 1, 15);
         } else if (arg == "--rice-partition-order") {
             if (++i >= argc) {
                 throw std::runtime_error("--rice-partition-order requires a value");
@@ -343,8 +351,9 @@ Options parse_compress(int argc, char** argv)
     if (options.backend == ldcompress::CompressionBackend::CpuLibFlac &&
         (options.native_frame_samples != 4608 ||
             options.native_max_lpc_order != 12 ||
+            options.native_lpc_precision != 12 ||
             options.native_max_rice_partition_order != 4)) {
-        throw std::runtime_error("--frame-samples, --lpc-order, and --rice-partition-order are supported only by native FLAC backends");
+        throw std::runtime_error("--frame-samples, --lpc-order, --lpc-precision, and --rice-partition-order are supported only by native FLAC backends");
     }
 
     if ((options.backend == ldcompress::CompressionBackend::NativeVerbatimFlac ||
@@ -473,6 +482,12 @@ Options parse_bench(int argc, char** argv)
             }
             options.bench_lpc_orders = parse_bounded_unsigned_list(
                 argv[i], "native FLAC max LPC order", 0, 12);
+        } else if (arg == "--lpc-precision") {
+            if (++i >= argc) {
+                throw std::runtime_error("--lpc-precision requires a value");
+            }
+            options.bench_lpc_precisions = parse_bounded_unsigned_list(
+                argv[i], "native FLAC LPC coefficient precision", 1, 15);
         } else if (arg == "--rice-partition-order") {
             if (++i >= argc) {
                 throw std::runtime_error("--rice-partition-order requires a value");
@@ -499,6 +514,9 @@ Options parse_bench(int argc, char** argv)
     }
     if (options.bench_lpc_orders.empty()) {
         options.bench_lpc_orders.push_back(options.native_max_lpc_order);
+    }
+    if (options.bench_lpc_precisions.empty()) {
+        options.bench_lpc_precisions.push_back(options.native_lpc_precision);
     }
     if (options.bench_rice_partition_orders.empty()) {
         options.bench_rice_partition_orders.push_back(options.native_max_rice_partition_order);
@@ -639,6 +657,7 @@ int run_compress(const Options& options)
         .thread_count = options.threads,
         .native_frame_samples = options.native_frame_samples,
         .native_max_lpc_order = options.native_max_lpc_order,
+        .native_lpc_precision = options.native_lpc_precision,
         .native_max_rice_partition_order = options.native_max_rice_partition_order,
         .native_stats = options.show_stats ? &native_stats : nullptr,
     };
@@ -739,9 +758,11 @@ struct BenchCase {
     unsigned threads;
     unsigned native_frame_samples;
     unsigned native_max_lpc_order;
+    unsigned native_lpc_precision;
     unsigned native_max_rice_partition_order;
     bool show_frame_samples;
     bool show_lpc_order;
+    bool show_lpc_precision;
     bool show_rice_partition_order;
 };
 
@@ -750,9 +771,11 @@ struct BenchResult {
     unsigned threads;
     unsigned native_frame_samples;
     unsigned native_max_lpc_order;
+    unsigned native_lpc_precision;
     unsigned native_max_rice_partition_order;
     bool show_frame_samples;
     bool show_lpc_order;
+    bool show_lpc_precision;
     bool show_rice_partition_order;
     ldcompress::ConversionStats stats;
     ldcompress::NativeCompressionStats native_stats;
@@ -780,6 +803,7 @@ BenchResult run_bench_case(
         .thread_count = bench_case.threads,
         .native_frame_samples = bench_case.native_frame_samples,
         .native_max_lpc_order = bench_case.native_max_lpc_order,
+        .native_lpc_precision = bench_case.native_lpc_precision,
         .native_max_rice_partition_order = bench_case.native_max_rice_partition_order,
         .native_stats = collect_native_stats ? &native_stats : nullptr,
     };
@@ -794,9 +818,11 @@ BenchResult run_bench_case(
         .threads = bench_case.threads,
         .native_frame_samples = bench_case.native_frame_samples,
         .native_max_lpc_order = bench_case.native_max_lpc_order,
+        .native_lpc_precision = bench_case.native_lpc_precision,
         .native_max_rice_partition_order = bench_case.native_max_rice_partition_order,
         .show_frame_samples = bench_case.show_frame_samples,
         .show_lpc_order = bench_case.show_lpc_order,
+        .show_lpc_precision = bench_case.show_lpc_precision,
         .show_rice_partition_order = bench_case.show_rice_partition_order,
         .stats = stats,
         .native_stats = native_stats,
@@ -830,6 +856,7 @@ void print_bench_result(const BenchResult& result)
               << std::right << std::setw(9) << result.threads;
     print_optional_unsigned(result.native_frame_samples, result.show_frame_samples, 15);
     print_optional_unsigned(result.native_max_lpc_order, result.show_lpc_order, 10);
+    print_optional_unsigned(result.native_lpc_precision, result.show_lpc_precision, 9);
     print_optional_unsigned(result.native_max_rice_partition_order, result.show_rice_partition_order, 11);
     std::cout << std::setw(14) << result.stats.input_bytes
               << std::setw(15) << result.stats.output_bytes
@@ -855,9 +882,11 @@ int run_bench(const Options& options)
             .threads = 1,
             .native_frame_samples = 4608,
             .native_max_lpc_order = 12,
+            .native_lpc_precision = 12,
             .native_max_rice_partition_order = 4,
             .show_frame_samples = false,
             .show_lpc_order = false,
+            .show_lpc_precision = false,
             .show_rice_partition_order = false,
         },
     };
@@ -869,28 +898,34 @@ int run_bench(const Options& options)
             .threads = 1,
             .native_frame_samples = frame_samples,
             .native_max_lpc_order = 0,
+            .native_lpc_precision = 12,
             .native_max_rice_partition_order = 4,
             .show_frame_samples = true,
             .show_lpc_order = false,
+            .show_lpc_precision = false,
             .show_rice_partition_order = false,
         });
     }
 
     for (const unsigned frame_samples : options.bench_frame_samples) {
         for (const unsigned lpc_order : options.bench_lpc_orders) {
-            for (const unsigned rice_partition_order : options.bench_rice_partition_orders) {
-                for (const unsigned threads : options.bench_threads) {
-                    cases.push_back(BenchCase {
-                        .backend = ldcompress::CompressionBackend::NativeFixedFlac,
-                        .container = ldcompress::FlacContainer::Native,
-                        .threads = threads,
-                        .native_frame_samples = frame_samples,
-                        .native_max_lpc_order = lpc_order,
-                        .native_max_rice_partition_order = rice_partition_order,
-                        .show_frame_samples = true,
-                        .show_lpc_order = true,
-                        .show_rice_partition_order = true,
-                    });
+            for (const unsigned lpc_precision : options.bench_lpc_precisions) {
+                for (const unsigned rice_partition_order : options.bench_rice_partition_orders) {
+                    for (const unsigned threads : options.bench_threads) {
+                        cases.push_back(BenchCase {
+                            .backend = ldcompress::CompressionBackend::NativeFixedFlac,
+                            .container = ldcompress::FlacContainer::Native,
+                            .threads = threads,
+                            .native_frame_samples = frame_samples,
+                            .native_max_lpc_order = lpc_order,
+                            .native_lpc_precision = lpc_precision,
+                            .native_max_rice_partition_order = rice_partition_order,
+                            .show_frame_samples = true,
+                            .show_lpc_order = true,
+                            .show_lpc_precision = true,
+                            .show_rice_partition_order = true,
+                        });
+                    }
                 }
             }
         }
@@ -900,6 +935,7 @@ int run_bench(const Options& options)
               << std::right << std::setw(9) << "threads"
               << std::setw(15) << "frame_samples"
               << std::setw(10) << "lpc_order"
+              << std::setw(9) << "lpc_prec"
               << std::setw(11) << "rice_order"
               << std::setw(14) << "input_bytes"
               << std::setw(15) << "output_bytes"
