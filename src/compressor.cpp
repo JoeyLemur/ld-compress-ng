@@ -1,6 +1,7 @@
 #include "compressor.h"
 
 #include "native_flac_encoder.h"
+#include "opencl_backend.h"
 
 #include <stdexcept>
 
@@ -56,7 +57,17 @@ ConversionStats compress_lds(
             options.native_max_rice_partition_order,
             options.native_stats);
     case CompressionBackend::OpenClNativeFlac:
-        throw std::runtime_error("OpenCL compression backend is not implemented yet");
+        return compress_lds_to_opencl_native_flac(lds_input, output_path, OpenClCompressionOptions {
+            .container = options.container,
+            .sample_rate = options.sample_rate,
+            .thread_count = options.thread_count,
+            .frame_samples = options.native_frame_samples,
+            .max_lpc_order = options.native_max_lpc_order,
+            .lpc_precision = options.native_lpc_precision,
+            .max_rice_partition_order = options.native_max_rice_partition_order,
+            .device_index = options.opencl_device_index,
+            .native_stats = options.native_stats,
+        });
     }
 
     throw std::runtime_error("unknown compression backend");

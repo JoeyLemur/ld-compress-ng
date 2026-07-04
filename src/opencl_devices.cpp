@@ -1,7 +1,9 @@
 #include "opencl_devices.h"
 
+#include <cstddef>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 #ifndef LDCOMPRESS_HAVE_OPENCL
@@ -232,7 +234,8 @@ std::vector<OpenClDeviceInfo> list_opencl_devices()
     require_cl(clGetPlatformIDs(platform_count, platforms.data(), nullptr), "clGetPlatformIDs");
 
     std::vector<OpenClDeviceInfo> devices;
-    for (const auto platform : platforms) {
+    for (std::size_t platform_index = 0; platform_index < platforms.size(); ++platform_index) {
+        const auto platform = platforms[platform_index];
         cl_uint device_count = 0;
         const cl_int device_count_status =
             clGetDeviceIDs(platform, CL_DEVICE_TYPE_ALL, 0, nullptr, &device_count);
@@ -246,8 +249,12 @@ std::vector<OpenClDeviceInfo> list_opencl_devices()
                        platform_devices.data(), nullptr),
             "clGetDeviceIDs");
 
-        for (const auto device : platform_devices) {
+        for (std::size_t device_index = 0; device_index < platform_devices.size(); ++device_index) {
+            const auto device = platform_devices[device_index];
             OpenClDeviceInfo info;
+            info.flat_index = static_cast<std::uint32_t>(devices.size());
+            info.platform_index = static_cast<std::uint32_t>(platform_index);
+            info.device_index = static_cast<std::uint32_t>(device_index);
             info.platform_name = get_platform_string(platform, CL_PLATFORM_NAME);
             info.platform_vendor = get_platform_string(platform, CL_PLATFORM_VENDOR);
             info.platform_version = get_platform_string(platform, CL_PLATFORM_VERSION);
@@ -269,6 +276,38 @@ std::vector<OpenClDeviceInfo> list_opencl_devices()
 #else
     return {};
 #endif
+}
+
+OpenClDeviceInfo select_opencl_device(std::optional<std::size_t> requested_index)
+{
+    if (!opencl_support_built()) {
+        throw std::runtime_error("OpenCL support was not built");
+    }
+
+    const auto devices = list_opencl_devices();
+    if (devices.empty()) {
+        throw std::runtime_error("no OpenCL devices found");
+    }
+
+    if (requested_index.has_value()) {
+        if (*requested_index >= devices.size()) {
+            throw std::runtime_error("OpenCL device index out of range: " +
+                std::to_string(*requested_index));
+        }
+        if (!devices[*requested_index].available) {
+            throw std::runtime_error("selected OpenCL device is not available: " +
+                devices[*requested_index].device_name);
+        }
+        return devices[*requested_index];
+    }
+
+    for (const auto& device : devices) {
+        if (device.available) {
+            return device;
+        }
+    }
+
+    throw std::runtime_error("no available OpenCL devices found");
 }
 
 }  // namespace ldcompress

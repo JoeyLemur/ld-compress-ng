@@ -123,6 +123,12 @@ build/ld-compress-ng devices
 ctest --test-dir build --output-on-failure
 ```
 
+`ld-compress-ng devices` prints flattened OpenCL device indexes for
+`compress --backend opencl --device INDEX` or `--opencl-device INDEX`, plus
+platform-local `platform/device` coordinates. The OpenCL compression backend
+still stops before writing output until the FlaLDF-derived encoder is
+implemented.
+
 ## Opt-In Real Fixture Regression
 
 Normal tests use generated or embedded fixtures and do not require real RF

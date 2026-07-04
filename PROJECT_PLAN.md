@@ -60,6 +60,9 @@ Implemented:
   subcommands.
 - Optional OpenCL device enumeration. OpenCL compression remains reserved and
   fails before writing output.
+- Explicit OpenCL device-selection plumbing for the reserved GPU backend.
+- A separate `opencl_backend` boundary that validates native-FLAC output and
+  device selection before the encoder is implemented.
 - Native FLAC writer primitives, STREAMINFO, frame headers, CRC handling, and
   native `.flac.ldf` output.
 - Experimental `native-verbatim` backend.
@@ -223,8 +226,13 @@ provided.
   CPU/libFLAC gap on real fixtures before starting the OpenCL port in earnest.
 - Port FlaLDF host-side encoder logic to native C++.
 - Reuse or adapt the existing OpenCL kernel from `FlaLDF/`.
+- Start the GPU port with a mono OpenCL analysis path that compares
+  wasted-bits, fixed/LPC, Rice partition, and best-method decisions against the
+  scalar native-fixed encoder before exposing GPU residual/Rice bitstream
+  writing.
 - Extend the initial OpenCL platform/device enumeration into explicit device
-  selection for GPU compression.
+  selection for GPU compression. Done for CLI plumbing and metadata selection;
+  real compression still awaits the FlaLDF-derived encoder port.
 - Add the `devices` subcommand. Done for enumeration scaffolding.
 - Preserve current GPU-style native FLAC `.flac.ldf` output unless a deliberate
   format migration is chosen later.
@@ -280,6 +288,9 @@ provided.
   inputs, malformed metadata, and raw FLAC frame streams.
 - For the OpenCL phase, test device enumeration, explicit device selection, CPU
   fallback behavior, and decompressed-output parity with the CPU backend.
+- Before GPU output is enabled, add analysis-parity tests that run the
+  FlaLDF-derived mono OpenCL kernels against generated frames and compare their
+  selected subframe decisions with the scalar native-fixed path.
 
 ## Constraints
 

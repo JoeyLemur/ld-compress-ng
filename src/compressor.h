@@ -4,8 +4,10 @@
 #include "lds_codec.h"
 
 #include <array>
-#include <iosfwd>
+#include <cstddef>
 #include <cstdint>
+#include <iosfwd>
+#include <optional>
 #include <string>
 
 namespace ldcompress {
@@ -41,6 +43,7 @@ struct CompressionOptions {
     unsigned native_lpc_precision = 12;
     unsigned native_max_rice_partition_order = 5;
     NativeCompressionStats* native_stats = nullptr;
+    std::optional<std::size_t> opencl_device_index;
 };
 
 const char* backend_name(CompressionBackend backend);

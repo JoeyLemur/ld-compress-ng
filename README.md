@@ -42,6 +42,8 @@ The current implementation provides:
   inputs.
 - MD5-based verification, optionally against an original `.lds`.
 - A backend selection facade for CPU now and OpenCL later.
+- OpenCL device enumeration and explicit device-selection plumbing for the
+  reserved GPU backend.
 - Native FLAC bitstream primitives and an experimental `native-verbatim` backend
   that writes `.flac.ldf` streams with verbatim frames.
 - An experimental scalar `native-fixed` backend that selects native FLAC
@@ -55,7 +57,7 @@ The OpenCL/FlaLDF-derived GPU compression backend is not implemented yet.
 ## Usage
 
 ```sh
-ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--frame-samples N] [--lpc-order N] [--lpc-precision N] [--rice-partition-order N] [--stats] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]
+ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--frame-samples N] [--lpc-order N] [--lpc-precision N] [--rice-partition-order N] [--device INDEX|--opencl-device INDEX] [--stats] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]
 ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]
 ld-compress-ng verify [--source ORIGINAL.lds] INPUT
 ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]
@@ -95,8 +97,13 @@ Defaults:
 - `--stats` is currently supported for native FLAC backends and prints per-frame
   subframe counts, fixed/LPC predictor order counts, Rice partition order
   counts, and wasted-bits counts.
-- `--backend opencl` is reserved for the future FlaLDF-derived native FLAC path
-  and currently fails before writing output.
+- `--backend opencl` is reserved for the future FlaLDF-derived native FLAC path.
+  It currently validates native-FLAC output and optional `--device INDEX`
+  selection, then fails before writing output because the encoder is not
+  implemented yet.
+- `--device INDEX` / `--opencl-device INDEX` is currently accepted only with
+  `--backend opencl`. The indexes are the flattened indexes printed by
+  `ld-compress-ng devices`.
 - `--container flac` writes native FLAC, useful for compatibility testing with
   the future `.flac.ldf` GPU lane.
 - Compression levels accept the legacy CPU range `1..12`; values above libFLAC's

@@ -11,6 +11,8 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -38,6 +40,7 @@ struct Options {
     unsigned native_max_lpc_order = kDefaultNativeMaxLpcOrder;
     unsigned native_lpc_precision = kDefaultNativeLpcPrecision;
     unsigned native_max_rice_partition_order = kDefaultNativeMaxRicePartitionOrder;
+    std::optional<std::size_t> opencl_device_index;
     std::vector<unsigned> bench_threads;
     std::vector<unsigned> bench_frame_samples;
     std::vector<unsigned> bench_lpc_orders;
@@ -54,7 +57,7 @@ struct Options {
 {
     std::ostream& out = exit_code == 0 ? std::cout : std::cerr;
     out << "Usage:\n"
-        << "  ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--frame-samples N] [--lpc-order N] [--lpc-precision N] [--rice-partition-order N] [--stats] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]\n"
+        << "  ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--frame-samples N] [--lpc-order N] [--lpc-precision N] [--rice-partition-order N] [--device INDEX|--opencl-device INDEX] [--stats] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng verify [--source ORIGINAL.lds] INPUT\n"
         << "  ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]\n"
@@ -214,6 +217,25 @@ unsigned parse_bounded_unsigned(
     return value;
 }
 
+std::size_t parse_device_index(std::string_view text)
+{
+    std::size_t value = 0;
+    if (text.empty()) {
+        throw std::runtime_error("empty OpenCL device index");
+    }
+    for (const char ch : text) {
+        if (ch < '0' || ch > '9') {
+            throw std::runtime_error("invalid OpenCL device index: " + std::string(text));
+        }
+        const auto digit = static_cast<std::size_t>(ch - '0');
+        if (value > (std::numeric_limits<std::size_t>::max() - digit) / 10U) {
+            throw std::runtime_error("OpenCL device index is too large: " + std::string(text));
+        }
+        value = (value * 10U) + digit;
+    }
+    return value;
+}
+
 std::vector<unsigned> parse_thread_list(std::string_view text)
 {
     std::vector<unsigned> threads;
@@ -315,6 +337,11 @@ Options parse_compress(int argc, char** argv)
             }
             options.native_max_rice_partition_order = parse_bounded_unsigned(
                 argv[i], "native FLAC max Rice partition order", 0, 8);
+        } else if (arg == "--device" || arg == "--opencl-device") {
+            if (++i >= argc) {
+                throw std::runtime_error(std::string(arg) + " requires a value");
+            }
+            options.opencl_device_index = parse_device_index(argv[i]);
         } else if (arg == "--container") {
             if (++i >= argc) {
                 throw std::runtime_error("--container requires a value");
@@ -353,6 +380,10 @@ Options parse_compress(int argc, char** argv)
         options.backend == ldcompress::CompressionBackend::CpuLibFlac) {
         throw std::runtime_error("--stats is currently supported only by native FLAC backends");
     }
+    if (options.opencl_device_index.has_value() &&
+        options.backend != ldcompress::CompressionBackend::OpenClNativeFlac) {
+        throw std::runtime_error("--device is currently supported only by the opencl backend");
+    }
     if (options.backend == ldcompress::CompressionBackend::CpuLibFlac &&
         (options.native_frame_samples != kDefaultNativeFrameSamples ||
             options.native_max_lpc_order != kDefaultNativeMaxLpcOrder ||
@@ -361,8 +392,7 @@ Options parse_compress(int argc, char** argv)
         throw std::runtime_error("--frame-samples, --lpc-order, --lpc-precision, and --rice-partition-order are supported only by native FLAC backends");
     }
 
-    if ((options.backend == ldcompress::CompressionBackend::NativeVerbatimFlac ||
-            options.backend == ldcompress::CompressionBackend::NativeFixedFlac) &&
+    if (is_native_flac_backend(options.backend) &&
         options.container != ldcompress::FlacContainer::Native) {
         throw std::runtime_error(std::string(ldcompress::backend_name(options.backend)) +
             " backend writes native FLAC only");
@@ -665,6 +695,7 @@ int run_compress(const Options& options)
         .native_lpc_precision = options.native_lpc_precision,
         .native_max_rice_partition_order = options.native_max_rice_partition_order,
         .native_stats = options.show_stats ? &native_stats : nullptr,
+        .opencl_device_index = options.opencl_device_index,
     };
     const auto stats = ldcompress::compress_lds(input, options.output, compress_options);
     std::cerr << "compressed " << stats.input_bytes << " bytes to "
@@ -1020,7 +1051,9 @@ int run_devices(int argc, char** argv)
 
     for (std::size_t i = 0; i < devices.size(); ++i) {
         const auto& device = devices[i];
-        std::cout << '[' << i << "] " << device.device_name << '\n'
+        std::cout << '[' << device.flat_index << "] " << device.device_name << '\n'
+                  << "    platform/device index: " << device.platform_index << '/'
+                  << device.device_index << '\n'
                   << "    type: " << device.type << '\n'
                   << "    available: " << (device.available ? "yes" : "no") << '\n'
                   << "    compute units: " << device.compute_units << '\n'

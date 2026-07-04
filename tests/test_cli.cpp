@@ -139,12 +139,17 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_cpu_lpc_precision = temp_dir / "fixture.bad-cpu-lpc-precision.ldf";
     const auto bad_cpu_rice_partition_order = temp_dir / "fixture.bad-cpu-rice-partition-order.ldf";
     const auto bad_cpu_threads = temp_dir / "fixture.bad-cpu-threads.ldf";
+    const auto bad_cpu_device = temp_dir / "fixture.bad-cpu-device.ldf";
+    const auto bad_native_device = temp_dir / "fixture.bad-native-device.ldf";
+    const auto bad_native_opencl_device = temp_dir / "fixture.bad-native-opencl-device.ldf";
     const auto empty_lds = temp_dir / "empty.lds";
     const auto empty_native_verbatim = temp_dir / "empty.native-verbatim.flac.ldf";
     const auto empty_native_verbatim_out = temp_dir / "empty.native-verbatim.out.lds";
     const auto empty_native_fixed = temp_dir / "empty.native-fixed.flac.ldf";
     const auto empty_native_fixed_out = temp_dir / "empty.native-fixed.out.lds";
     const auto opencl_output = temp_dir / "fixture.opencl.flac.ldf";
+    const auto bad_opencl_device = temp_dir / "fixture.bad-opencl-device.flac.ldf";
+    const auto bad_opencl_container = temp_dir / "fixture.bad-opencl-container.ldf";
 
     const std::string fixture = make_lds_fixture();
     write_file(lds, fixture);
@@ -229,6 +234,12 @@ void test_cli(const std::filesystem::path& exe)
     require(!std::filesystem::exists(bad_cpu_rice_partition_order), "CPU --rice-partition-order rejection wrote output");
     run_fails(shell_quote(exe) + " compress --threads 2 " + shell_quote(lds) + " " + shell_quote(bad_cpu_threads));
     require(!std::filesystem::exists(bad_cpu_threads), "CPU --threads rejection wrote output");
+    run_fails(shell_quote(exe) + " compress --device 0 " + shell_quote(lds) + " " + shell_quote(bad_cpu_device));
+    require(!std::filesystem::exists(bad_cpu_device), "CPU --device rejection wrote output");
+    run_fails(shell_quote(exe) + " compress --backend native-fixed --device 0 " + shell_quote(lds) + " " + shell_quote(bad_native_device));
+    require(!std::filesystem::exists(bad_native_device), "native --device rejection wrote output");
+    run_fails(shell_quote(exe) + " compress --backend native-fixed --opencl-device 0 " + shell_quote(lds) + " " + shell_quote(bad_native_opencl_device));
+    require(!std::filesystem::exists(bad_native_opencl_device), "native --opencl-device rejection wrote output");
     run_ok("cd " + shell_quote(temp_dir) + " && " + shell_quote(exe) + " compress --backend native-fixed default-name.lds");
     require(std::filesystem::exists(default_native_fixed), "native-fixed default output name was not .flac.ldf");
     run_ok("cd " + shell_quote(temp_dir) + " && " + shell_quote(exe) + " compress --backend fixed-rice alias-name.lds");
@@ -253,6 +264,10 @@ void test_cli(const std::filesystem::path& exe)
     require(read_file(empty_native_fixed_out).empty(), "empty native-fixed FLAC produced decoded LDS bytes");
     run_fails(shell_quote(exe) + " compress --backend opencl " + shell_quote(lds) + " " + shell_quote(opencl_output));
     require(!std::filesystem::exists(opencl_output), "unimplemented OpenCL backend wrote output");
+    run_fails(shell_quote(exe) + " compress --backend opencl --device nope " + shell_quote(lds) + " " + shell_quote(bad_opencl_device));
+    require(!std::filesystem::exists(bad_opencl_device), "invalid OpenCL device index wrote output");
+    run_fails(shell_quote(exe) + " compress --backend opencl --container ogg " + shell_quote(lds) + " " + shell_quote(bad_opencl_container));
+    require(!std::filesystem::exists(bad_opencl_container), "OpenCL Ogg rejection wrote output");
     run_ok(shell_quote(exe) + " bench --threads 1,2 " + shell_quote(lds));
     run_ok(shell_quote(exe) + " bench --threads 1 --frame-samples 2048 --lpc-order 12 --lpc-precision 12 --rice-partition-order 5 " + shell_quote(lds));
     run_ok(shell_quote(exe) + " bench --threads 1,2 --frame-samples 1024,2048 --lpc-order 0,8 --lpc-precision 10,12 --rice-partition-order 0,4 " + shell_quote(lds));
