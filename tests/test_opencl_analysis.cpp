@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <exception>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -63,6 +64,23 @@ std::vector<std::int32_t> make_lpc_friendly_samples()
     return samples;
 }
 
+std::vector<std::int32_t> make_lpc_friendly_alternate_samples()
+{
+    constexpr double kPi = 3.14159265358979323846;
+    std::vector<std::int32_t> samples;
+    samples.reserve(512);
+    for (int i = 0; i < 512; ++i) {
+        const double sample =
+            (std::sin((2.0 * kPi * (i + 3)) / 37.0) * 9000.0) +
+            (std::cos((2.0 * kPi * i) / 17.0) * 5200.0) +
+            (static_cast<double>((i % 19) - 9) * 96.0);
+        auto quantized = static_cast<int>(std::lround(sample / 64.0)) * 64;
+        quantized = std::clamp(quantized, -32768, 32704);
+        samples.push_back(quantized);
+    }
+    return samples;
+}
+
 std::optional<std::size_t> first_available_opencl_device_index()
 {
     if (!ldcompress::opencl_support_built()) {
@@ -110,6 +128,21 @@ ldcompress::FlacFrameInfo make_fixed_only_frame_info(unsigned max_rice_partition
         .bits_per_sample = 16,
         .max_lpc_order = 0,
         .lpc_coefficient_precision = 12,
+        .max_rice_partition_order = max_rice_partition_order,
+    };
+}
+
+ldcompress::FlacFrameInfo make_lpc_frame_info(
+    unsigned max_lpc_order,
+    unsigned lpc_coefficient_precision,
+    unsigned max_rice_partition_order)
+{
+    return ldcompress::FlacFrameInfo {
+        .frame_number = 0,
+        .sample_rate = 40000,
+        .bits_per_sample = 16,
+        .max_lpc_order = max_lpc_order,
+        .lpc_coefficient_precision = lpc_coefficient_precision,
         .max_rice_partition_order = max_rice_partition_order,
     };
 }
@@ -192,6 +225,54 @@ ldcompress::opencl_detail::OpenClMonoAnalysisTaskPlan make_single_lpc_task_plan(
     plan.selected_tasks.push_back(0);
     plan.residual_tasks_per_frame = 1;
     plan.estimate_tasks_per_frame = 1;
+    return plan;
+}
+
+ldcompress::opencl_detail::OpenClMonoAnalysisTaskPlan make_lpc_order_task_plan(
+    const std::vector<std::int32_t>& samples,
+    std::size_t frame_count,
+    const ldcompress::opencl_detail::OpenClMonoAnalysisTaskOptions& options,
+    unsigned lpc_coefficient_precision,
+    unsigned max_rice_partition_order,
+    std::vector<ldcompress::opencl_detail::FlacClSubframeTask>& expected_tasks,
+    std::vector<ldcompress::opencl_detail::FlacClSubframeTask>& expected_best_tasks)
+{
+    using namespace ldcompress::opencl_detail;
+
+    OpenClMonoAnalysisTaskPlan plan;
+    plan.residual_tasks_per_frame = options.max_lpc_order;
+    plan.estimate_tasks_per_frame = options.max_lpc_order;
+
+    for (std::size_t frame = 0; frame < frame_count; ++frame) {
+        const auto frame_task_base = plan.residual_tasks.size();
+        auto best_index = expected_tasks.size();
+        auto best_size = std::numeric_limits<std::int32_t>::max();
+        for (unsigned order = 1; order <= options.max_lpc_order; ++order) {
+            const auto expected = analyze_mono_lpc_exact_task(
+                samples, frame, options, order, lpc_coefficient_precision,
+                max_rice_partition_order);
+            require(expected.has_value(), "scalar exact LPC per-order task was not produced");
+
+            auto input = *expected;
+            input.data.size = 16 * static_cast<int>(options.frame_samples);
+            input.data.abits = 0;
+            input.data.porder = 99;
+
+            if (expected->data.size < best_size) {
+                best_index = expected_tasks.size();
+                best_size = expected->data.size;
+            }
+
+            plan.residual_tasks.push_back(input);
+            expected_tasks.push_back(*expected);
+        }
+
+        for (std::size_t i = 0; i < plan.estimate_tasks_per_frame; ++i) {
+            plan.selected_tasks.push_back(static_cast<std::int32_t>(frame_task_base + i));
+        }
+        expected_best_tasks.push_back(expected_tasks.at(best_index));
+    }
+
     return plan;
 }
 
@@ -501,6 +582,57 @@ void test_scalar_exact_lpc_task_analysis()
         "scalar exact LPC task analysis returned a task for a too-small frame");
 }
 
+void test_scalar_exact_lpc_multi_order_task_plan()
+{
+    using namespace ldcompress::opencl_detail;
+
+    OpenClMonoAnalysisTaskOptions options;
+    options.frame_samples = 512;
+    options.max_lpc_order = 12;
+    options.include_constant = false;
+    options.min_fixed_order = 0;
+    options.max_fixed_order = 4;
+
+    auto samples = make_lpc_friendly_samples();
+    const auto alternate = make_lpc_friendly_alternate_samples();
+    samples.insert(samples.end(), alternate.begin(), alternate.end());
+
+    std::vector<FlacClSubframeTask> expected_tasks;
+    std::vector<FlacClSubframeTask> expected_best_tasks;
+    const auto plan = make_lpc_order_task_plan(
+        samples, 2, options, 12, 5, expected_tasks, expected_best_tasks);
+
+    require(plan.residual_tasks_per_frame == 12,
+        "scalar exact LPC multi-order residual task count mismatch");
+    require(plan.estimate_tasks_per_frame == 12,
+        "scalar exact LPC multi-order estimate task count mismatch");
+    require(plan.residual_tasks.size() == 24,
+        "scalar exact LPC multi-order plan size mismatch");
+    require(plan.selected_tasks.size() == 24,
+        "scalar exact LPC multi-order selected task size mismatch");
+    require(expected_tasks.size() == 24,
+        "scalar exact LPC multi-order expected task size mismatch");
+    require(expected_best_tasks.size() == 2,
+        "scalar exact LPC multi-order expected best size mismatch");
+
+    const auto frame_info = make_lpc_frame_info(12, 12, 5);
+    for (std::size_t frame = 0; frame < 2; ++frame) {
+        const auto offset = frame * static_cast<std::size_t>(options.frame_samples);
+        const std::vector<std::int32_t> frame_samples(
+            samples.begin() + static_cast<std::ptrdiff_t>(offset),
+            samples.begin() + static_cast<std::ptrdiff_t>(offset + options.frame_samples));
+        const auto best_lpc = ldcompress::analyze_mono_lpc_frame(frame_samples, frame_info);
+        require(best_lpc.has_value(),
+            "native LPC analysis did not return a multi-order best candidate");
+        require(expected_best_tasks[frame].data.residualOrder ==
+                static_cast<int>(best_lpc->order),
+            "scalar exact LPC multi-order best order mismatch");
+        require(expected_best_tasks[frame].data.size ==
+                static_cast<int>(best_lpc->estimated_bits),
+            "scalar exact LPC multi-order best size mismatch");
+    }
+}
+
 void test_opencl_lpc_analysis_input_validation()
 {
     using namespace ldcompress::opencl_detail;
@@ -744,6 +876,55 @@ void test_opencl_lpc_analysis_smoke()
         "OpenCL exact LPC best task diverged from scalar oracle");
 }
 
+void test_opencl_lpc_multi_order_analysis_smoke()
+{
+    using namespace ldcompress::opencl_detail;
+
+    if (!ldcompress::opencl_support_built()) {
+        std::cout << "OpenCL LPC multi-order analysis smoke skipped: OpenCL support was not built\n";
+        return;
+    }
+
+    const auto device_index = first_available_opencl_device_index();
+    if (!device_index.has_value()) {
+        std::cout << "OpenCL LPC multi-order analysis smoke skipped: no available OpenCL device\n";
+        return;
+    }
+
+    OpenClMonoAnalysisTaskOptions options;
+    options.frame_samples = 512;
+    options.max_lpc_order = 12;
+    options.include_constant = false;
+    options.min_fixed_order = 0;
+    options.max_fixed_order = 4;
+
+    auto samples = make_lpc_friendly_samples();
+    const auto alternate = make_lpc_friendly_alternate_samples();
+    samples.insert(samples.end(), alternate.begin(), alternate.end());
+
+    std::vector<FlacClSubframeTask> expected_tasks;
+    std::vector<FlacClSubframeTask> expected_best_tasks;
+    const auto plan = make_lpc_order_task_plan(
+        samples, 2, options, 12, 5, expected_tasks, expected_best_tasks);
+
+    const auto result = run_opencl_mono_lpc_analysis(samples, plan, device_index, 5);
+    require(!result.device_name.empty(),
+        "OpenCL LPC multi-order result did not report a device");
+    require(result.analyzed_tasks.size() == expected_tasks.size(),
+        "OpenCL LPC multi-order analyzed task count mismatch");
+    require(result.best_tasks.size() == expected_best_tasks.size(),
+        "OpenCL LPC multi-order best task count mismatch");
+
+    for (std::size_t i = 0; i < expected_tasks.size(); ++i) {
+        require_lpc_task_matches(result.analyzed_tasks[i], expected_tasks[i],
+            "OpenCL exact LPC multi-order analyzed task diverged from scalar oracle");
+    }
+    for (std::size_t i = 0; i < expected_best_tasks.size(); ++i) {
+        require_lpc_task_matches(result.best_tasks[i], expected_best_tasks[i],
+            "OpenCL exact LPC multi-order best task diverged from scalar oracle");
+    }
+}
+
 }  // namespace
 
 int main()
@@ -756,10 +937,12 @@ int main()
         test_scalar_exact_fixed_constant_analysis();
         test_scalar_exact_rice_partition_search();
         test_scalar_exact_lpc_task_analysis();
+        test_scalar_exact_lpc_multi_order_task_plan();
         test_opencl_lpc_analysis_input_validation();
         test_opencl_best_method_smoke();
         test_opencl_fixed_constant_analysis_smoke();
         test_opencl_lpc_analysis_smoke();
+        test_opencl_lpc_multi_order_analysis_smoke();
     } catch (const std::exception& ex) {
         std::cerr << "test_opencl_analysis: " << ex.what() << '\n';
         return 1;
