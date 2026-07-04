@@ -13,7 +13,7 @@ runtime on `ffmpeg`, `.NET`, Mono, `flaldf`, `pv`, `openssl`, `xxd`, or an
 external `ld-lds-converter` command. System libraries such as `libFLAC`,
 `libogg`, and OpenCL are acceptable.
 
-## Current State
+## Reference And Legacy State
 
 - `ld-compress` is a shell script that orchestrates several external tools.
 - CPU compression currently streams LDS input through `ld-lds-converter -u`, then
@@ -30,6 +30,77 @@ external `ld-lds-converter` command. System libraries such as `libFLAC`,
 - `ld-decode-tools/` contains the LDS sample converter logic. The relevant
   conversion itself is small and should be lifted into this project without
   bringing along the full Qt-based `ld-decode-tools` build.
+- `reference/testdata/` contains ignored real `.lds` fixtures from
+  `ld-decode-testdata-ci` for opt-in regression and tuning sweeps.
+- `reference/decode-orc/` contains the downstream consumer expected to decode
+  compressed files. Treat it as a compatibility reference.
+- `reference/flac/` contains the Xiph.org FLAC reference source. Treat it as an
+  implementation reference, not vendored project code.
+- `reference/flac-test-files/` contains reference FLAC-encoded files for future
+  decoder/compatibility regression work.
+- `reference/rfc9639.txt` is the local copy of the FLAC RFC and should be treated
+  as the specification reference for native FLAC bitstream work.
+- All reference trees and legacy helper inputs remain ignored by Git and should
+  not be edited unless the change is intentional and documented.
+
+## Implementation Checkpoint - 2026-07-04
+
+The project now has a committed C++20/CMake CLI named `ld-compress-ng`.
+
+Implemented:
+
+- Native LDS 10-bit pack/unpack conversion.
+- CPU compression to Ogg FLAC `.ldf` using `libFLAC` and `libogg`.
+- Decompression from Ogg FLAC and native FLAC to packed `.lds`.
+- MD5-based verification, optionally against an original `.lds`.
+- `compress`, `decompress`, `verify`, `convert`, `bench`, and `devices`
+  subcommands.
+- Optional OpenCL device enumeration. OpenCL compression remains reserved and
+  fails before writing output.
+- Native FLAC writer primitives, STREAMINFO, frame headers, CRC handling, and
+  native `.flac.ldf` output.
+- Experimental `native-verbatim` backend.
+- Experimental scalar `native-fixed` backend with constant, fixed/Rice,
+  LPC/Rice, and verbatim subframe selection.
+- Native wasted-bits support for the low zero bits in LDS-derived PCM.
+- Rice partition search, scalar LPC order search, LPC coefficient precision
+  control, and frame sample count control.
+- Frame-level threading for native FLAC encoding with ordered output and bounded
+  in-flight work.
+- Native decision stats for subframe type, fixed/LPC predictor order, Rice
+  partition order, and wasted-bit counts.
+- Generated test fixtures, opt-in real-fixture regression tests, and a
+  real-fixture tuning sweep helper at `tools/sweep_real_fixtures.py`.
+
+Current default native tuning values:
+
+- Frame samples: `4608`.
+- Maximum LPC order: `12`.
+- LPC coefficient precision: `10`.
+- Maximum Rice partition order: `4`.
+- Thread count: `1`, unless explicitly set with `--threads`.
+
+Real-fixture sweep result:
+
+- Broad sweep artifact paths are under ignored `build/real-fixture-sweeps/`.
+- Current broad sweep winner across the six local real fixtures:
+  `threads=8`, `frame=4608`, `lpc=12`, `prec=10`, `rice=4`.
+- Aggregate native-fixed size from that sweep: `81,381,147` bytes, still about
+  `+1.62%` larger than CPU/libFLAC for the same fixtures.
+- This justified changing the native LPC coefficient precision default from
+  `12` to `10`, but also shows that the native scalar encoder still needs
+  algorithmic work rather than only knob tuning.
+
+Immediate engineering focus:
+
+- Improve native LPC/Rice encoding quality using `reference/rfc9639.txt`,
+  `reference/flac/`, and `reference/decode-orc/` as read-only references.
+- Validate that native `.flac.ldf` files remain compatible with libFLAC and,
+  when practical, with `reference/decode-orc/`.
+- Add targeted tests from `reference/flac-test-files/` only when they are useful
+  for this compressor's native FLAC surface.
+- Keep CPU/libFLAC Ogg `.ldf` as the production default until native/GPU output
+  is both compatible and competitive.
 
 ## Recommendation
 
@@ -54,11 +125,11 @@ or the future GPU backend.
 The CLI should use explicit subcommands rather than mirroring the old option soup.
 
 ```text
-ld-compress-ng compress INPUT [OUTPUT]
+ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] INPUT [OUTPUT]
 ld-compress-ng decompress INPUT [OUTPUT]
 ld-compress-ng verify INPUT [--source ORIGINAL.lds]
 ld-compress-ng convert --pack|--unpack INPUT [OUTPUT]
-ld-compress-ng bench INPUT
+ld-compress-ng bench [--threads 1,4,8] INPUT
 ld-compress-ng devices
 ```
 
@@ -77,7 +148,9 @@ Initial behavior:
   test fixtures.
 - `bench` compares the CPU/libFLAC path with native FLAC backends across selected
   thread counts, using temporary outputs so performance and compression-ratio
-  checks do not require hand-managed files.
+  checks do not require hand-managed files. It supports native tuning sweeps over
+  frame size, LPC order, LPC coefficient precision, Rice partition order, and
+  thread count.
 - `devices` lists available OpenCL platforms/devices when OpenCL support is
   built, and remains an enumeration scaffold until GPU compression exists.
 
@@ -95,14 +168,14 @@ provided.
 
 ### Phase 1: CPU Path and Test Harness
 
-- Create a focused C++20/CMake project at the repository root.
+- Create a focused C++20/CMake project at the repository root. Done.
 - Implement native LDS packing and unpacking from the `ld-decode-tools`
-  converter algorithm, without Qt.
-- Implement CPU Ogg FLAC compression via `libFLAC` and `libogg`.
+  converter algorithm, without Qt. Done.
+- Implement CPU Ogg FLAC compression via `libFLAC` and `libogg`. Done.
 - Implement decompression for the formats needed to round-trip current CPU
-  output.
-- Implement `compress`, `decompress`, `verify`, and `convert`.
-- Add generated test fixtures so tests do not require real RF captures.
+  output. Done for Ogg FLAC and native FLAC.
+- Implement `compress`, `decompress`, `verify`, and `convert`. Done.
+- Add generated test fixtures so tests do not require real RF captures. Done.
 - Keep the baseline CPU implementation portable and scalar until correctness and
   compatibility are established on both arm64 and amd64/x86_64.
 
@@ -113,30 +186,33 @@ provided.
   structs, or FlaLDF subframe internals through the public API.
 - Build native FLAC writer primitives before porting the OpenCL encoder,
   starting with bit writing, CRC helpers, STREAMINFO, and verbatim frame output.
+  Done for the scalar native writer path.
 - Add an experimental native-FLAC verbatim backend to exercise the writer through
-  the real CLI before introducing compressed subframes or GPU work.
+  the real CLI before introducing compressed subframes or GPU work. Done.
 - Add a scalar fixed-predictor/Rice backend as the first actually compressed
   native FLAC output path, then extend it with conservative Rice partition
-  search before optimized partition ranges or GPU residual work.
+  search before optimized partition ranges or GPU residual work. Done.
 - Add scalar subframe selection so native FLAC can choose constant, fixed/Rice,
-  or verbatim subframes per frame before adding heavier predictors.
+  or verbatim subframes per frame before adding heavier predictors. Done.
 - Add FLAC wasted-bits support so native subframes can avoid storing the low
-  zero bits that are inherent in unpacked 10-bit LDS samples.
+  zero bits that are inherent in unpacked 10-bit LDS samples. Done.
 - Add scalar LPC/Rice subframes as the first heavier predictor path before
-  porting the FlaLDF/OpenCL task scheduler.
+  porting the FlaLDF/OpenCL task scheduler. Done.
 - Add native tuning controls for frame sample count, maximum LPC order, LPC
   coefficient precision, and maximum Rice partition order so FlaLDF-style
-  settings can be benchmarked before changing defaults.
+  settings can be benchmarked before changing defaults. Done.
 - Add native compression stats for frame/subframe decisions so optimization work
-  is driven by fixture behavior rather than guesses.
+  is driven by fixture behavior rather than guesses. Done.
 - Add opt-in frame-level threading for native FLAC encoding. Keep output ordered
   by frame number and keep bounded in-flight work so large captures do not turn
-  into unbounded memory use.
+  into unbounded memory use. Done.
+- Improve scalar native LPC/Rice compression enough to close the remaining
+  CPU/libFLAC gap on real fixtures before starting the OpenCL port in earnest.
 - Port FlaLDF host-side encoder logic to native C++.
 - Reuse or adapt the existing OpenCL kernel from `FlaLDF/`.
 - Extend the initial OpenCL platform/device enumeration into explicit device
   selection for GPU compression.
-- Add the `devices` subcommand.
+- Add the `devices` subcommand. Done for enumeration scaffolding.
 - Preserve current GPU-style native FLAC `.flac.ldf` output unless a deliberate
   format migration is chosen later.
 - Treat Metal support on macOS as a later optional backend after the OpenCL path
@@ -152,10 +228,11 @@ provided.
   comparisons across arm64 and amd64/x86_64 hosts.
 - Keep an opt-in real-fixture regression suite for ignored reference captures so
   default tests remain self-contained while native tuning has a repeatable
-  scoreboard.
+  scoreboard. Done.
 - Use benchmark sweeps across frame sizes, LPC orders, LPC coefficient
   precisions, Rice partition orders, and thread counts before changing native
-  compression defaults.
+  compression defaults. Done for the first default precision change; repeat
+  before future default changes.
 - Document compatibility with historical `.ldf`, `.raw.oga`, and `.flac.ldf`
   files.
 - Consider CPU-specific optimizations such as SIMD or tuned block processing only
@@ -191,20 +268,21 @@ provided.
 - Stay inside `/Users/epowell/Development/laserdisc/compress` unless explicit
   permission is granted first.
 - Do not edit vendored or cloned source trees (`FlaLDF/`, `ld-decode-tools/`)
-  unless the change is intentional and documented.
+  or ignored reference trees under `reference/` unless the change is intentional
+  and documented.
 - Preserve original license notices when lifting code or porting implementation
   details.
 - Keep Linux and macOS compatibility as a first-order constraint, including both
   arm64 and amd64/x86_64 CPU targets.
-- Treat `ld-compress`, `FlaLDF/`, and `ld-decode-tools/` as references until the
-  replacement has tests proving compatible behavior.
+- Treat `ld-compress`, `FlaLDF/`, `ld-decode-tools/`, and `reference/` contents
+  as references until the replacement has tests proving compatible behavior.
 - Keep `AGENTS.md` reserved for contributor or agent operating rules, not the
   full project design.
 
-## Optional Follow-Up
+## Agent Operating Notes
 
-Add a short top-level `AGENTS.md` later with only operational instructions:
-
-- Stay within this project tree unless permission is requested first.
-- Do not edit vendored source except intentionally.
-- Read `PROJECT_PLAN.md` before implementation work.
+The top-level `AGENTS.md` exists and is intentionally short. It contains only
+operator rules: read this plan before implementation, stay inside the project
+tree unless permission is granted, avoid unintentional edits to reference
+sources, preserve license notices, and keep explanations technically direct for
+an experienced UNIX/Linux administrator.
