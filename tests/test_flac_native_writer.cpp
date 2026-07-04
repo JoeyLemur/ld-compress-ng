@@ -319,6 +319,34 @@ using FrameWriter = ldcompress::FlacSubframeDecision (*)(
     const std::vector<std::int32_t>&,
     const ldcompress::FlacFrameInfo&);
 
+ldcompress::FlacFrameInfo make_frame_info(
+    unsigned max_lpc_order = 12,
+    unsigned lpc_coefficient_precision = 10,
+    unsigned max_rice_partition_order = 4)
+{
+    return ldcompress::FlacFrameInfo {
+        .frame_number = 0,
+        .sample_rate = 40000,
+        .bits_per_sample = 16,
+        .max_lpc_order = max_lpc_order,
+        .lpc_coefficient_precision = lpc_coefficient_precision,
+        .max_rice_partition_order = max_rice_partition_order,
+    };
+}
+
+void require_same_decision(
+    const ldcompress::FlacSubframeDecision& actual,
+    const ldcompress::FlacSubframeDecision& expected,
+    const char* label)
+{
+    require(actual.kind == expected.kind, label);
+    require(actual.fixed_order == expected.fixed_order, label);
+    require(actual.lpc_order == expected.lpc_order, label);
+    require(actual.rice_partition_order == expected.rice_partition_order, label);
+    require(actual.wasted_bits == expected.wasted_bits, label);
+    require(actual.estimated_bits == expected.estimated_bits, label);
+}
+
 ldcompress::FlacSubframeDecision write_fixed_rice_file(
     const std::filesystem::path& flac_path,
     const std::vector<std::int32_t>& samples,
@@ -345,15 +373,34 @@ ldcompress::FlacSubframeDecision write_fixed_rice_file(
     };
     ldcompress::write_native_flac_streaminfo(output, stream_info);
 
-    const ldcompress::FlacFrameInfo frame_info {
-        .frame_number = 0,
-        .sample_rate = 40000,
-        .bits_per_sample = 16,
-        .max_lpc_order = max_lpc_order,
-        .lpc_coefficient_precision = lpc_coefficient_precision,
-        .max_rice_partition_order = max_rice_partition_order,
-    };
+    const auto frame_info = make_frame_info(
+        max_lpc_order, lpc_coefficient_precision, max_rice_partition_order);
     return writer(output, samples, frame_info);
+}
+
+void verify_best_analysis_matches_writer(
+    const std::filesystem::path& flac_path,
+    const std::vector<std::int32_t>& samples,
+    const char* label,
+    unsigned max_lpc_order = 12,
+    unsigned lpc_coefficient_precision = 10,
+    unsigned max_rice_partition_order = 4)
+{
+    const auto written = write_fixed_rice_file(
+        flac_path, samples, ldcompress::write_mono_best_frame, max_lpc_order,
+        lpc_coefficient_precision, max_rice_partition_order);
+    const auto analyzed = ldcompress::analyze_mono_best_frame(samples, make_frame_info(
+        max_lpc_order, lpc_coefficient_precision, max_rice_partition_order));
+    require_same_decision(analyzed, written, label);
+
+    const auto second_path = flac_path.parent_path() /
+        (flac_path.filename().string() + ".second");
+    const auto written_after_analysis = write_fixed_rice_file(
+        second_path, samples, ldcompress::write_mono_best_frame, max_lpc_order,
+        lpc_coefficient_precision, max_rice_partition_order);
+    require_same_decision(written_after_analysis, written, label);
+    require(read_file(second_path) == read_file(flac_path),
+        "native best analysis changed subsequent writer output bytes");
 }
 
 void verify_fixed_rice_round_trip(
@@ -601,6 +648,37 @@ void test_native_best_subframe_selection()
     std::filesystem::remove_all(temp_dir);
 }
 
+void test_native_subframe_analysis_matches_writer()
+{
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+        ("ld-compress-ng-native-analysis-test-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directory(temp_dir);
+
+    verify_best_analysis_matches_writer(temp_dir / "constant.flac",
+        std::vector<std::int32_t>(16, -4096),
+        "native best/constant analysis did not match writer decision");
+    verify_best_analysis_matches_writer(temp_dir / "fixed.flac", {
+        0, 64, 128, 192, 256, 320, 384, 448,
+        512, 576, 640, 704, 768, 832, 896, 960,
+    },
+        "native best/fixed analysis did not match writer decision");
+    verify_best_analysis_matches_writer(temp_dir / "small.flac",
+        make_samples(),
+        "native best/small analysis did not match writer decision");
+    verify_best_analysis_matches_writer(temp_dir / "best-verbatim.flac", {
+        32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
+        32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
+    },
+        "native best/verbatim analysis did not match writer decision");
+    verify_best_analysis_matches_writer(temp_dir / "best-lpc.flac",
+        make_lpc_friendly_samples(),
+        "native best/LPC analysis did not match writer decision",
+        12, 12, 5);
+
+    std::filesystem::remove_all(temp_dir);
+}
+
 void test_native_streaminfo_and_frame_header_contract()
 {
     const auto temp_dir = std::filesystem::temp_directory_path() /
@@ -746,6 +824,7 @@ int main()
         test_native_rice_partition_order_limit();
         test_native_lpc_precision_limit();
         test_native_best_subframe_selection();
+        test_native_subframe_analysis_matches_writer();
         test_native_streaminfo_and_frame_header_contract();
         test_native_streaminfo_md5_mismatch_is_rejected();
         test_native_streaminfo_total_samples_mismatch_is_rejected();

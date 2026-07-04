@@ -46,6 +46,10 @@ struct FlacSubframeDecision {
 
 void write_native_flac_streaminfo(std::ostream& output, const FlacStreamInfo& info);
 
+FlacSubframeDecision analyze_mono_best_frame(
+    const std::vector<std::int32_t>& samples,
+    const FlacFrameInfo& info);
+
 FlacSubframeDecision write_mono_verbatim_frame(
     std::ostream& output,
     const std::vector<std::int32_t>& samples,

@@ -288,6 +288,30 @@ struct LpcRiceSubframe {
     std::uint64_t bits = 0;
 };
 
+FlacSubframeDecision fixed_rice_decision(const FixedRiceSubframe& subframe)
+{
+    return FlacSubframeDecision {
+        .kind = FlacSubframeKind::FixedRice,
+        .fixed_order = subframe.order,
+        .lpc_order = 0,
+        .rice_partition_order = subframe.partition_order,
+        .wasted_bits = subframe.wasted_bits,
+        .estimated_bits = subframe.bits,
+    };
+}
+
+FlacSubframeDecision lpc_rice_decision(const LpcRiceSubframe& subframe)
+{
+    return FlacSubframeDecision {
+        .kind = FlacSubframeKind::LpcRice,
+        .fixed_order = 0,
+        .lpc_order = subframe.order,
+        .rice_partition_order = subframe.partition_order,
+        .wasted_bits = subframe.wasted_bits,
+        .estimated_bits = subframe.bits,
+    };
+}
+
 struct QuantizedLpcCoefficients {
     int quantization_shift = 0;
     std::vector<std::int32_t> coefficients;
@@ -330,6 +354,33 @@ std::uint64_t constant_subframe_bits(unsigned bits_per_sample, unsigned wasted_b
 {
     return constant_subframe_bits(bits_per_sample - wasted_bits) +
         subframe_wasted_bits_overhead(wasted_bits);
+}
+
+FlacSubframeDecision verbatim_decision(
+    std::size_t block_size,
+    unsigned bits_per_sample,
+    unsigned wasted_bits)
+{
+    return FlacSubframeDecision {
+        .kind = FlacSubframeKind::Verbatim,
+        .fixed_order = 0,
+        .lpc_order = 0,
+        .rice_partition_order = 0,
+        .wasted_bits = wasted_bits,
+        .estimated_bits = verbatim_subframe_bits(block_size, bits_per_sample, wasted_bits),
+    };
+}
+
+FlacSubframeDecision constant_decision(unsigned bits_per_sample, unsigned wasted_bits)
+{
+    return FlacSubframeDecision {
+        .kind = FlacSubframeKind::Constant,
+        .fixed_order = 0,
+        .lpc_order = 0,
+        .rice_partition_order = 0,
+        .wasted_bits = wasted_bits,
+        .estimated_bits = constant_subframe_bits(bits_per_sample, wasted_bits),
+    };
 }
 
 unsigned sample_trailing_zero_bits(std::int32_t sample, unsigned bits_per_sample)
@@ -985,13 +1036,7 @@ FlacSubframeDecision write_fixed_rice_frame(
         throw std::runtime_error("internal FLAC residual partition accounting error");
     }
     write_frame_with_body(output, subframe.shifted_samples.size(), info, frame_body);
-    return FlacSubframeDecision {
-        .kind = FlacSubframeKind::FixedRice,
-        .fixed_order = subframe.order,
-        .rice_partition_order = subframe.partition_order,
-        .wasted_bits = subframe.wasted_bits,
-        .estimated_bits = subframe.bits,
-    };
+    return fixed_rice_decision(subframe);
 }
 
 FlacSubframeDecision write_lpc_rice_frame(
@@ -1041,14 +1086,7 @@ FlacSubframeDecision write_lpc_rice_frame(
         throw std::runtime_error("internal FLAC LPC residual partition accounting error");
     }
     write_frame_with_body(output, subframe.shifted_samples.size(), info, frame_body);
-    return FlacSubframeDecision {
-        .kind = FlacSubframeKind::LpcRice,
-        .fixed_order = 0,
-        .lpc_order = subframe.order,
-        .rice_partition_order = subframe.partition_order,
-        .wasted_bits = subframe.wasted_bits,
-        .estimated_bits = subframe.bits,
-    };
+    return lpc_rice_decision(subframe);
 }
 
 }  // namespace
@@ -1082,6 +1120,39 @@ void write_native_flac_streaminfo(std::ostream& output, const FlacStreamInfo& in
     if (!output) {
         throw std::runtime_error("failed to write native FLAC STREAMINFO MD5");
     }
+}
+
+FlacSubframeDecision analyze_mono_best_frame(
+    const std::vector<std::int32_t>& samples,
+    const FlacFrameInfo& info)
+{
+    if (samples.empty()) {
+        throw std::runtime_error("cannot analyze an empty FLAC frame");
+    }
+    for (const auto sample : samples) {
+        validate_sample(sample, info.bits_per_sample);
+    }
+
+    if (all_samples_equal(samples)) {
+        const auto wasted_bits = common_wasted_bits(samples, info.bits_per_sample);
+        return constant_decision(info.bits_per_sample, wasted_bits);
+    }
+
+    const auto wasted_bits = common_wasted_bits(samples, info.bits_per_sample);
+    const auto fixed = choose_fixed_rice_subframe(
+        samples, info.bits_per_sample, info.max_rice_partition_order);
+    const auto lpc = choose_lpc_rice_subframe(
+        samples, info.bits_per_sample, info.max_lpc_order,
+        info.lpc_coefficient_precision, info.max_rice_partition_order);
+    const auto verbatim_bits = verbatim_subframe_bits(
+        samples.size(), info.bits_per_sample, wasted_bits);
+    if (lpc.bits < fixed.bits && lpc.bits < verbatim_bits) {
+        return lpc_rice_decision(lpc);
+    }
+    if (fixed.bits < verbatim_bits) {
+        return fixed_rice_decision(fixed);
+    }
+    return verbatim_decision(samples.size(), info.bits_per_sample, wasted_bits);
 }
 
 FlacSubframeDecision write_mono_verbatim_frame(

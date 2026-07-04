@@ -71,6 +71,8 @@ Implemented:
 - Native wasted-bits support for the low zero bits in LDS-derived PCM.
 - Rice partition search, scalar LPC order search, LPC coefficient precision
   control, and frame sample count control.
+- Public scalar `analyze_mono_best_frame()` decision surface for future OpenCL
+  analysis parity tests, without exposing private residual or subframe structs.
 - Frame-level threading for native FLAC encoding with ordered output and bounded
   in-flight work.
 - Native decision stats for subframe type, fixed/LPC predictor order, Rice
@@ -230,6 +232,11 @@ provided.
   wasted-bits, fixed/LPC, Rice partition, and best-method decisions against the
   scalar native-fixed encoder before exposing GPU residual/Rice bitstream
   writing.
+- For the first mono OpenCL analysis slice, feed host-unpacked `int32_t` mono
+  samples directly, skip FLACCL stereo/channel decorrelation, mirror the
+  FLACCL task struct layout exactly, and run the analysis kernels through
+  best-method selection only. Treat FLACCL residual-size estimates as heuristic
+  until parity with the scalar exact-cost selector is characterized.
 - Extend the initial OpenCL platform/device enumeration into explicit device
   selection for GPU compression. Done for CLI plumbing and metadata selection;
   real compression still awaits the FlaLDF-derived encoder port.
@@ -291,6 +298,9 @@ provided.
 - Before GPU output is enabled, add analysis-parity tests that run the
   FlaLDF-derived mono OpenCL kernels against generated frames and compare their
   selected subframe decisions with the scalar native-fixed path.
+- Keep scalar analysis parity coverage in `test_flac_native_writer` so
+  `analyze_mono_best_frame()` and `write_mono_best_frame()` agree before any
+  OpenCL analyzer result is trusted.
 
 ## Constraints
 
