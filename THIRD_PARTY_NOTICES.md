@@ -5,6 +5,31 @@ CPU/Ogg FLAC path. The native FLAC encoder is project code, but its FLAC
 analysis work is checked against the Xiph.org FLAC reference implementation
 under `reference/flac/`.
 
+The experimental OpenCL analysis path includes a reduced, locally modified
+kernel slice derived from CUETools.FLACCL. Preserve the LGPL notice in the
+kernel source and keep local modification notes when changing that code. A copy
+of the LGPL 2.1 license text is provided at `LICENSES/LGPL-2.1-or-later.txt`.
+
+## CUETools.FLACCL OpenCL Kernels
+
+Portions of `src/opencl_analysis.cpp` are derived from the CUETools.FLACCL
+OpenCL encoder kernels for mono wasted-bits and residual-size analysis.
+
+```text
+CUETools.FLACCL: FLAC audio encoder using OpenCL
+Copyright (c) 2010-2022 Gregory S. Chudov
+
+This library is free software; you can redistribute it and/or
+modify it under the terms of the GNU Lesser General Public
+License as published by the Free Software Foundation; either
+version 2.1 of the License, or (at your option) any later version.
+
+This library is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+Lesser General Public License for more details.
+```
+
 ## Xiph.org FLAC Reference
 
 Portions of the native FLAC analysis and tuning work are informed by the

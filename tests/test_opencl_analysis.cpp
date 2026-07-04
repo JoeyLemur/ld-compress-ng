@@ -7,6 +7,7 @@
 #include <optional>
 #include <stdexcept>
 #include <type_traits>
+#include <vector>
 
 namespace {
 
@@ -26,6 +27,21 @@ void require_throws(Fn&& fn, const char* message)
         return;
     }
     throw std::runtime_error(message);
+}
+
+std::optional<std::size_t> first_available_opencl_device_index()
+{
+    if (!ldcompress::opencl_support_built()) {
+        return std::nullopt;
+    }
+
+    for (const auto& device : ldcompress::list_opencl_devices()) {
+        if (device.available) {
+            return device.flat_index;
+        }
+    }
+
+    return std::nullopt;
 }
 
 void require_common_task_fields(
@@ -196,14 +212,7 @@ void test_opencl_best_method_smoke()
         return;
     }
 
-    std::optional<std::size_t> device_index;
-    for (const auto& device : ldcompress::list_opencl_devices()) {
-        if (device.available) {
-            device_index = device.flat_index;
-            break;
-        }
-    }
-
+    const auto device_index = first_available_opencl_device_index();
     if (!device_index.has_value()) {
         std::cout << "OpenCL best-method smoke skipped: no available OpenCL device\n";
         return;
@@ -239,6 +248,68 @@ void test_opencl_best_method_smoke()
         "OpenCL best-method second frame order mismatch");
 }
 
+void test_opencl_fixed_constant_analysis_smoke()
+{
+    using namespace ldcompress::opencl_detail;
+
+    if (!ldcompress::opencl_support_built()) {
+        std::cout << "OpenCL fixed/constant analysis smoke skipped: OpenCL support was not built\n";
+        return;
+    }
+
+    const auto device_index = first_available_opencl_device_index();
+    if (!device_index.has_value()) {
+        std::cout << "OpenCL fixed/constant analysis smoke skipped: no available OpenCL device\n";
+        return;
+    }
+
+    OpenClMonoAnalysisTaskOptions options;
+    options.frame_samples = 64;
+    options.max_lpc_order = 0;
+    options.include_constant = true;
+    options.min_fixed_order = 0;
+    options.max_fixed_order = 4;
+
+    const auto tasks_per_frame = mono_analysis_tasks_per_frame(options);
+    require(tasks_per_frame == 6, "unexpected fixed/constant task count");
+    const auto plan = build_mono_analysis_task_plan(2, options);
+
+    std::vector<std::int32_t> samples;
+    samples.reserve(128);
+    for (int i = 0; i < 64; ++i) {
+        samples.push_back(1024);
+    }
+    for (int i = 0; i < 64; ++i) {
+        samples.push_back(i * 64);
+    }
+
+    const auto result = run_opencl_mono_fixed_constant_analysis(samples, plan, device_index);
+    require(!result.device_name.empty(), "OpenCL fixed/constant result did not report a device");
+    require(result.analyzed_tasks.size() == 12, "OpenCL analyzed task count mismatch");
+    require(result.best_tasks.size() == 2, "OpenCL fixed/constant best task count mismatch");
+
+    for (std::size_t i = 0; i < tasks_per_frame; ++i) {
+        require(result.analyzed_tasks[i].data.wbits == 10,
+            "constant frame wasted-bits mismatch");
+    }
+    for (std::size_t i = tasks_per_frame; i < tasks_per_frame * 2; ++i) {
+        require(result.analyzed_tasks[i].data.wbits == 6,
+            "linear frame wasted-bits mismatch");
+    }
+
+    require(result.best_tasks[0].data.type == kFlacClSubframeConstant,
+        "constant frame did not select constant task");
+    require(result.best_tasks[0].data.size == 6,
+        "constant frame selected size mismatch");
+
+    require(result.best_tasks[1].data.type == kFlacClSubframeFixed,
+        "linear frame did not select fixed task");
+    require(result.best_tasks[1].data.residualOrder == 2,
+        "linear frame did not select fixed order 2");
+    require(result.best_tasks[1].data.size < 16 * 64,
+        "linear frame fixed task did not beat verbatim baseline");
+}
+
 }  // namespace
 
 int main()
@@ -249,6 +320,7 @@ int main()
         test_small_custom_task_plan();
         test_invalid_options();
         test_opencl_best_method_smoke();
+        test_opencl_fixed_constant_analysis_smoke();
     } catch (const std::exception& ex) {
         std::cerr << "test_opencl_analysis: " << ex.what() << '\n';
         return 1;

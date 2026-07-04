@@ -68,6 +68,12 @@ struct OpenClMonoBestMethodResult {
     std::string device_name;
 };
 
+struct OpenClMonoFixedConstantAnalysisResult {
+    std::vector<FlacClSubframeTask> analyzed_tasks;
+    std::vector<FlacClSubframeTask> best_tasks;
+    std::string device_name;
+};
+
 std::size_t mono_analysis_tasks_per_frame(const OpenClMonoAnalysisTaskOptions& options);
 
 OpenClMonoAnalysisTaskPlan build_mono_analysis_task_plan(
@@ -75,6 +81,11 @@ OpenClMonoAnalysisTaskPlan build_mono_analysis_task_plan(
     const OpenClMonoAnalysisTaskOptions& options);
 
 OpenClMonoBestMethodResult run_opencl_mono_best_method(
+    const OpenClMonoAnalysisTaskPlan& plan,
+    std::optional<std::size_t> requested_device_index = std::nullopt);
+
+OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
+    const std::vector<std::int32_t>& samples,
     const OpenClMonoAnalysisTaskPlan& plan,
     std::optional<std::size_t> requested_device_index = std::nullopt);
 

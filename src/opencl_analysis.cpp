@@ -140,9 +140,60 @@ void populate_fixed_coefficients(FlacClSubframeTask& task, unsigned order)
 
 constexpr cl_int kPlatformNotFound = -1001;
 
-const char* mono_best_method_kernel_source()
+constexpr std::size_t kOpenClAnalysisMaxBlockSize = 8192;
+constexpr std::size_t kOpenClAnalysisBitsPerSample = 16;
+
+const char* mono_analysis_kernel_source()
 {
     return R"CLC(
+/*
+ * Portions derived from CUETools.FLACCL: FLAC audio encoder using OpenCL
+ * Copyright (c) 2010-2022 Gregory S. Chudov
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ *
+ * Local modifications for ld-compress-ng, 2026-07-04:
+ * - Reduced to mono analysis kernels used by the native LaserDisc RF encoder.
+ * - Uses the FLACCLSubframeTask ABI but omits stereo, LPC autocorrelation,
+ *   partition/Rice-output, and bitstream output kernels.
+ * - Keeps the CPU-style one-work-item estimate path as the first portable
+ *   fixed/constant analysis slice.
+ */
+
+#define FLACCL_CPU
+#define MAX_ORDER 32
+#define GROUP_SIZE 1
+#define BITS_PER_SAMPLE 16
+#define MAX_BLOCKSIZE 8192
+
+#if BITS_PER_SAMPLE > 16
+#define MAX_RICE_PARAM 30
+#define RICE_PARAM_BITS 5
+#else
+#define MAX_RICE_PARAM 14
+#define RICE_PARAM_BITS 4
+#endif
+
+typedef enum
+{
+    Constant = 0,
+    Verbatim = 1,
+    Fixed = 8,
+    LPC = 32
+} SubframeType;
+
 typedef struct
 {
     int residualOrder;
@@ -168,6 +219,176 @@ typedef struct
     FLACCLSubframeData data;
     int coefs[32];
 } FLACCLSubframeTask;
+
+#define __ffs(a) (32 - clz((a) & (-(a))))
+
+__kernel __attribute__((reqd_work_group_size(1, 1, 1)))
+void ldcompressFindWastedBits(
+    __global FLACCLSubframeTask* tasks,
+    __global const int* samples,
+    int tasksPerChannel)
+{
+    __global FLACCLSubframeTask* ptask = &tasks[get_group_id(0) * tasksPerChannel];
+    int w_or = 0;
+    int a_or = 0;
+
+    for (int pos = 0; pos < ptask->data.blocksize; pos++)
+    {
+        const int smp = samples[ptask->data.samplesOffs + pos];
+        w_or |= smp;
+        a_or |= smp ^ (smp >> 31);
+    }
+
+    const int w = w_or == 0 ? ptask->data.obits - 1 : max(0, __ffs(w_or) - 1);
+    const int a = a_or == 0 ? 1 : max(1, 32 - clz(a_or) - w);
+
+    for (int i = 0; i < tasksPerChannel; i++)
+    {
+        ptask[i].data.wbits = w;
+        ptask[i].data.abits = a;
+    }
+}
+
+#define TEMPBLOCK 512
+#define TEMPBLOCK1 TEMPBLOCK
+
+__kernel __attribute__((vec_type_hint(int4))) __attribute__((reqd_work_group_size(1, 1, 1)))
+void ldcompressEstimateResidual(
+    __global const int* samples,
+    __global const int* selectedTasks,
+    __global FLACCLSubframeTask* tasks)
+{
+    const int selectedTask = selectedTasks[get_group_id(0)];
+    FLACCLSubframeTask task = tasks[selectedTask];
+    const int ro = task.data.residualOrder;
+    const int bs = task.data.blocksize;
+#define ERPARTS (MAX_BLOCKSIZE >> 6)
+    float len[ERPARTS];
+
+    __global const int* data = &samples[task.data.samplesOffs];
+    for (int i = 0; i < ERPARTS; i++)
+        len[i] = 0.0f;
+
+    if (ro <= 4)
+    {
+        float fcoef[4];
+        for (int tid = 0; tid < 4; tid++)
+            fcoef[tid] = tid + ro - 4 < 0 ? 0.0f : -((float)task.coefs[tid + ro - 4]) / (1 << task.data.shift);
+        float4 fc0 = vload4(0, &fcoef[0]);
+        float fdata[4];
+        for (int pos = 0; pos < 4; pos++)
+            fdata[pos] = pos + ro - 4 < 0 ? 0.0f : (float)(data[pos + ro - 4] >> task.data.wbits);
+        float4 fd0 = vload4(0, &fdata[0]);
+        for (int pos = ro; pos < bs; pos++)
+        {
+            float4 sum4 = fc0 * fd0;
+            float2 sum2 = sum4.s01 + sum4.s23;
+            fd0 = fd0.s1230;
+            fd0.s3 = (float)(data[pos] >> task.data.wbits);
+            len[pos >> 6] += fabs(fd0.s3 + (sum2.x + sum2.y));
+        }
+    }
+    else if (ro <= 8)
+    {
+        float fcoef[8];
+        for (int tid = 0; tid < 8; tid++)
+            fcoef[tid] = tid + ro - 8 < 0 ? 0.0f : -((float)task.coefs[tid + ro - 8]) / (1 << task.data.shift);
+        float8 fc0 = vload8(0, &fcoef[0]);
+        float fdata[8];
+        for (int pos = 0; pos < 8; pos++)
+            fdata[pos] = pos + ro - 8 < 0 ? 0.0f : (float)(data[pos + ro - 8] >> task.data.wbits);
+        float8 fd0 = vload8(0, &fdata[0]);
+        for (int pos = ro; pos < bs; pos++)
+        {
+            float8 sum8 = fc0 * fd0;
+            float4 sum4 = sum8.s0123 + sum8.s4567;
+            float2 sum2 = sum4.s01 + sum4.s23;
+            fd0 = fd0.s12345670;
+            fd0.s7 = (float)(data[pos] >> task.data.wbits);
+            len[pos >> 6] += fabs(fd0.s7 + (sum2.x + sum2.y));
+        }
+    }
+    else if (ro <= 12)
+    {
+        float fcoef[12];
+        for (int tid = 0; tid < 12; tid++)
+            fcoef[tid] = tid + ro - 12 >= 0 ? -((float)task.coefs[tid + ro - 12]) / (1 << task.data.shift) : 0.0f;
+        float4 fc0 = vload4(0, &fcoef[0]);
+        float4 fc1 = vload4(1, &fcoef[0]);
+        float4 fc2 = vload4(2, &fcoef[0]);
+        float fdata[12];
+        for (int pos = 0; pos < 12; pos++)
+            fdata[pos] = pos + ro - 12 < 0 ? 0.0f : (float)(data[pos + ro - 12] >> task.data.wbits);
+        float4 fd0 = vload4(0, &fdata[0]);
+        float4 fd1 = vload4(1, &fdata[0]);
+        float4 fd2 = vload4(2, &fdata[0]);
+        for (int pos = ro; pos < bs; pos++)
+        {
+            float4 sum4 = fc0 * fd0 + fc1 * fd1 + fc2 * fd2;
+            float2 sum2 = sum4.s01 + sum4.s23;
+            fd0 = fd0.s1230;
+            fd1 = fd1.s1230;
+            fd2 = fd2.s1230;
+            fd0.s3 = fd1.s3;
+            fd1.s3 = fd2.s3;
+            fd2.s3 = (float)(data[pos] >> task.data.wbits);
+            len[pos >> 6] += fabs(fd2.s3 + (sum2.x + sum2.y));
+        }
+    }
+    else
+    {
+        float fcoef[32];
+        for (int tid = 0; tid < 32; tid++)
+            fcoef[tid] = tid < MAX_ORDER && tid + ro - MAX_ORDER >= 0 ? -((float)task.coefs[tid + ro - MAX_ORDER]) / (1 << task.data.shift) : 0.0f;
+
+        float4 fc0 = vload4(0, &fcoef[0]);
+        float4 fc1 = vload4(1, &fcoef[0]);
+        float4 fc2 = vload4(2, &fcoef[0]);
+
+        float fdata[MAX_ORDER + TEMPBLOCK1 + 32];
+        for (int pos = 0; pos < MAX_ORDER; pos++)
+            fdata[pos] = 0.0f;
+        for (int pos = MAX_ORDER + TEMPBLOCK1; pos < MAX_ORDER + TEMPBLOCK1 + 32; pos++)
+            fdata[pos] = 0.0f;
+        for (int bpos = 0; bpos < bs; bpos += TEMPBLOCK1)
+        {
+            const int end = min(bpos + TEMPBLOCK1, bs);
+
+            for (int pos = max(bpos - ro, 0); pos < max(bpos, ro); pos++)
+                fdata[MAX_ORDER + pos - bpos] = (float)(data[pos] >> task.data.wbits);
+
+            for (int pos = max(bpos, ro); pos < end; pos++)
+            {
+                float next = (float)(data[pos] >> task.data.wbits);
+                float* dptr = fdata + pos - bpos;
+                dptr[MAX_ORDER] = next;
+                float4 sum =
+                    fc0 * vload4(0, dptr) +
+                    fc1 * vload4(1, dptr) +
+                    fc2 * vload4(2, dptr);
+                next += sum.x + sum.y + sum.z + sum.w;
+                len[pos >> 6] += fabs(next);
+            }
+        }
+    }
+
+    int total = 0;
+    for (int i = 0; i < ERPARTS; i++)
+    {
+        const int res = convert_int_sat_rte(len[i] * 2);
+        const int k = clamp(31 - clz(res) - 6, 0, MAX_RICE_PARAM);
+        total += (k << 6) + (res >> k);
+    }
+    const int partLen = min(0x7ffffff, total) + (bs - ro);
+    const int obits = task.data.obits - task.data.wbits;
+    const int predicted =
+        task.data.type == Fixed ? ro * obits + 6 + RICE_PARAM_BITS + partLen :
+        task.data.type == LPC ? ro * obits + 4 + 5 + ro * task.data.cbits + 6 + RICE_PARAM_BITS + partLen :
+        task.data.type == Constant ? obits * (partLen != bs - ro ? bs : 1) :
+        obits * bs;
+
+    tasks[selectedTask].data.size = min(obits * bs, predicted);
+}
 
 __kernel void ldcompressChooseBestMethod(
     __global FLACCLSubframeTask* tasks_out,
@@ -455,6 +676,45 @@ void validate_best_method_plan(const OpenClMonoAnalysisTaskPlan& plan)
     }
 }
 
+std::size_t mono_plan_frame_count(const OpenClMonoAnalysisTaskPlan& plan)
+{
+    validate_best_method_plan(plan);
+    return plan.selected_tasks.size() / plan.estimate_tasks_per_frame;
+}
+
+void validate_fixed_constant_analysis_inputs(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan)
+{
+    const auto frame_count = mono_plan_frame_count(plan);
+    if (frame_count == 0) {
+        throw std::runtime_error("OpenCL mono fixed/constant analysis has no frames");
+    }
+
+    for (const auto& task : plan.residual_tasks) {
+        if (task.data.type != kFlacClSubframeConstant &&
+            task.data.type != kFlacClSubframeFixed) {
+            throw std::runtime_error("OpenCL mono fixed/constant analysis received non-fixed task");
+        }
+        if (task.data.obits != static_cast<std::int32_t>(kOpenClAnalysisBitsPerSample)) {
+            throw std::runtime_error("OpenCL mono fixed/constant analysis currently supports 16-bit tasks only");
+        }
+        if (task.data.blocksize <= 0 ||
+            static_cast<std::size_t>(task.data.blocksize) > kOpenClAnalysisMaxBlockSize) {
+            throw std::runtime_error("OpenCL mono fixed/constant analysis block size is unsupported");
+        }
+        if (task.data.samplesOffs < 0 ||
+            static_cast<std::size_t>(task.data.samplesOffs) > samples.size() ||
+            static_cast<std::size_t>(task.data.blocksize) >
+                samples.size() - static_cast<std::size_t>(task.data.samplesOffs)) {
+            throw std::runtime_error("OpenCL mono fixed/constant analysis task samples are out of range");
+        }
+        if (task.data.shift < 0 || task.data.shift > 30) {
+            throw std::runtime_error("OpenCL mono fixed/constant analysis task shift is unsupported");
+        }
+    }
+}
+
 #endif
 
 }  // namespace
@@ -537,7 +797,7 @@ OpenClMonoBestMethodResult run_opencl_mono_best_method(
     ClCommandQueue queue(clCreateCommandQueue(context.get(), selected_device.id, 0, &status));
     require_cl(status, "clCreateCommandQueue");
 
-    const char* source = mono_best_method_kernel_source();
+    const char* source = mono_analysis_kernel_source();
     const std::size_t source_length = std::char_traits<char>::length(source);
     ClProgram program(clCreateProgramWithSource(context.get(), 1, &source, &source_length, &status));
     require_cl(status, "clCreateProgramWithSource");
@@ -600,6 +860,140 @@ OpenClMonoBestMethodResult run_opencl_mono_best_method(
         .device_name = selected_device.name,
     };
 #else
+    (void)plan;
+    (void)requested_device_index;
+    throw std::runtime_error("OpenCL support was not built");
+#endif
+}
+
+OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    std::optional<std::size_t> requested_device_index)
+{
+#if LDCOMPRESS_HAVE_OPENCL
+    validate_fixed_constant_analysis_inputs(samples, plan);
+
+    const auto selected_device = choose_opencl_device(requested_device_index);
+
+    cl_int status = CL_SUCCESS;
+    ClContext context(clCreateContext(nullptr, 1, &selected_device.id, nullptr, nullptr, &status));
+    require_cl(status, "clCreateContext");
+
+    ClCommandQueue queue(clCreateCommandQueue(context.get(), selected_device.id, 0, &status));
+    require_cl(status, "clCreateCommandQueue");
+
+    const char* source = mono_analysis_kernel_source();
+    const std::size_t source_length = std::char_traits<char>::length(source);
+    ClProgram program(clCreateProgramWithSource(context.get(), 1, &source, &source_length, &status));
+    require_cl(status, "clCreateProgramWithSource");
+
+    const cl_int build_status = clBuildProgram(program.get(), 1, &selected_device.id, nullptr, nullptr, nullptr);
+    if (build_status != CL_SUCCESS) {
+        const auto log = program_build_log(program.get(), selected_device.id);
+        throw std::runtime_error("clBuildProgram failed: " + cl_error_name(build_status) +
+            (log.empty() ? std::string {} : "\n" + log));
+    }
+
+    ClKernel wasted_kernel(clCreateKernel(program.get(), "ldcompressFindWastedBits", &status));
+    require_cl(status, "clCreateKernel(ldcompressFindWastedBits)");
+    ClKernel estimate_kernel(clCreateKernel(program.get(), "ldcompressEstimateResidual", &status));
+    require_cl(status, "clCreateKernel(ldcompressEstimateResidual)");
+    ClKernel choose_kernel(clCreateKernel(program.get(), "ldcompressChooseBestMethod", &status));
+    require_cl(status, "clCreateKernel(ldcompressChooseBestMethod)");
+
+    ClMem samples_buffer(clCreateBuffer(context.get(),
+        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        samples.size() * sizeof(std::int32_t),
+        const_cast<std::int32_t*>(samples.data()),
+        &status));
+    require_cl(status, "clCreateBuffer(samples)");
+
+    ClMem tasks_buffer(clCreateBuffer(context.get(),
+        CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+        plan.residual_tasks.size() * sizeof(FlacClSubframeTask),
+        const_cast<FlacClSubframeTask*>(plan.residual_tasks.data()),
+        &status));
+    require_cl(status, "clCreateBuffer(tasks)");
+
+    ClMem selected_buffer(clCreateBuffer(context.get(),
+        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        plan.selected_tasks.size() * sizeof(std::int32_t),
+        const_cast<std::int32_t*>(plan.selected_tasks.data()),
+        &status));
+    require_cl(status, "clCreateBuffer(selectedTasks)");
+
+    const auto frame_count = plan.selected_tasks.size() / plan.estimate_tasks_per_frame;
+    std::vector<FlacClSubframeTask> analyzed_tasks(plan.residual_tasks.size());
+    std::vector<FlacClSubframeTask> best_tasks(frame_count);
+    ClMem best_buffer(clCreateBuffer(context.get(),
+        CL_MEM_WRITE_ONLY,
+        best_tasks.size() * sizeof(FlacClSubframeTask),
+        nullptr,
+        &status));
+    require_cl(status, "clCreateBuffer(tasks_out)");
+
+    cl_mem tasks_mem = tasks_buffer.get();
+    cl_mem samples_mem = samples_buffer.get();
+    cl_mem selected_mem = selected_buffer.get();
+    cl_mem best_mem = best_buffer.get();
+    const auto task_count = static_cast<std::int32_t>(plan.estimate_tasks_per_frame);
+
+    require_cl(clSetKernelArg(wasted_kernel.get(), 0, sizeof(tasks_mem), &tasks_mem),
+        "clSetKernelArg(wasted.tasks)");
+    require_cl(clSetKernelArg(wasted_kernel.get(), 1, sizeof(samples_mem), &samples_mem),
+        "clSetKernelArg(wasted.samples)");
+    require_cl(clSetKernelArg(wasted_kernel.get(), 2, sizeof(task_count), &task_count),
+        "clSetKernelArg(wasted.tasksPerChannel)");
+
+    const std::size_t one = 1;
+    const std::size_t frame_global_work_size = frame_count;
+    require_cl(clEnqueueNDRangeKernel(queue.get(), wasted_kernel.get(), 1, nullptr,
+                   &frame_global_work_size, &one, 0, nullptr, nullptr),
+        "clEnqueueNDRangeKernel(ldcompressFindWastedBits)");
+
+    require_cl(clSetKernelArg(estimate_kernel.get(), 0, sizeof(samples_mem), &samples_mem),
+        "clSetKernelArg(estimate.samples)");
+    require_cl(clSetKernelArg(estimate_kernel.get(), 1, sizeof(selected_mem), &selected_mem),
+        "clSetKernelArg(estimate.selectedTasks)");
+    require_cl(clSetKernelArg(estimate_kernel.get(), 2, sizeof(tasks_mem), &tasks_mem),
+        "clSetKernelArg(estimate.tasks)");
+
+    const std::size_t estimate_global_work_size = plan.selected_tasks.size();
+    require_cl(clEnqueueNDRangeKernel(queue.get(), estimate_kernel.get(), 1, nullptr,
+                   &estimate_global_work_size, &one, 0, nullptr, nullptr),
+        "clEnqueueNDRangeKernel(ldcompressEstimateResidual)");
+
+    require_cl(clSetKernelArg(choose_kernel.get(), 0, sizeof(best_mem), &best_mem),
+        "clSetKernelArg(choose.tasks_out)");
+    require_cl(clSetKernelArg(choose_kernel.get(), 1, sizeof(tasks_mem), &tasks_mem),
+        "clSetKernelArg(choose.tasks)");
+    require_cl(clSetKernelArg(choose_kernel.get(), 2, sizeof(selected_mem), &selected_mem),
+        "clSetKernelArg(choose.selectedTasks)");
+    require_cl(clSetKernelArg(choose_kernel.get(), 3, sizeof(task_count), &task_count),
+        "clSetKernelArg(choose.taskCount)");
+
+    require_cl(clEnqueueNDRangeKernel(queue.get(), choose_kernel.get(), 1, nullptr,
+                   &frame_global_work_size, nullptr, 0, nullptr, nullptr),
+        "clEnqueueNDRangeKernel(ldcompressChooseBestMethod)");
+
+    require_cl(clEnqueueReadBuffer(queue.get(), tasks_buffer.get(), CL_TRUE, 0,
+                   analyzed_tasks.size() * sizeof(FlacClSubframeTask), analyzed_tasks.data(),
+                   0, nullptr, nullptr),
+        "clEnqueueReadBuffer(tasks)");
+    require_cl(clEnqueueReadBuffer(queue.get(), best_buffer.get(), CL_TRUE, 0,
+                   best_tasks.size() * sizeof(FlacClSubframeTask), best_tasks.data(),
+                   0, nullptr, nullptr),
+        "clEnqueueReadBuffer(tasks_out)");
+    require_cl(clFinish(queue.get()), "clFinish");
+
+    return OpenClMonoFixedConstantAnalysisResult {
+        .analyzed_tasks = std::move(analyzed_tasks),
+        .best_tasks = std::move(best_tasks),
+        .device_name = selected_device.name,
+    };
+#else
+    (void)samples;
     (void)plan;
     (void)requested_device_index;
     throw std::runtime_error("OpenCL support was not built");
