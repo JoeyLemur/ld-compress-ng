@@ -2,6 +2,7 @@
 FlaLDF/
 ld-decode-tools/
 ld-compress
+tools/ld-lds-converter-standalone/
 
 # Local build outputs.
 build/
