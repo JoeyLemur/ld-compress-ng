@@ -14,7 +14,7 @@ namespace ldcompress {
 namespace {
 
 constexpr unsigned kMaxRicePartitionOrder = 4;
-constexpr unsigned kMaxLpcOrder = 8;
+constexpr unsigned kMaxLpcOrder = 12;
 constexpr unsigned kMinLpcBlockSize = 256;
 constexpr unsigned kLpcCoefficientPrecision = 12;
 
@@ -636,12 +636,13 @@ FixedRiceSubframe choose_fixed_rice_subframe(
 
 LpcRiceSubframe choose_lpc_rice_subframe(
     const std::vector<std::int32_t>& samples,
-    unsigned bits_per_sample)
+    unsigned bits_per_sample,
+    unsigned max_lpc_order)
 {
     LpcRiceSubframe best;
     best.bits = std::numeric_limits<std::uint64_t>::max();
 
-    if (samples.size() < kMinLpcBlockSize) {
+    if (samples.size() < kMinLpcBlockSize || max_lpc_order == 0) {
         return best;
     }
 
@@ -649,7 +650,7 @@ LpcRiceSubframe choose_lpc_rice_subframe(
     auto shifted_samples = shift_samples(samples, wasted_bits);
     const auto effective_bits_per_sample = bits_per_sample - wasted_bits;
     const auto max_order = std::min<std::size_t>(
-        kMaxLpcOrder, shifted_samples.size() - 1U);
+        std::min(max_lpc_order, kMaxLpcOrder), shifted_samples.size() - 1U);
     const auto autoc = autocorrelation(shifted_samples, static_cast<unsigned>(max_order));
 
     for (unsigned order = 1; order <= max_order; ++order) {
@@ -1016,7 +1017,8 @@ FlacSubframeDecision write_mono_best_frame(
 
     const auto wasted_bits = common_wasted_bits(samples, info.bits_per_sample);
     const auto fixed = choose_fixed_rice_subframe(samples, info.bits_per_sample);
-    const auto lpc = choose_lpc_rice_subframe(samples, info.bits_per_sample);
+    const auto lpc = choose_lpc_rice_subframe(
+        samples, info.bits_per_sample, info.max_lpc_order);
     const auto verbatim_bits = verbatim_subframe_bits(
         samples.size(), info.bits_per_sample, wasted_bits);
     if (lpc.bits < fixed.bits && lpc.bits < verbatim_bits) {

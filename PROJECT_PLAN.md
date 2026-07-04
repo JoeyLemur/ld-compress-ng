@@ -124,6 +124,8 @@ provided.
   zero bits that are inherent in unpacked 10-bit LDS samples.
 - Add scalar LPC/Rice subframes as the first heavier predictor path before
   porting the FlaLDF/OpenCL task scheduler.
+- Add native tuning controls for frame sample count and maximum LPC order so
+  FlaLDF-style settings can be benchmarked before changing defaults.
 - Add native compression stats for frame/subframe decisions so optimization work
   is driven by fixture behavior rather than guesses.
 - Add opt-in frame-level threading for native FLAC encoding. Keep output ordered

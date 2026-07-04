@@ -115,6 +115,8 @@ void test_cli(const std::filesystem::path& exe)
     const auto native_fixed_threads_out = temp_dir / "fixture.native-fixed-threads.out.lds";
     const auto native_fixed_stats = temp_dir / "fixture.native-fixed-stats.flac.ldf";
     const auto native_fixed_stats_out = temp_dir / "fixture.native-fixed-stats.out.lds";
+    const auto native_fixed_tuned = temp_dir / "fixture.native-fixed-tuned.flac.ldf";
+    const auto native_fixed_tuned_out = temp_dir / "fixture.native-fixed-tuned.out.lds";
     const auto default_native_fixed = temp_dir / "default-name.flac.ldf";
     const auto alias_native_fixed = temp_dir / "alias-name.flac.ldf";
     const auto backend_order_cpu = temp_dir / "backend-order-cpu.ldf";
@@ -122,7 +124,12 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_native_fixed = temp_dir / "fixture.bad-native-fixed.ldf";
     const auto bad_native_fixed_reversed = temp_dir / "fixture.bad-native-fixed-reversed.ldf";
     const auto bad_native_fixed_threads = temp_dir / "fixture.bad-native-fixed-threads.ldf";
+    const auto bad_native_frame_samples = temp_dir / "fixture.bad-native-frame-samples.ldf";
+    const auto bad_native_frame_samples_large = temp_dir / "fixture.bad-native-frame-samples-large.ldf";
+    const auto bad_native_lpc_order = temp_dir / "fixture.bad-native-lpc-order.ldf";
+    const auto bad_native_lpc_order_large = temp_dir / "fixture.bad-native-lpc-order-large.ldf";
     const auto bad_cpu_stats = temp_dir / "fixture.bad-cpu-stats.ldf";
+    const auto bad_cpu_frame_samples = temp_dir / "fixture.bad-cpu-frame-samples.ldf";
     const auto bad_cpu_threads = temp_dir / "fixture.bad-cpu-threads.ldf";
     const auto empty_lds = temp_dir / "empty.lds";
     const auto empty_native_verbatim = temp_dir / "empty.native-verbatim.flac.ldf";
@@ -178,10 +185,23 @@ void test_cli(const std::filesystem::path& exe)
     require(read_file(native_fixed_stats_out) == fixture, "native-fixed --stats round trip changed LDS bytes");
     require(read_file(native_fixed_stats) == read_file(native_fixed),
         "native-fixed --stats output differed from normal output");
+    run_ok(shell_quote(exe) + " compress --backend native-fixed --frame-samples 2048 --lpc-order 12 " + shell_quote(lds) + " " + shell_quote(native_fixed_tuned));
+    run_ok(shell_quote(exe) + " decompress " + shell_quote(native_fixed_tuned) + " " + shell_quote(native_fixed_tuned_out));
+    require(read_file(native_fixed_tuned_out) == fixture, "tuned native-fixed FLAC round trip changed LDS bytes");
     run_fails(shell_quote(exe) + " compress --backend native-fixed --threads 0 " + shell_quote(lds) + " " + shell_quote(bad_native_fixed_threads));
     require(!std::filesystem::exists(bad_native_fixed_threads), "invalid native-fixed thread count wrote output");
+    run_fails(shell_quote(exe) + " compress --backend native-fixed --frame-samples 15 " + shell_quote(lds) + " " + shell_quote(bad_native_frame_samples));
+    require(!std::filesystem::exists(bad_native_frame_samples), "invalid native frame size wrote output");
+    run_fails(shell_quote(exe) + " compress --backend native-fixed --frame-samples 99999999999999999999 " + shell_quote(lds) + " " + shell_quote(bad_native_frame_samples_large));
+    require(!std::filesystem::exists(bad_native_frame_samples_large), "oversized native frame size wrote output");
+    run_fails(shell_quote(exe) + " compress --backend native-fixed --lpc-order 13 " + shell_quote(lds) + " " + shell_quote(bad_native_lpc_order));
+    require(!std::filesystem::exists(bad_native_lpc_order), "invalid native LPC order wrote output");
+    run_fails(shell_quote(exe) + " compress --backend native-fixed --lpc-order 99999999999999999999 " + shell_quote(lds) + " " + shell_quote(bad_native_lpc_order_large));
+    require(!std::filesystem::exists(bad_native_lpc_order_large), "oversized native LPC order wrote output");
     run_fails(shell_quote(exe) + " compress --stats " + shell_quote(lds) + " " + shell_quote(bad_cpu_stats));
     require(!std::filesystem::exists(bad_cpu_stats), "CPU --stats rejection wrote output");
+    run_fails(shell_quote(exe) + " compress --frame-samples 2048 " + shell_quote(lds) + " " + shell_quote(bad_cpu_frame_samples));
+    require(!std::filesystem::exists(bad_cpu_frame_samples), "CPU --frame-samples rejection wrote output");
     run_fails(shell_quote(exe) + " compress --threads 2 " + shell_quote(lds) + " " + shell_quote(bad_cpu_threads));
     require(!std::filesystem::exists(bad_cpu_threads), "CPU --threads rejection wrote output");
     run_ok("cd " + shell_quote(temp_dir) + " && " + shell_quote(exe) + " compress --backend native-fixed default-name.lds");
@@ -209,6 +229,7 @@ void test_cli(const std::filesystem::path& exe)
     run_fails(shell_quote(exe) + " compress --backend opencl " + shell_quote(lds) + " " + shell_quote(opencl_output));
     require(!std::filesystem::exists(opencl_output), "unimplemented OpenCL backend wrote output");
     run_ok(shell_quote(exe) + " bench --threads 1,2 " + shell_quote(lds));
+    run_ok(shell_quote(exe) + " bench --threads 1 --frame-samples 2048 --lpc-order 12 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --threads 0 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --threads 1,,2 " + shell_quote(lds));
     run_ok(shell_quote(exe) + " devices");

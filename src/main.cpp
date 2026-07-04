@@ -29,6 +29,8 @@ struct Options {
     bool show_stats = false;
     unsigned level = 11;
     unsigned threads = 1;
+    unsigned native_frame_samples = 4608;
+    unsigned native_max_lpc_order = 8;
     std::vector<unsigned> bench_threads;
     ldcompress::CompressionBackend backend = ldcompress::CompressionBackend::CpuLibFlac;
     ldcompress::FlacContainer container = ldcompress::FlacContainer::Ogg;
@@ -41,11 +43,11 @@ struct Options {
 {
     std::ostream& out = exit_code == 0 ? std::cout : std::cerr;
     out << "Usage:\n"
-        << "  ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--stats] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]\n"
+        << "  ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--frame-samples N] [--lpc-order N] [--stats] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng verify [--source ORIGINAL.lds] INPUT\n"
         << "  ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]\n"
-        << "  ld-compress-ng bench [--threads 1,4,8] INPUT\n"
+        << "  ld-compress-ng bench [--threads 1,4,8] [--frame-samples N] [--lpc-order N] INPUT\n"
         << "  ld-compress-ng devices\n"
         << "  ld-compress-ng --help\n";
     std::exit(exit_code);
@@ -173,6 +175,34 @@ unsigned parse_threads(std::string_view text)
     return threads;
 }
 
+unsigned parse_bounded_unsigned(
+    std::string_view text,
+    std::string_view name,
+    unsigned min_value,
+    unsigned max_value)
+{
+    unsigned value = 0;
+    if (text.empty()) {
+        throw std::runtime_error("empty " + std::string(name));
+    }
+    for (const char ch : text) {
+        if (ch < '0' || ch > '9') {
+            throw std::runtime_error("invalid " + std::string(name) + ": " + std::string(text));
+        }
+        const auto digit = static_cast<unsigned>(ch - '0');
+        if (value > (max_value - digit) / 10U) {
+            throw std::runtime_error(std::string(name) + " must be " +
+                std::to_string(min_value) + ".." + std::to_string(max_value));
+        }
+        value = (value * 10U) + digit;
+    }
+    if (value < min_value || value > max_value) {
+        throw std::runtime_error(std::string(name) + " must be " +
+            std::to_string(min_value) + ".." + std::to_string(max_value));
+    }
+    return value;
+}
+
 std::vector<unsigned> parse_thread_list(std::string_view text)
 {
     std::vector<unsigned> threads;
@@ -228,6 +258,18 @@ Options parse_compress(int argc, char** argv)
                 throw std::runtime_error("--threads requires a value");
             }
             options.threads = parse_threads(argv[i]);
+        } else if (arg == "--frame-samples") {
+            if (++i >= argc) {
+                throw std::runtime_error("--frame-samples requires a value");
+            }
+            options.native_frame_samples = parse_bounded_unsigned(
+                argv[i], "native FLAC frame sample count", 16, 4608);
+        } else if (arg == "--lpc-order") {
+            if (++i >= argc) {
+                throw std::runtime_error("--lpc-order requires a value");
+            }
+            options.native_max_lpc_order = parse_bounded_unsigned(
+                argv[i], "native FLAC max LPC order", 0, 12);
         } else if (arg == "--container") {
             if (++i >= argc) {
                 throw std::runtime_error("--container requires a value");
@@ -265,6 +307,10 @@ Options parse_compress(int argc, char** argv)
     if (options.show_stats &&
         options.backend == ldcompress::CompressionBackend::CpuLibFlac) {
         throw std::runtime_error("--stats is currently supported only by native FLAC backends");
+    }
+    if (options.backend == ldcompress::CompressionBackend::CpuLibFlac &&
+        (options.native_frame_samples != 4608 || options.native_max_lpc_order != 8)) {
+        throw std::runtime_error("--frame-samples and --lpc-order are supported only by native FLAC backends");
     }
 
     if ((options.backend == ldcompress::CompressionBackend::NativeVerbatimFlac ||
@@ -381,6 +427,18 @@ Options parse_bench(int argc, char** argv)
                 throw std::runtime_error("--threads requires a value");
             }
             options.bench_threads = parse_thread_list(argv[i]);
+        } else if (arg == "--frame-samples") {
+            if (++i >= argc) {
+                throw std::runtime_error("--frame-samples requires a value");
+            }
+            options.native_frame_samples = parse_bounded_unsigned(
+                argv[i], "native FLAC frame sample count", 16, 4608);
+        } else if (arg == "--lpc-order") {
+            if (++i >= argc) {
+                throw std::runtime_error("--lpc-order requires a value");
+            }
+            options.native_max_lpc_order = parse_bounded_unsigned(
+                argv[i], "native FLAC max LPC order", 0, 12);
         } else if (arg == "--help" || arg == "-h") {
             usage(0);
         } else if (!arg.empty() && arg.front() == '-') {
@@ -483,6 +541,8 @@ int run_compress(const Options& options)
         .compression_level = options.level,
         .sample_rate = 40000,
         .thread_count = options.threads,
+        .native_frame_samples = options.native_frame_samples,
+        .native_max_lpc_order = options.native_max_lpc_order,
         .native_stats = options.show_stats ? &native_stats : nullptr,
     };
     const auto stats = ldcompress::compress_lds(input, options.output, compress_options);
@@ -580,6 +640,8 @@ struct BenchCase {
     ldcompress::CompressionBackend backend;
     ldcompress::FlacContainer container;
     unsigned threads;
+    unsigned native_frame_samples;
+    unsigned native_max_lpc_order;
 };
 
 struct BenchResult {
@@ -605,6 +667,8 @@ BenchResult run_bench_case(
         .compression_level = 11,
         .sample_rate = 40000,
         .thread_count = bench_case.threads,
+        .native_frame_samples = bench_case.native_frame_samples,
+        .native_max_lpc_order = bench_case.native_max_lpc_order,
     };
 
     const auto started = std::chrono::steady_clock::now();
@@ -651,11 +715,15 @@ int run_bench(const Options& options)
             .backend = ldcompress::CompressionBackend::CpuLibFlac,
             .container = ldcompress::FlacContainer::Ogg,
             .threads = 1,
+            .native_frame_samples = 4608,
+            .native_max_lpc_order = 8,
         },
         {
             .backend = ldcompress::CompressionBackend::NativeVerbatimFlac,
             .container = ldcompress::FlacContainer::Native,
             .threads = 1,
+            .native_frame_samples = options.native_frame_samples,
+            .native_max_lpc_order = options.native_max_lpc_order,
         },
     };
 
@@ -664,6 +732,8 @@ int run_bench(const Options& options)
             .backend = ldcompress::CompressionBackend::NativeFixedFlac,
             .container = ldcompress::FlacContainer::Native,
             .threads = threads,
+            .native_frame_samples = options.native_frame_samples,
+            .native_max_lpc_order = options.native_max_lpc_order,
         });
     }
 

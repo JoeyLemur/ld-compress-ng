@@ -21,8 +21,9 @@ namespace ldcompress {
 namespace {
 
 constexpr std::size_t kGroupsPerChunk = 8192;
-constexpr std::size_t kFrameSamples = 4608;
 constexpr unsigned kMinimumStreamInfoBlockSize = 16;
+constexpr unsigned kMaxNativeFrameSamples = 4608;
+constexpr unsigned kMaxNativeLpcOrder = 12;
 
 enum class NativeFrameCoding {
     Verbatim,
@@ -88,17 +89,19 @@ void rewind_to(std::istream& input, std::streampos position)
 
 FlacStreamInfo make_streaminfo(
     const ConversionStats& stats,
+    unsigned frame_sample_count,
     unsigned sample_rate,
     const std::array<std::uint8_t, 16>& md5)
 {
     std::uint64_t min_block = kMinimumStreamInfoBlockSize;
     std::uint64_t max_block = kMinimumStreamInfoBlockSize;
-    if (stats.samples >= kMinimumStreamInfoBlockSize && stats.samples <= kFrameSamples) {
+    if (stats.samples > 0 && stats.samples <= frame_sample_count) {
         min_block = stats.samples;
         max_block = stats.samples;
-    } else if (stats.samples > kFrameSamples) {
-        min_block = kFrameSamples;
-        max_block = kFrameSamples;
+    } else if (stats.samples > frame_sample_count) {
+        const auto remainder = stats.samples % frame_sample_count;
+        min_block = remainder == 0 ? frame_sample_count : remainder;
+        max_block = frame_sample_count;
     }
 
     return FlacStreamInfo {
@@ -163,12 +166,14 @@ FlacSubframeDecision write_frame(
     const std::vector<std::int32_t>& samples,
     std::uint64_t frame_number,
     unsigned sample_rate,
+    unsigned max_lpc_order,
     NativeFrameCoding coding)
 {
     const FlacFrameInfo frame_info {
         .frame_number = frame_number,
         .sample_rate = sample_rate,
         .bits_per_sample = 16,
+        .max_lpc_order = max_lpc_order,
     };
     switch (coding) {
     case NativeFrameCoding::Verbatim:
@@ -188,10 +193,12 @@ EncodedFrame encode_frame(
     std::vector<std::int32_t> samples,
     std::uint64_t frame_number,
     unsigned sample_rate,
+    unsigned max_lpc_order,
     NativeFrameCoding coding)
 {
     std::ostringstream output(std::ios::out | std::ios::binary);
-    const auto decision = write_frame(output, samples, frame_number, sample_rate, coding);
+    const auto decision = write_frame(
+        output, samples, frame_number, sample_rate, max_lpc_order, coding);
     if (!output) {
         throw std::runtime_error("failed to encode native FLAC frame");
     }
@@ -242,10 +249,19 @@ ConversionStats compress_lds_to_native_flac(
     unsigned sample_rate,
     NativeFrameCoding coding,
     unsigned thread_count,
+    unsigned frame_sample_count,
+    unsigned max_lpc_order,
     NativeCompressionStats* native_stats)
 {
     if (thread_count == 0) {
         throw std::runtime_error("native FLAC thread count must be at least 1");
+    }
+    if (frame_sample_count < kMinimumStreamInfoBlockSize ||
+        frame_sample_count > kMaxNativeFrameSamples) {
+        throw std::runtime_error("native FLAC frame sample count must be 16..4608");
+    }
+    if (max_lpc_order > kMaxNativeLpcOrder) {
+        throw std::runtime_error("native FLAC max LPC order must be 0..12");
     }
 
     const auto start = lds_input.tellg();
@@ -257,7 +273,8 @@ ConversionStats compress_lds_to_native_flac(
     auto stats = process_lds_samples(lds_input, [&pcm_md5](std::int16_t sample) {
         update_md5_s16le(pcm_md5, sample);
     });
-    const auto streaminfo = make_streaminfo(stats, sample_rate, pcm_md5.digest());
+    const auto streaminfo = make_streaminfo(
+        stats, frame_sample_count, sample_rate, pcm_md5.digest());
 
     rewind_to(lds_input, start);
 
@@ -269,13 +286,14 @@ ConversionStats compress_lds_to_native_flac(
     write_native_flac_streaminfo(output, streaminfo);
 
     std::vector<std::int32_t> frame_samples;
-    frame_samples.reserve(kFrameSamples);
+    frame_samples.reserve(frame_sample_count);
     std::uint64_t frame_number = 0;
     std::uint64_t next_frame_to_write = 0;
     std::deque<PendingFrame> pending_frames;
     const auto submit_frame = [&](std::vector<std::int32_t> samples, std::uint64_t current_frame) {
         if (thread_count == 1) {
-            const auto decision = write_frame(output, samples, current_frame, sample_rate, coding);
+            const auto decision = write_frame(
+                output, samples, current_frame, sample_rate, max_lpc_order, coding);
             record_native_stats(native_stats, decision);
             ++next_frame_to_write;
             return;
@@ -285,7 +303,7 @@ ConversionStats compress_lds_to_native_flac(
             .frame_number = current_frame,
             .frame = std::async(
                 std::launch::async, encode_frame, std::move(samples),
-                current_frame, sample_rate, coding),
+                current_frame, sample_rate, max_lpc_order, coding),
         });
         while (pending_frames.size() > thread_count) {
             flush_next_pending_frame(output, pending_frames, next_frame_to_write, native_stats);
@@ -294,11 +312,11 @@ ConversionStats compress_lds_to_native_flac(
 
     const auto encoded_stats = process_lds_samples(lds_input, [&](std::int16_t sample) {
         frame_samples.push_back(sample);
-        if (frame_samples.size() == kFrameSamples) {
+        if (frame_samples.size() == frame_sample_count) {
             submit_frame(std::move(frame_samples), frame_number);
             ++frame_number;
             frame_samples.clear();
-            frame_samples.reserve(kFrameSamples);
+            frame_samples.reserve(frame_sample_count);
         }
     });
     if (!frame_samples.empty()) {
@@ -335,10 +353,13 @@ ConversionStats compress_lds_to_native_verbatim_flac(
     const std::string& output_path,
     unsigned sample_rate,
     unsigned thread_count,
+    unsigned frame_samples,
+    unsigned max_lpc_order,
     NativeCompressionStats* stats)
 {
     return compress_lds_to_native_flac(
-        lds_input, output_path, sample_rate, NativeFrameCoding::Verbatim, thread_count, stats);
+        lds_input, output_path, sample_rate, NativeFrameCoding::Verbatim, thread_count,
+        frame_samples, max_lpc_order, stats);
 }
 
 ConversionStats compress_lds_to_native_fixed_flac(
@@ -346,10 +367,13 @@ ConversionStats compress_lds_to_native_fixed_flac(
     const std::string& output_path,
     unsigned sample_rate,
     unsigned thread_count,
+    unsigned frame_samples,
+    unsigned max_lpc_order,
     NativeCompressionStats* stats)
 {
     return compress_lds_to_native_flac(
-        lds_input, output_path, sample_rate, NativeFrameCoding::FixedRice, thread_count, stats);
+        lds_input, output_path, sample_rate, NativeFrameCoding::FixedRice, thread_count,
+        frame_samples, max_lpc_order, stats);
 }
 
 }  // namespace ldcompress

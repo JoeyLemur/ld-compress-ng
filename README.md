@@ -50,11 +50,11 @@ The OpenCL/FlaLDF-derived GPU compression backend is not implemented yet.
 ## Usage
 
 ```sh
-ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--stats] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]
+ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--frame-samples N] [--lpc-order N] [--stats] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]
 ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]
 ld-compress-ng verify [--source ORIGINAL.lds] INPUT
 ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]
-ld-compress-ng bench [--threads 1,4,8] INPUT
+ld-compress-ng bench [--threads 1,4,8] [--frame-samples N] [--lpc-order N] INPUT
 ld-compress-ng devices
 ```
 
@@ -73,6 +73,12 @@ Defaults:
   for the native/GPU path, not tuned compression yet.
 - `--threads N` is currently supported for native FLAC backends and parallelizes
   frame encoding while preserving output order. It defaults to `1`.
+- `--frame-samples N` is currently supported for native FLAC backends and sets
+  the FLAC block size used by the native encoder. It defaults to `4608` and is
+  constrained to `16..4608` for 40 kHz subset compatibility.
+- `--lpc-order N` is currently supported for native FLAC backends and sets the
+  maximum scalar LPC order considered by `native-fixed`. It defaults to `8`;
+  `0` disables LPC and `12` matches the 40 kHz FLAC subset cap.
 - `--stats` is currently supported for native FLAC backends and prints per-frame
   subframe counts, fixed/LPC predictor order counts, Rice partition order
   counts, and wasted-bits counts.
