@@ -3,7 +3,9 @@
 #include "hash.h"
 #include "lds_codec.h"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -30,6 +32,22 @@ std::vector<std::int32_t> make_samples()
     std::vector<std::int32_t> samples;
     for (int i = 0; i < 16; ++i) {
         samples.push_back((((i * 7) % 1024) - 512) * 64);
+    }
+    return samples;
+}
+
+std::vector<std::int32_t> make_lpc_friendly_samples()
+{
+    constexpr double kPi = 3.14159265358979323846;
+    std::vector<std::int32_t> samples;
+    samples.reserve(512);
+    for (int i = 0; i < 512; ++i) {
+        const double sample =
+            (std::sin((2.0 * kPi * i) / 31.0) * 11000.0) +
+            (std::sin((2.0 * kPi * i) / 11.0) * 3500.0);
+        auto quantized = static_cast<int>(std::lround(sample / 64.0)) * 64;
+        quantized = std::clamp(quantized, -32768, 32704);
+        samples.push_back(quantized);
     }
     return samples;
 }
@@ -99,23 +117,31 @@ struct FirstFrameSubframeInfo {
     std::size_t sample_data_bit_offset = 0;
 };
 
-std::size_t first_frame_subframe_bit_offset()
+std::size_t first_frame_subframe_bit_offset(std::string_view bytes)
 {
     constexpr std::size_t kStreamInfoBytes = 42;
-    constexpr std::size_t kSmallFirstFrameHeaderBytes = 7;
-    return (kStreamInfoBytes + kSmallFirstFrameHeaderBytes) * 8U;
+    constexpr std::size_t kFrameHeaderBytes = 4;
+    constexpr std::size_t kFrameNumberBytes = 1;
+    constexpr std::size_t kCrc8Bytes = 1;
+    const auto frame_header_bit_offset = kStreamInfoBytes * 8U;
+    const auto block_size_code = read_bits(bytes, frame_header_bit_offset + 16U, 4);
+    const std::size_t block_size_extension_bytes = block_size_code == 6
+        ? 1
+        : (block_size_code == 7 ? 2 : 0);
+    return (kStreamInfoBytes + kFrameHeaderBytes + kFrameNumberBytes +
+        block_size_extension_bytes + kCrc8Bytes) * 8U;
 }
 
 unsigned first_frame_subframe_type(const std::filesystem::path& flac_path)
 {
     const auto bytes = read_file(flac_path);
-    return read_bits(bytes, first_frame_subframe_bit_offset() + 1U, 6);
+    return read_bits(bytes, first_frame_subframe_bit_offset(bytes) + 1U, 6);
 }
 
 FirstFrameSubframeInfo first_frame_subframe_info(const std::filesystem::path& flac_path)
 {
     const auto bytes = read_file(flac_path);
-    const auto subframe_bit_offset = first_frame_subframe_bit_offset();
+    const auto subframe_bit_offset = first_frame_subframe_bit_offset(bytes);
     FirstFrameSubframeInfo info {
         .type = read_bits(bytes, subframe_bit_offset + 1U, 6),
         .wasted_bits = 0,
@@ -163,7 +189,7 @@ using FrameWriter = ldcompress::FlacSubframeDecision (*)(
     const std::vector<std::int32_t>&,
     const ldcompress::FlacFrameInfo&);
 
-void write_fixed_rice_file(
+ldcompress::FlacSubframeDecision write_fixed_rice_file(
     const std::filesystem::path& flac_path,
     const std::vector<std::int32_t>& samples,
     FrameWriter writer = ldcompress::write_mono_fixed_rice_frame)
@@ -191,7 +217,7 @@ void write_fixed_rice_file(
         .sample_rate = 40000,
         .bits_per_sample = 16,
     };
-    writer(output, samples, frame_info);
+    return writer(output, samples, frame_info);
 }
 
 void verify_fixed_rice_round_trip(
@@ -242,6 +268,27 @@ void verify_selected_round_trip(
     require(stats.samples == samples.size(), "unexpected best-frame decoded sample count");
     require(stats.output_bytes == expected.size(), "unexpected best-frame decoded LDS byte count");
     require(decoded.str() == expected, "native best-frame FLAC did not round-trip to expected LDS");
+}
+
+void verify_lpc_round_trip(
+    const std::filesystem::path& flac_path,
+    const std::vector<std::int32_t>& samples)
+{
+    const auto decision = write_fixed_rice_file(
+        flac_path, samples, ldcompress::write_mono_best_frame);
+    require(decision.kind == ldcompress::FlacSubframeKind::LpcRice,
+        "native best-frame writer did not choose LPC for LPC-friendly samples");
+    const auto type = first_frame_subframe_type(flac_path);
+    require(type >= 0x20 && type <= 0x27,
+        "native best-frame writer did not write an expected LPC subframe type");
+
+    std::ostringstream decoded;
+    const auto stats = ldcompress::decompress_flac_to_lds(flac_path.string(), decoded);
+    const auto expected = pack_expected_lds(samples);
+
+    require(stats.samples == samples.size(), "unexpected LPC decoded sample count");
+    require(stats.output_bytes == expected.size(), "unexpected LPC decoded LDS byte count");
+    require(decoded.str() == expected, "native LPC FLAC did not round-trip to expected LDS");
 }
 
 void test_native_verbatim_round_trip()
@@ -356,6 +403,7 @@ void test_native_best_subframe_selection()
         32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
         32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
     }, 1, 6);
+    verify_lpc_round_trip(temp_dir / "lpc.flac", make_lpc_friendly_samples());
 
     std::filesystem::remove_all(temp_dir);
 }

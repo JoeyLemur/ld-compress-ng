@@ -144,6 +144,15 @@ void record_native_stats(
             ++stats->partition_order_counts[decision.rice_partition_order];
         }
         return;
+    case FlacSubframeKind::LpcRice:
+        ++stats->lpc_rice_frames;
+        if (decision.lpc_order < stats->lpc_order_counts.size()) {
+            ++stats->lpc_order_counts[decision.lpc_order];
+        }
+        if (decision.rice_partition_order < stats->partition_order_counts.size()) {
+            ++stats->partition_order_counts[decision.rice_partition_order];
+        }
+        return;
     }
 
     throw std::runtime_error("unknown native FLAC subframe kind");

@@ -456,10 +456,12 @@ void print_native_stats(const ldcompress::NativeCompressionStats& stats)
     std::cerr << "native stats: frames=" << stats.frames
               << " constant=" << stats.constant_frames
               << " fixed-rice=" << stats.fixed_rice_frames
+              << " lpc-rice=" << stats.lpc_rice_frames
               << " verbatim=" << stats.verbatim_frames
               << " estimated-subframe-bits=" << stats.estimated_subframe_bits
               << '\n';
     print_nonzero_counts(std::cerr, "fixed orders", stats.fixed_order_counts);
+    print_nonzero_counts(std::cerr, "lpc orders", stats.lpc_order_counts);
     print_nonzero_counts(std::cerr, "partition orders", stats.partition_order_counts);
     print_nonzero_counts(std::cerr, "wasted bits", stats.wasted_bits_counts);
 }

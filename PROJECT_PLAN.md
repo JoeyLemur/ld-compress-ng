@@ -122,6 +122,8 @@ provided.
   or verbatim subframes per frame before adding heavier predictors.
 - Add FLAC wasted-bits support so native subframes can avoid storing the low
   zero bits that are inherent in unpacked 10-bit LDS samples.
+- Add scalar LPC/Rice subframes as the first heavier predictor path before
+  porting the FlaLDF/OpenCL task scheduler.
 - Add native compression stats for frame/subframe decisions so optimization work
   is driven by fixture behavior rather than guesses.
 - Add opt-in frame-level threading for native FLAC encoding. Keep output ordered
@@ -167,6 +169,8 @@ provided.
   search or GPU acceleration.
 - Verify native subframe selection for constant, fixed/Rice, and verbatim
   fallback frames.
+- Verify scalar LPC/Rice subframes with libFLAC decode parity before adding GPU
+  LPC work.
 - Verify native wasted-bits encoding with libFLAC decode parity.
 - Verify threaded native FLAC output is byte-for-byte identical to the
   single-threaded output for generated fixtures.

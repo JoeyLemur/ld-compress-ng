@@ -29,11 +29,13 @@ enum class FlacSubframeKind {
     Constant,
     Verbatim,
     FixedRice,
+    LpcRice,
 };
 
 struct FlacSubframeDecision {
     FlacSubframeKind kind = FlacSubframeKind::Verbatim;
     unsigned fixed_order = 0;
+    unsigned lpc_order = 0;
     unsigned rice_partition_order = 0;
     unsigned wasted_bits = 0;
     std::uint64_t estimated_bits = 0;
