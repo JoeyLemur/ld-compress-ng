@@ -118,7 +118,8 @@ provided.
 
 ### Phase 3: Hardening and Packaging
 
-- Add Linux and macOS build documentation.
+- Maintain Linux and macOS build documentation, including the required CPU
+  dependency set and optional OpenCL packages.
 - Add CI or a local equivalent for generated fixtures.
 - Add performance checks against the old shell pipeline.
 - Document compatibility with historical `.ldf`, `.raw.oga`, and `.flac.ldf`

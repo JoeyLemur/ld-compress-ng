@@ -6,7 +6,8 @@ This repository is replacing the historical `ld-compress` shell pipeline with a
 native C++20/CMake CLI. Reference material from `FlaLDF/`, `ld-decode-tools/`,
 and the original `ld-compress` script is intentionally ignored by Git.
 
-See `PROJECT_PLAN.md` for the implementation plan.
+See `PROJECT_PLAN.md` for the implementation plan and `BUILD.md` for platform
+build notes.
 
 The baseline CPU path is intended to stay portable across Linux and macOS on
 both arm64 and amd64/x86_64. CPU-specific optimizations and macOS Metal GPU
@@ -23,6 +24,10 @@ ctest --test-dir build
 Required build dependencies are `pkg-config`, `libFLAC`, and `libogg`. OpenCL is
 optional; when CMake cannot find it, the CPU compressor still builds and
 `devices` reports that OpenCL support was not built.
+
+`ld-compress-ng` itself does not depend on Qt, ffmpeg, `.NET`, Mono, FlaLDF,
+OpenSSL, or `ld-lds-converter`. Some of those tools remain useful for regenerating
+legacy reference fixtures, but they are not normal build or runtime dependencies.
 
 ## Current Status
 
