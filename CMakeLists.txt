@@ -10,14 +10,29 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(CTest)
+
+option(LDCOMPRESS_ENABLE_OPENCL "Enable OpenCL device enumeration support" ON)
+
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FLAC REQUIRED IMPORTED_TARGET flac)
 pkg_check_modules(OGG REQUIRED IMPORTED_TARGET ogg)
+
+set(LDCOMPRESS_HAVE_OPENCL 0)
+if(LDCOMPRESS_ENABLE_OPENCL)
+    find_package(OpenCL QUIET)
+    if(OpenCL_FOUND)
+        set(LDCOMPRESS_HAVE_OPENCL 1)
+        message(STATUS "OpenCL device enumeration enabled")
+    else()
+        message(STATUS "OpenCL not found; devices command will report unavailable")
+    endif()
+endif()
 
 add_library(ldcompress_core
     src/flac_codec.cpp
     src/hash.cpp
     src/lds_codec.cpp
+    src/opencl_devices.cpp
 )
 
 target_include_directories(ldcompress_core
@@ -30,11 +45,23 @@ target_compile_options(ldcompress_core
         $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-Wall -Wextra -Wpedantic>
 )
 
+target_compile_definitions(ldcompress_core
+    PRIVATE
+        LDCOMPRESS_HAVE_OPENCL=${LDCOMPRESS_HAVE_OPENCL}
+)
+
 target_link_libraries(ldcompress_core
     PUBLIC
         PkgConfig::FLAC
         PkgConfig::OGG
 )
+
+if(LDCOMPRESS_HAVE_OPENCL)
+    target_link_libraries(ldcompress_core
+        PRIVATE
+            OpenCL::OpenCL
+    )
+endif()
 
 add_executable(ld-compress-ng
     src/main.cpp

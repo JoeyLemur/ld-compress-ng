@@ -124,6 +124,7 @@ void test_cli(const std::filesystem::path& exe)
 
     run_ok(shell_quote(exe) + " compress --container flac --overwrite " + shell_quote(lds) + " " + shell_quote(native));
     run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(native));
+    run_ok(shell_quote(exe) + " devices");
 
     std::filesystem::remove_all(temp_dir);
 }

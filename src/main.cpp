@@ -1,6 +1,7 @@
 #include "flac_codec.h"
 #include "hash.h"
 #include "lds_codec.h"
+#include "opencl_devices.h"
 
 #include <filesystem>
 #include <fstream>
@@ -33,6 +34,7 @@ struct Options {
         << "  ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng verify [--source ORIGINAL.lds] INPUT\n"
         << "  ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]\n"
+        << "  ld-compress-ng devices\n"
         << "  ld-compress-ng --help\n";
     std::exit(exit_code);
 }
@@ -385,6 +387,46 @@ int run_verify(const Options& options)
     return 0;
 }
 
+int run_devices(int argc, char** argv)
+{
+    for (int i = 2; i < argc; ++i) {
+        const std::string_view arg(argv[i]);
+        if (arg == "--help" || arg == "-h") {
+            usage(0);
+        }
+        throw std::runtime_error("unknown option for devices: " + std::string(arg));
+    }
+
+    if (!ldcompress::opencl_support_built()) {
+        std::cout << "OpenCL support: not built\n";
+        return 0;
+    }
+
+    std::cout << "OpenCL support: built\n";
+    const auto devices = ldcompress::list_opencl_devices();
+    if (devices.empty()) {
+        std::cout << "No OpenCL devices found\n";
+        return 0;
+    }
+
+    for (std::size_t i = 0; i < devices.size(); ++i) {
+        const auto& device = devices[i];
+        std::cout << '[' << i << "] " << device.device_name << '\n'
+                  << "    type: " << device.type << '\n'
+                  << "    available: " << (device.available ? "yes" : "no") << '\n'
+                  << "    compute units: " << device.compute_units << '\n'
+                  << "    global memory: " << device.global_memory_bytes << " bytes\n"
+                  << "    vendor: " << device.device_vendor << '\n'
+                  << "    device version: " << device.device_version << '\n'
+                  << "    driver version: " << device.driver_version << '\n'
+                  << "    platform: " << device.platform_name << '\n'
+                  << "    platform vendor: " << device.platform_vendor << '\n'
+                  << "    platform version: " << device.platform_version << '\n';
+    }
+
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -409,6 +451,9 @@ int main(int argc, char** argv)
         }
         if (command == "convert") {
             return run_convert(parse_convert(argc, argv));
+        }
+        if (command == "devices") {
+            return run_devices(argc, argv);
         }
 
         throw std::runtime_error("unsupported command for this implementation slice: " +

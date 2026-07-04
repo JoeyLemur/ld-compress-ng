@@ -70,8 +70,8 @@ Initial behavior:
   LDS stream, and can compare against an original `.lds` file when provided.
 - `convert` exposes the LDS packing/unpacking logic directly for diagnostics and
   test fixtures.
-- `devices` is reserved for the later OpenCL backend and should list available
-  platforms/devices once GPU support exists.
+- `devices` lists available OpenCL platforms/devices when OpenCL support is
+  built, and remains an enumeration scaffold until GPU compression exists.
 
 Default output naming should preserve existing conventions unless explicitly
 overridden:
@@ -102,7 +102,8 @@ provided.
 
 - Port FlaLDF host-side encoder logic to native C++.
 - Reuse or adapt the existing OpenCL kernel from `FlaLDF/`.
-- Add OpenCL platform and device selection.
+- Extend the initial OpenCL platform/device enumeration into explicit device
+  selection for GPU compression.
 - Add the `devices` subcommand.
 - Preserve current GPU-style native FLAC `.flac.ldf` output unless a deliberate
   format migration is chosen later.
