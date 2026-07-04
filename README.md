@@ -38,6 +38,7 @@ The current implementation provides:
 - Native LDS 10-bit pack/unpack conversion.
 - CPU compression to Ogg FLAC `.ldf` using `libFLAC`/`libogg`.
 - Decompression from Ogg FLAC and native FLAC to packed `.lds`.
+- Decode-time STREAMINFO/sample-count/PCM-MD5 validation for FLAC inputs.
 - MD5-based verification, optionally against an original `.lds`.
 - A backend selection facade for CPU now and OpenCL later.
 - Native FLAC bitstream primitives and an experimental `native-verbatim` backend

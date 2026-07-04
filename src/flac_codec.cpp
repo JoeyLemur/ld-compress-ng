@@ -1,5 +1,7 @@
 #include "flac_codec.h"
 
+#include "hash.h"
+
 #include <FLAC/stream_decoder.h>
 #include <FLAC/stream_encoder.h>
 
@@ -59,6 +61,10 @@ unsigned map_compression_level(unsigned legacy_level)
 struct DecoderClient {
     std::ostream& output;
     ConversionStats stats;
+    Md5 sample_md5;
+    std::array<std::uint8_t, 16> expected_sample_md5 {};
+    std::uint64_t expected_total_samples = 0;
+    bool have_streaminfo = false;
     SampleGroup pending {};
     std::size_t pending_count = 0;
     std::string error;
@@ -101,6 +107,13 @@ FLAC__StreamDecoderWriteStatus write_callback(
             return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
         }
 
+        const auto s16 = static_cast<std::int16_t>(sample);
+        const std::array<std::uint8_t, 2> bytes {
+            static_cast<std::uint8_t>(s16 & 0xff),
+            static_cast<std::uint8_t>((s16 >> 8) & 0xff),
+        };
+        client.sample_md5.update(bytes.data(), bytes.size());
+
         client.pending[client.pending_count++] = static_cast<std::int16_t>(sample);
         ++client.stats.samples;
         if (client.pending_count == client.pending.size()) {
@@ -116,9 +129,19 @@ FLAC__StreamDecoderWriteStatus write_callback(
 
 void metadata_callback(
     const FLAC__StreamDecoder*,
-    const FLAC__StreamMetadata*,
-    void*)
+    const FLAC__StreamMetadata* metadata,
+    void* client_data)
 {
+    auto& client = *static_cast<DecoderClient*>(client_data);
+    if (metadata->type != FLAC__METADATA_TYPE_STREAMINFO) {
+        return;
+    }
+
+    client.have_streaminfo = true;
+    client.expected_total_samples = metadata->data.stream_info.total_samples;
+    std::copy(std::begin(metadata->data.stream_info.md5sum),
+        std::end(metadata->data.stream_info.md5sum),
+        client.expected_sample_md5.begin());
 }
 
 void error_callback(
@@ -251,7 +274,9 @@ ConversionStats decompress_flac_to_lds(
 
     FLAC__stream_decoder_set_md5_checking(decoder.get(), true);
 
-    DecoderClient client {lds_output, ConversionStats {}, SampleGroup {}, 0, {}};
+    DecoderClient client {
+        .output = lds_output,
+    };
     const auto container = detect_flac_container(input_path);
     const FLAC__StreamDecoderInitStatus init_status =
         container == FlacContainer::Ogg
@@ -280,6 +305,22 @@ ConversionStats decompress_flac_to_lds(
     }
     if (client.pending_count != 0) {
         throw std::runtime_error("decoded sample count is not divisible by four");
+    }
+    if (!client.have_streaminfo) {
+        throw std::runtime_error("FLAC stream did not provide STREAMINFO metadata");
+    }
+    if (client.expected_total_samples != 0 &&
+        client.stats.samples != client.expected_total_samples) {
+        throw std::runtime_error("decoded FLAC sample count did not match STREAMINFO");
+    }
+    const bool expected_sample_md5_is_known = std::any_of(
+        client.expected_sample_md5.begin(), client.expected_sample_md5.end(),
+        [](std::uint8_t byte) {
+            return byte != 0;
+        });
+    if (expected_sample_md5_is_known &&
+        client.sample_md5.digest() != client.expected_sample_md5) {
+        throw std::runtime_error("decoded FLAC sample MD5 did not match STREAMINFO");
     }
 
     if (std::filesystem::exists(input_path)) {

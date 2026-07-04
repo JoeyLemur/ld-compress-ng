@@ -32,8 +32,11 @@ external `ld-lds-converter` command. System libraries such as `libFLAC`,
   bringing along the full Qt-based `ld-decode-tools` build.
 - `reference/testdata/` contains ignored real `.lds` fixtures from
   `ld-decode-testdata-ci` for opt-in regression and tuning sweeps.
-- `reference/decode-orc/` contains the downstream consumer expected to decode
-  compressed files. Treat it as a compatibility reference.
+- `reference/decode-orc/` contains the downstream consumer for decoded output.
+  The current reference tree does not directly read `.ldf`, `.flac.ldf`, or
+  FLAC RF captures; it consumes later `.tbc` and CVBS artifacts. Treat it as a
+  compatibility reference for the eventual decoded-data pipeline, not as a
+  direct compressed-RF reader yet.
 - `reference/flac/` contains the Xiph.org FLAC reference source. Treat it as an
   implementation reference, not vendored project code.
 - `reference/flac-test-files/` contains reference FLAC-encoded files for future
@@ -69,6 +72,9 @@ Implemented:
   in-flight work.
 - Native decision stats for subframe type, fixed/LPC predictor order, Rice
   partition order, and wasted-bit counts.
+- Native FLAC decode hardening for STREAMINFO presence, decoded sample count,
+  and decoded PCM MD5.
+- Native FLAC STREAMINFO/frame-header contract tests.
 - Generated test fixtures, opt-in real-fixture regression tests, and a
   real-fixture tuning sweep helper at `tools/sweep_real_fixtures.py`.
 
@@ -94,10 +100,11 @@ Real-fixture sweep result:
 
 Immediate engineering focus:
 
-- Improve native LPC/Rice encoding quality using `reference/rfc9639.txt`,
-  `reference/flac/`, and `reference/decode-orc/` as read-only references.
-- Validate that native `.flac.ldf` files remain compatible with libFLAC and,
-  when practical, with `reference/decode-orc/`.
+- Continue native FLAC compatibility hardening using `reference/rfc9639.txt`
+  and `reference/flac/` as read-only references.
+- Revisit direct `reference/decode-orc/` integration if that tree gains
+  compressed-RF input support, or if this project grows a decoded TBC/CVBS
+  export path suitable for Decode-Orc pipeline tests.
 - Add targeted tests from `reference/flac-test-files/` only when they are useful
   for this compressor's native FLAC surface.
 - Keep CPU/libFLAC Ogg `.ldf` as the production default until native/GPU output
@@ -263,6 +270,8 @@ provided.
 - Verify native wasted-bits encoding with libFLAC decode parity.
 - Verify threaded native FLAC output is byte-for-byte identical to the
   single-threaded output for generated fixtures.
+- Verify native FLAC STREAMINFO/frame header fields and reject decoded streams
+  whose sample count or PCM MD5 does not match STREAMINFO.
 - For the OpenCL phase, test device enumeration, explicit device selection, CPU
   fallback behavior, and decompressed-output parity with the CPU backend.
 

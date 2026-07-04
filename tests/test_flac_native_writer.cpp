@@ -1,5 +1,6 @@
 #include "flac_codec.h"
 #include "flac_native_writer.h"
+#include "flac_primitives.h"
 #include "hash.h"
 #include "lds_codec.h"
 
@@ -95,6 +96,9 @@ std::string read_file(const std::filesystem::path& path)
 
 unsigned read_bits(std::string_view bytes, std::size_t bit_offset, unsigned bit_count)
 {
+    if (bit_count > 32) {
+        throw std::runtime_error("test bit reader cannot return more than 32 bits");
+    }
     unsigned value = 0;
     for (unsigned i = 0; i < bit_count; ++i) {
         const auto absolute_bit = bit_offset + i;
@@ -103,6 +107,39 @@ unsigned read_bits(std::string_view bytes, std::size_t bit_offset, unsigned bit_
         value = (value << 1U) | bit;
     }
     return value;
+}
+
+std::uint64_t read_bits64(std::string_view bytes, std::size_t bit_offset, unsigned bit_count)
+{
+    if (bit_count > 64) {
+        throw std::runtime_error("test bit reader cannot return more than 64 bits");
+    }
+    std::uint64_t value = 0;
+    for (unsigned i = 0; i < bit_count; ++i) {
+        const auto absolute_bit = bit_offset + i;
+        const auto byte = static_cast<unsigned char>(bytes.at(absolute_bit / 8));
+        const auto bit = (byte >> (7U - (absolute_bit % 8U))) & 1U;
+        value = (value << 1U) | bit;
+    }
+    return value;
+}
+
+unsigned read_u16be(std::string_view bytes, std::size_t offset)
+{
+    return (static_cast<unsigned>(static_cast<unsigned char>(bytes.at(offset))) << 8U) |
+        static_cast<unsigned>(static_cast<unsigned char>(bytes.at(offset + 1U)));
+}
+
+unsigned read_u24be(std::string_view bytes, std::size_t offset)
+{
+    return (static_cast<unsigned>(static_cast<unsigned char>(bytes.at(offset))) << 16U) |
+        (static_cast<unsigned>(static_cast<unsigned char>(bytes.at(offset + 1U))) << 8U) |
+        static_cast<unsigned>(static_cast<unsigned char>(bytes.at(offset + 2U)));
+}
+
+std::uint8_t byte_at(std::string_view bytes, std::size_t offset)
+{
+    return static_cast<std::uint8_t>(static_cast<unsigned char>(bytes.at(offset)));
 }
 
 struct FirstFrameFixedInfo {
@@ -116,6 +153,99 @@ struct FirstFrameSubframeInfo {
     unsigned wasted_bits = 0;
     std::size_t sample_data_bit_offset = 0;
 };
+
+struct NativeStreamInfo {
+    bool is_last_metadata_block = false;
+    unsigned metadata_type = 0;
+    unsigned metadata_length = 0;
+    unsigned min_block_size = 0;
+    unsigned max_block_size = 0;
+    unsigned min_frame_size = 0;
+    unsigned max_frame_size = 0;
+    unsigned sample_rate = 0;
+    unsigned channels = 0;
+    unsigned bits_per_sample = 0;
+    std::uint64_t total_samples = 0;
+    std::array<std::uint8_t, 16> md5 {};
+};
+
+struct NativeFrameHeaderInfo {
+    unsigned sync = 0;
+    unsigned reserved_before_blocking_strategy = 0;
+    unsigned blocking_strategy = 0;
+    unsigned block_size_code = 0;
+    unsigned sample_rate_code = 0;
+    unsigned channel_assignment = 0;
+    unsigned bits_per_sample_code = 0;
+    unsigned reserved_after_bits_per_sample = 0;
+    unsigned frame_number_first_byte = 0;
+    unsigned block_size = 0;
+    bool crc8_matches = false;
+};
+
+NativeStreamInfo native_streaminfo(const std::filesystem::path& flac_path)
+{
+    constexpr std::size_t kStreamInfoBytes = 42;
+    const auto bytes = read_file(flac_path);
+    require(bytes.size() >= kStreamInfoBytes, "native FLAC file was shorter than STREAMINFO");
+    require(bytes.substr(0, 4) == "fLaC", "native FLAC marker mismatch");
+
+    NativeStreamInfo info {
+        .is_last_metadata_block = (byte_at(bytes, 4) & 0x80U) != 0,
+        .metadata_type = byte_at(bytes, 4) & 0x7fU,
+        .metadata_length = read_u24be(bytes, 5),
+        .min_block_size = read_u16be(bytes, 8),
+        .max_block_size = read_u16be(bytes, 10),
+        .min_frame_size = read_u24be(bytes, 12),
+        .max_frame_size = read_u24be(bytes, 15),
+        .sample_rate = read_bits(bytes, 18U * 8U, 20),
+        .channels = read_bits(bytes, (18U * 8U) + 20U, 3) + 1U,
+        .bits_per_sample = read_bits(bytes, (18U * 8U) + 23U, 5) + 1U,
+        .total_samples = read_bits64(bytes, (18U * 8U) + 28U, 36),
+    };
+    for (std::size_t i = 0; i < info.md5.size(); ++i) {
+        info.md5[i] = byte_at(bytes, 26U + i);
+    }
+    return info;
+}
+
+NativeFrameHeaderInfo native_first_frame_header(const std::filesystem::path& flac_path)
+{
+    constexpr std::size_t kStreamInfoBytes = 42;
+    constexpr std::size_t kFixedFrameHeaderBytes = 4;
+    const auto bytes = read_file(flac_path);
+    const auto frame_header_bit_offset = kStreamInfoBytes * 8U;
+    const auto block_size_code = read_bits(bytes, frame_header_bit_offset + 16U, 4);
+    const std::size_t frame_number_offset = kStreamInfoBytes + kFixedFrameHeaderBytes;
+    const std::size_t block_size_extension_offset = frame_number_offset + 1U;
+    const std::size_t block_size_extension_bytes = block_size_code == 6
+        ? 1U
+        : (block_size_code == 7 ? 2U : 0U);
+    const auto crc8_offset = block_size_extension_offset + block_size_extension_bytes;
+
+    unsigned block_size = 0;
+    if (block_size_code == 6) {
+        block_size = byte_at(bytes, block_size_extension_offset) + 1U;
+    } else if (block_size_code == 7) {
+        block_size = read_u16be(bytes, block_size_extension_offset) + 1U;
+    }
+
+    return NativeFrameHeaderInfo {
+        .sync = read_bits(bytes, frame_header_bit_offset, 14),
+        .reserved_before_blocking_strategy = read_bits(bytes, frame_header_bit_offset + 14U, 1),
+        .blocking_strategy = read_bits(bytes, frame_header_bit_offset + 15U, 1),
+        .block_size_code = block_size_code,
+        .sample_rate_code = read_bits(bytes, frame_header_bit_offset + 20U, 4),
+        .channel_assignment = read_bits(bytes, frame_header_bit_offset + 24U, 4),
+        .bits_per_sample_code = read_bits(bytes, frame_header_bit_offset + 28U, 3),
+        .reserved_after_bits_per_sample = read_bits(bytes, frame_header_bit_offset + 31U, 1),
+        .frame_number_first_byte = byte_at(bytes, frame_number_offset),
+        .block_size = block_size,
+        .crc8_matches = ldcompress::flac_crc8(
+            reinterpret_cast<const std::uint8_t*>(bytes.data() + kStreamInfoBytes),
+            crc8_offset - kStreamInfoBytes) == byte_at(bytes, crc8_offset),
+    };
+}
 
 std::size_t first_frame_subframe_bit_offset(std::string_view bytes)
 {
@@ -471,6 +601,141 @@ void test_native_best_subframe_selection()
     std::filesystem::remove_all(temp_dir);
 }
 
+void test_native_streaminfo_and_frame_header_contract()
+{
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+        ("ld-compress-ng-native-contract-test-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directory(temp_dir);
+
+    const auto flac_path = temp_dir / "contract.flac";
+    const auto samples = make_lpc_friendly_samples();
+    write_fixed_rice_file(flac_path, samples, ldcompress::write_mono_best_frame, 12, 12, 5);
+
+    const auto streaminfo = native_streaminfo(flac_path);
+    require(streaminfo.is_last_metadata_block, "native STREAMINFO was not marked as the last metadata block");
+    require(streaminfo.metadata_type == 0, "native STREAMINFO metadata type was not STREAMINFO");
+    require(streaminfo.metadata_length == 34, "native STREAMINFO metadata length was not 34 bytes");
+    require(streaminfo.min_block_size == samples.size(), "native STREAMINFO min block size mismatch");
+    require(streaminfo.max_block_size == samples.size(), "native STREAMINFO max block size mismatch");
+    require(streaminfo.min_frame_size == 0, "native STREAMINFO min frame size should be unknown");
+    require(streaminfo.max_frame_size == 0, "native STREAMINFO max frame size should be unknown");
+    require(streaminfo.sample_rate == 40000, "native STREAMINFO sample rate mismatch");
+    require(streaminfo.channels == 1, "native STREAMINFO channel count mismatch");
+    require(streaminfo.bits_per_sample == 16, "native STREAMINFO bits-per-sample mismatch");
+    require(streaminfo.total_samples == samples.size(), "native STREAMINFO total sample count mismatch");
+    require(streaminfo.md5 == md5_samples_s16le(samples), "native STREAMINFO sample MD5 mismatch");
+
+    const auto frame = native_first_frame_header(flac_path);
+    require(frame.sync == 0x3ffe, "native FLAC frame sync mismatch");
+    require(frame.reserved_before_blocking_strategy == 0, "native FLAC reserved frame bit was set");
+    require(frame.blocking_strategy == 0, "native FLAC frame did not use fixed-block numbering");
+    require(frame.block_size_code == 7, "native FLAC frame did not use 16-bit block-size extension");
+    require(frame.sample_rate_code == 0, "native FLAC frame should use STREAMINFO sample rate");
+    require(frame.channel_assignment == 0, "native FLAC frame channel assignment was not mono");
+    require(frame.bits_per_sample_code == 4, "native FLAC frame bits-per-sample code was not 16-bit");
+    require(frame.reserved_after_bits_per_sample == 0, "native FLAC trailing reserved frame bit was set");
+    require(frame.frame_number_first_byte == 0, "native FLAC first frame number was not zero");
+    require(frame.block_size == samples.size(), "native FLAC frame block-size extension mismatch");
+    require(frame.crc8_matches, "native FLAC frame header CRC-8 mismatch");
+
+    std::filesystem::remove_all(temp_dir);
+}
+
+void test_native_streaminfo_md5_mismatch_is_rejected()
+{
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+        ("ld-compress-ng-native-md5-test-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directory(temp_dir);
+
+    const auto flac_path = temp_dir / "bad-md5.flac";
+    const auto samples = make_samples();
+    auto md5 = md5_samples_s16le(samples);
+    md5[0] ^= 0xffU;
+
+    std::ofstream output(flac_path, std::ios::binary);
+    if (!output) {
+        throw std::runtime_error("could not create test FLAC file");
+    }
+    const ldcompress::FlacStreamInfo stream_info {
+        .min_block_size = static_cast<unsigned>(samples.size()),
+        .max_block_size = static_cast<unsigned>(samples.size()),
+        .min_frame_size = 0,
+        .max_frame_size = 0,
+        .sample_rate = 40000,
+        .channels = 1,
+        .bits_per_sample = 16,
+        .total_samples = samples.size(),
+        .md5 = md5,
+    };
+    ldcompress::write_native_flac_streaminfo(output, stream_info);
+    const ldcompress::FlacFrameInfo frame_info {
+        .frame_number = 0,
+        .sample_rate = 40000,
+        .bits_per_sample = 16,
+    };
+    ldcompress::write_mono_verbatim_frame(output, samples, frame_info);
+    output.close();
+
+    bool threw = false;
+    try {
+        std::ostringstream decoded;
+        (void)ldcompress::decompress_flac_to_lds(flac_path.string(), decoded);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    require(threw, "native FLAC decode accepted a bad STREAMINFO sample MD5");
+
+    std::filesystem::remove_all(temp_dir);
+}
+
+void test_native_streaminfo_total_samples_mismatch_is_rejected()
+{
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+        ("ld-compress-ng-native-sample-count-test-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directory(temp_dir);
+
+    const auto flac_path = temp_dir / "bad-total-samples.flac";
+    const auto samples = make_samples();
+
+    std::ofstream output(flac_path, std::ios::binary);
+    if (!output) {
+        throw std::runtime_error("could not create test FLAC file");
+    }
+    const ldcompress::FlacStreamInfo stream_info {
+        .min_block_size = static_cast<unsigned>(samples.size()),
+        .max_block_size = static_cast<unsigned>(samples.size()),
+        .min_frame_size = 0,
+        .max_frame_size = 0,
+        .sample_rate = 40000,
+        .channels = 1,
+        .bits_per_sample = 16,
+        .total_samples = samples.size() + 1U,
+        .md5 = md5_samples_s16le(samples),
+    };
+    ldcompress::write_native_flac_streaminfo(output, stream_info);
+    const ldcompress::FlacFrameInfo frame_info {
+        .frame_number = 0,
+        .sample_rate = 40000,
+        .bits_per_sample = 16,
+    };
+    ldcompress::write_mono_verbatim_frame(output, samples, frame_info);
+    output.close();
+
+    bool threw = false;
+    try {
+        std::ostringstream decoded;
+        (void)ldcompress::decompress_flac_to_lds(flac_path.string(), decoded);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    require(threw, "native FLAC decode accepted a bad STREAMINFO sample count");
+
+    std::filesystem::remove_all(temp_dir);
+}
+
 }  // namespace
 
 int main()
@@ -481,6 +746,9 @@ int main()
         test_native_rice_partition_order_limit();
         test_native_lpc_precision_limit();
         test_native_best_subframe_selection();
+        test_native_streaminfo_and_frame_header_contract();
+        test_native_streaminfo_md5_mismatch_is_rejected();
+        test_native_streaminfo_total_samples_mismatch_is_rejected();
     } catch (const std::exception& ex) {
         std::cerr << "test_flac_native_writer: " << ex.what() << '\n';
         return 1;
