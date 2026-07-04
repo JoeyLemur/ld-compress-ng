@@ -3,6 +3,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -61,10 +63,19 @@ struct OpenClMonoAnalysisTaskPlan {
     std::size_t estimate_tasks_per_frame = 0;
 };
 
+struct OpenClMonoBestMethodResult {
+    std::vector<FlacClSubframeTask> best_tasks;
+    std::string device_name;
+};
+
 std::size_t mono_analysis_tasks_per_frame(const OpenClMonoAnalysisTaskOptions& options);
 
 OpenClMonoAnalysisTaskPlan build_mono_analysis_task_plan(
     std::size_t frame_count,
     const OpenClMonoAnalysisTaskOptions& options);
+
+OpenClMonoBestMethodResult run_opencl_mono_best_method(
+    const OpenClMonoAnalysisTaskPlan& plan,
+    std::optional<std::size_t> requested_device_index = std::nullopt);
 
 }  // namespace ldcompress::opencl_detail

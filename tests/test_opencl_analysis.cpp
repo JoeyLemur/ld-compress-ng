@@ -1,8 +1,10 @@
 #include "opencl_analysis.h"
+#include "opencl_devices.h"
 
 #include <cstddef>
 #include <exception>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <type_traits>
 
@@ -185,6 +187,58 @@ void test_invalid_options()
     }, "invalid fixed order accepted");
 }
 
+void test_opencl_best_method_smoke()
+{
+    using namespace ldcompress::opencl_detail;
+
+    if (!ldcompress::opencl_support_built()) {
+        std::cout << "OpenCL best-method smoke skipped: OpenCL support was not built\n";
+        return;
+    }
+
+    std::optional<std::size_t> device_index;
+    for (const auto& device : ldcompress::list_opencl_devices()) {
+        if (device.available) {
+            device_index = device.flat_index;
+            break;
+        }
+    }
+
+    if (!device_index.has_value()) {
+        std::cout << "OpenCL best-method smoke skipped: no available OpenCL device\n";
+        return;
+    }
+
+    OpenClMonoAnalysisTaskOptions options;
+    const auto tasks_per_frame = mono_analysis_tasks_per_frame(options);
+    auto plan = build_mono_analysis_task_plan(2, options);
+
+    plan.residual_tasks[5].data.size = 101;
+    plan.residual_tasks[12].data.size = 202;
+    plan.residual_tasks[17].data.size = 303;
+
+    const auto second_frame = tasks_per_frame;
+    plan.residual_tasks[second_frame + 0].data.size = 404;
+    plan.residual_tasks[second_frame + 8].data.size = 88;
+    plan.residual_tasks[second_frame + 14].data.size = 99;
+
+    const auto result = run_opencl_mono_best_method(plan, device_index);
+    require(!result.device_name.empty(), "OpenCL best-method result did not report a device");
+    require(result.best_tasks.size() == 2, "OpenCL best-method result frame count mismatch");
+
+    require(result.best_tasks[0].data.size == 101, "OpenCL best-method first frame size mismatch");
+    require(result.best_tasks[0].data.type == kFlacClSubframeLpc,
+        "OpenCL best-method first frame type mismatch");
+    require(result.best_tasks[0].data.residualOrder == 6,
+        "OpenCL best-method first frame order mismatch");
+
+    require(result.best_tasks[1].data.size == 88, "OpenCL best-method second frame size mismatch");
+    require(result.best_tasks[1].data.type == kFlacClSubframeLpc,
+        "OpenCL best-method second frame type mismatch");
+    require(result.best_tasks[1].data.residualOrder == 9,
+        "OpenCL best-method second frame order mismatch");
+}
+
 }  // namespace
 
 int main()
@@ -194,6 +248,7 @@ int main()
         test_default_mono_task_plan();
         test_small_custom_task_plan();
         test_invalid_options();
+        test_opencl_best_method_smoke();
     } catch (const std::exception& ex) {
         std::cerr << "test_opencl_analysis: " << ex.what() << '\n';
         return 1;

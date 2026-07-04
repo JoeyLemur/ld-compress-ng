@@ -75,6 +75,9 @@ Implemented:
   analysis parity tests, without exposing private residual or subframe structs.
 - FLACCL-compatible mono OpenCL analysis task ABI, selected-task plan builder,
   and device-free tests for the host-side task layout.
+- Hardware-optional OpenCL best-method execution smoke for the mono analysis
+  task buffers. It compiles and runs a project-local OpenCL reducer when an
+  OpenCL device is available, and skips cleanly on hosts without devices.
 - Frame-level threading for native FLAC encoding with ordered output and bounded
   in-flight work.
 - Native decision stats for subframe type, fixed/LPC predictor order, Rice
@@ -239,9 +242,11 @@ provided.
   FLACCL task struct layout exactly, and run the analysis kernels through
   best-method selection only. Treat FLACCL residual-size estimates as heuristic
   until parity with the scalar exact-cost selector is characterized. Done for
-  the host-side task ABI and selected-task plan builder; OpenCL kernel execution
-  still needs to be ported. Kernel code copied or adapted from FLACCL must keep
-  the original LGPL-2.1-or-later notices and local modification notes.
+  the host-side task ABI, selected-task plan builder, and best-method execution
+  smoke. Fixed/constant residual estimation, wasted-bits handling, and LPC
+  analysis kernels still need to be ported. Kernel code copied or adapted from
+  FLACCL must keep the original LGPL-2.1-or-later notices and local
+  modification notes.
 - Extend the initial OpenCL platform/device enumeration into explicit device
   selection for GPU compression. Done for CLI plumbing and metadata selection;
   real compression still awaits the FlaLDF-derived encoder port.
