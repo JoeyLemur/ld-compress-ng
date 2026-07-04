@@ -3,6 +3,7 @@
 #include "flac_primitives.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -14,6 +15,7 @@ namespace ldcompress {
 namespace {
 
 constexpr unsigned kMaxRicePartitionOrder = 8;
+constexpr unsigned kMaxRiceParameter = 14;
 constexpr unsigned kMaxLpcOrder = 12;
 constexpr unsigned kMinLpcBlockSize = 256;
 constexpr unsigned kLpcCoefficientPrecision = 12;
@@ -235,11 +237,26 @@ unsigned choose_rice_parameter(
     std::size_t count)
 {
     unsigned best_parameter = 0;
-    auto best_bits = std::numeric_limits<std::uint64_t>::max();
-    for (unsigned parameter = 0; parameter <= 14; ++parameter) {
-        const auto bits = rice_bits(residuals, offset, count, parameter);
-        if (bits < best_bits) {
-            best_bits = bits;
+    std::array<std::uint64_t, kMaxRiceParameter + 1U> bit_counts {};
+    if (offset > residuals.size() || count > residuals.size() - offset) {
+        throw std::runtime_error("internal FLAC residual partition range error");
+    }
+
+    for (unsigned parameter = 0; parameter <= kMaxRiceParameter; ++parameter) {
+        bit_counts[parameter] = static_cast<std::uint64_t>(count) * (1U + parameter);
+    }
+    const auto end = offset + count;
+    for (std::size_t i = offset; i < end; ++i) {
+        const auto folded = fold_signed_residual(residuals[i]);
+        for (unsigned parameter = 0; parameter <= kMaxRiceParameter; ++parameter) {
+            bit_counts[parameter] += folded >> parameter;
+        }
+    }
+
+    auto best_bits = bit_counts[0];
+    for (unsigned parameter = 1; parameter <= kMaxRiceParameter; ++parameter) {
+        if (bit_counts[parameter] < best_bits) {
+            best_bits = bit_counts[parameter];
             best_parameter = parameter;
         }
     }
