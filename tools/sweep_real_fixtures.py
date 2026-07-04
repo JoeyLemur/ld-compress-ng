@@ -64,6 +64,8 @@ class SweepConfig:
     lpc_order: str
     lpc_precision: str
     rice_partition_order: str
+    include_opencl: bool
+    opencl_device: str | None
 
 
 def parse_uint_list(text: str, name: str, minimum: int, maximum: int) -> list[int]:
@@ -99,7 +101,7 @@ def find_fixtures(root: Path, limit: int | None) -> list[Path]:
 
 
 def bench_command(binary: Path, config: SweepConfig, fixture: Path) -> list[str]:
-    return [
+    command = [
         str(binary),
         "bench",
         "--threads",
@@ -112,8 +114,13 @@ def bench_command(binary: Path, config: SweepConfig, fixture: Path) -> list[str]
         config.lpc_precision,
         "--rice-partition-order",
         config.rice_partition_order,
-        str(fixture),
     ]
+    if config.include_opencl:
+        command.append("--include-opencl")
+        if config.opencl_device is not None:
+            command.extend(["--device", config.opencl_device])
+    command.append(str(fixture))
+    return command
 
 
 def parse_bench_output(output: str, fixture: str) -> list[dict[str, str]]:
@@ -186,6 +193,13 @@ def sorted_native_rows(rows: Iterable[dict[str, str]]) -> list[dict[str, str]]:
     )
 
 
+def sorted_opencl_rows(rows: Iterable[dict[str, str]]) -> list[dict[str, str]]:
+    return sorted(
+        (row for row in rows if row["backend"] == "opencl"),
+        key=lambda row: (int_field(row, "output_bytes"), numeric(row, "elapsed_s")),
+    )
+
+
 def write_csv(path: Path, rows: list[dict[str, str]]) -> None:
     with path.open("w", newline="", encoding="utf-8") as output:
         writer = csv.DictWriter(output, fieldnames=CSV_COLUMNS)
@@ -225,6 +239,20 @@ def write_markdown(
         sum(numeric(row, "elapsed_s") for row in item[1]),
     ))
 
+    opencl_groups: dict[tuple[str, str, str, str, str], list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        if row["backend"] == "opencl":
+            opencl_groups[native_key(row)].append(row)
+    complete_opencl_groups = [
+        (key, group)
+        for key, group in opencl_groups.items()
+        if len(group) == len(fixture_names)
+    ]
+    complete_opencl_groups.sort(key=lambda item: (
+        sum(int_field(row, "output_bytes") for row in item[1]),
+        sum(numeric(row, "elapsed_s") for row in item[1]),
+    ))
+
     total_cpu_bytes = sum(int_field(row, "output_bytes") for row in cpu_by_fixture.values())
 
     with path.open("w", encoding="utf-8") as output:
@@ -235,7 +263,11 @@ def write_markdown(
         output.write(f"- Frame samples: `{config.frame_samples}`\n")
         output.write(f"- LPC orders: `{config.lpc_order}`\n")
         output.write(f"- LPC precisions: `{config.lpc_precision}`\n")
-        output.write(f"- Rice partition orders: `{config.rice_partition_order}`\n\n")
+        output.write(f"- Rice partition orders: `{config.rice_partition_order}`\n")
+        output.write(f"- OpenCL included: `{str(config.include_opencl).lower()}`\n")
+        if config.opencl_device is not None:
+            output.write(f"- OpenCL device: `{config.opencl_device}`\n")
+        output.write("\n")
 
         output.write("## Best Native Per Fixture\n\n")
         output.write("| Fixture | CPU bytes | Native bytes | Native ratio | Gap vs CPU | Settings |\n")
@@ -256,6 +288,26 @@ def write_markdown(
                 f"{float(best['ratio']):.4f} | {gap:+.2f}% | `{settings}` |\n"
             )
 
+        if complete_opencl_groups:
+            output.write("\n## Best OpenCL Per Fixture\n\n")
+            output.write("| Fixture | CPU bytes | OpenCL bytes | OpenCL ratio | Gap vs CPU | Settings |\n")
+            output.write("| --- | ---: | ---: | ---: | ---: | --- |\n")
+            for name in fixture_names:
+                cpu = cpu_by_fixture[name]
+                best = sorted_opencl_rows(by_fixture[name])[0]
+                cpu_bytes = int_field(cpu, "output_bytes")
+                opencl_bytes = int_field(best, "output_bytes")
+                gap = ((opencl_bytes / cpu_bytes) - 1.0) * 100.0 if cpu_bytes else 0.0
+                settings = (
+                    f"threads={best['threads']}, frame={best['frame_samples']}, "
+                    f"lpc={best['lpc_order']}, prec={best['lpc_precision']}, "
+                    f"rice={best['rice_order']}"
+                )
+                output.write(
+                    f"| `{name}` | {format_bytes(cpu_bytes)} | {format_bytes(opencl_bytes)} | "
+                    f"{float(best['ratio']):.4f} | {gap:+.2f}% | `{settings}` |\n"
+                )
+
         output.write("\n## Aggregate Native Configs\n\n")
         output.write("| Rank | Native bytes | Gap vs CPU | Elapsed s | Settings |\n")
         output.write("| ---: | ---: | ---: | ---: | --- |\n")
@@ -272,6 +324,24 @@ def write_markdown(
                 f"| {rank} | {format_bytes(native_bytes)} | {gap:+.2f}% | "
                 f"{elapsed:.3f} | `{settings}` |\n"
             )
+
+        if complete_opencl_groups:
+            output.write("\n## Aggregate OpenCL Configs\n\n")
+            output.write("| Rank | OpenCL bytes | Gap vs CPU | Elapsed s | Settings |\n")
+            output.write("| ---: | ---: | ---: | ---: | --- |\n")
+            for rank, (key, group) in enumerate(complete_opencl_groups[:10], start=1):
+                opencl_bytes = sum(int_field(row, "output_bytes") for row in group)
+                elapsed = sum(numeric(row, "elapsed_s") for row in group)
+                gap = ((opencl_bytes / total_cpu_bytes) - 1.0) * 100.0 if total_cpu_bytes else 0.0
+                threads, frame_samples, lpc_order, lpc_precision, rice_order = key
+                settings = (
+                    f"threads={threads}, frame={frame_samples}, lpc={lpc_order}, "
+                    f"prec={lpc_precision}, rice={rice_order}"
+                )
+                output.write(
+                    f"| {rank} | {format_bytes(opencl_bytes)} | {gap:+.2f}% | "
+                    f"{elapsed:.3f} | `{settings}` |\n"
+                )
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -290,6 +360,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=uint_list_arg("LPC precision", 1, 15))
     parser.add_argument("--rice-partition-order", default="5",
         type=uint_list_arg("Rice partition order", 0, 8))
+    parser.add_argument("--include-opencl", action="store_true",
+        help="include experimental OpenCL backend rows in each bench run")
+    parser.add_argument("--opencl-device",
+        help="flattened OpenCL device index to pass to bench when --include-opencl is set")
     parser.add_argument("--limit", type=int,
         help="benchmark only the first N fixtures after path sorting")
     parser.add_argument("--dry-run", action="store_true",
@@ -319,7 +393,11 @@ def main(argv: list[str]) -> int:
         lpc_order=args.lpc_order,
         lpc_precision=args.lpc_precision,
         rice_partition_order=args.rice_partition_order,
+        include_opencl=args.include_opencl,
+        opencl_device=args.opencl_device,
     )
+    if args.opencl_device is not None and not args.include_opencl:
+        raise RuntimeError("--opencl-device requires --include-opencl")
 
     if args.dry_run:
         for fixture in fixtures:
@@ -346,6 +424,16 @@ def main(argv: list[str]) -> int:
             f"threads={best['threads']}",
             flush=True,
         )
+        opencl_rows = sorted_opencl_rows(fixture_rows)
+        if opencl_rows:
+            best_opencl = opencl_rows[0]
+            print(
+                "    best opencl: "
+                f"{best_opencl['output_bytes']} bytes, ratio {best_opencl['ratio']}, "
+                f"frame={best_opencl['frame_samples']} lpc={best_opencl['lpc_order']} "
+                f"prec={best_opencl['lpc_precision']} rice={best_opencl['rice_order']}",
+                flush=True,
+            )
 
     write_csv(csv_path, rows)
     write_markdown(markdown_path, rows, fixtures, fixture_root, config)

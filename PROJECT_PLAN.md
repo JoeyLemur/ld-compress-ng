@@ -114,6 +114,9 @@ Implemented:
   the selected OpenCL device, writes selected native FLAC subframes, handles a
   short final frame through the scalar native selector, and round-trips through
   the CLI on hosts with an available OpenCL device.
+- OpenCL opt-in benchmarking through `bench --include-opencl` and the
+  real-fixture sweep helper, preserving the default CPU/native-only benchmark
+  behavior on hosts without usable OpenCL devices.
 - Linux OpenCL validation on `smaug`, Debian 13-era amd64 kernel
   `6.12.94+deb13-amd64`, NVIDIA OpenCL 3.0 CUDA runtime. The OpenCL analysis
   smoke tests compiled and ran on an RTX 4070 SUPER / RTX 5070 Ti host, and the
@@ -193,7 +196,7 @@ ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] INPU
 ld-compress-ng decompress INPUT [OUTPUT]
 ld-compress-ng verify INPUT [--source ORIGINAL.lds]
 ld-compress-ng convert --pack|--unpack INPUT [OUTPUT]
-ld-compress-ng bench [--threads 1,4,8] INPUT
+ld-compress-ng bench [--threads 1,4,8] [--include-opencl] INPUT
 ld-compress-ng devices
 ```
 
@@ -213,7 +216,7 @@ Initial behavior:
   thread counts, using temporary outputs so performance and compression-ratio
   checks do not require hand-managed files. It supports native tuning sweeps over
   frame size, LPC order, LPC coefficient precision, Rice partition order, and
-  thread count.
+  thread count, plus opt-in OpenCL rows with `--include-opencl`.
 - `devices` lists available OpenCL platforms/devices when OpenCL support is
   built, and remains an enumeration scaffold until GPU compression exists.
 

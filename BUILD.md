@@ -214,7 +214,10 @@ python3 tools/sweep_real_fixtures.py \
 
 The default sweep is intentionally focused: frame size `4608`, LPC orders
 `10,12`, LPC coefficient precisions `10,12`, Rice partition order `5`, and one
-thread. Expand the grid explicitly when doing a broader local tuning pass:
+thread. Add `--include-opencl` and optionally `--opencl-device INDEX` to include
+experimental OpenCL backend rows in the CSV/Markdown output when an OpenCL
+device is available. Expand the grid explicitly when doing a broader local
+tuning pass:
 
 ```sh
 python3 tools/sweep_real_fixtures.py \

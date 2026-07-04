@@ -69,7 +69,7 @@ ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--l
 ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]
 ld-compress-ng verify [--source ORIGINAL.lds] INPUT
 ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]
-ld-compress-ng bench [--threads 1,4,8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] [--lpc-precision N[,N...]] [--rice-partition-order N[,N...]] INPUT
+ld-compress-ng bench [--threads 1,4,8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] [--lpc-precision N[,N...]] [--rice-partition-order N[,N...]] [--include-opencl] [--device INDEX|--opencl-device INDEX] INPUT
 ld-compress-ng devices
 ```
 
@@ -110,9 +110,9 @@ Defaults:
   frames are analyzed on the selected OpenCL device and written through the
   native selected-subframe writer; a short final frame is encoded with the
   scalar native selector.
-- `--device INDEX` / `--opencl-device INDEX` is currently accepted only with
-  `--backend opencl`. The indexes are the flattened indexes printed by
-  `ld-compress-ng devices`.
+- `--device INDEX` / `--opencl-device INDEX` is accepted with
+  `compress --backend opencl` and with `bench --include-opencl`. The indexes
+  are the flattened indexes printed by `ld-compress-ng devices`.
 - `--container flac` writes native FLAC, useful for compatibility testing with
   the future `.flac.ldf` GPU lane.
 - Compression levels accept the legacy CPU range `1..12`; values above libFLAC's
@@ -123,11 +123,16 @@ Benchmarking:
 - `bench` runs the CPU/libFLAC Ogg path, the native-verbatim path, and the
   native-fixed path for each requested thread count, then prints bytes, ratio,
   elapsed seconds, MiB/s, and compact native decision stats for native backends.
-  For native backend tuning, `bench` accepts comma-separated `--frame-samples`,
-  `--lpc-order`, `--lpc-precision`, and
+  Add `--include-opencl` to include experimental OpenCL backend rows for the
+  same native tuning grid when an OpenCL device is available; use
+  `--device INDEX` when you want a specific OpenCL device. For native backend
+  tuning, `bench` accepts comma-separated
+  `--frame-samples`, `--lpc-order`, `--lpc-precision`, and
   `--rice-partition-order` lists and runs the native-fixed cross product.
 - Benchmark output files are temporary and removed after each run; use
   `compress` when you want to keep the encoded result.
 - `tools/sweep_real_fixtures.py` wraps `bench` across the ignored real-fixture
-  tree and writes CSV/Markdown summaries for native tuning work. See `BUILD.md`
+  tree and writes CSV/Markdown summaries for native tuning work. Pass
+  `--include-opencl` and optionally `--opencl-device INDEX` to include the GPU
+  backend in the same sweep when an OpenCL device is available. See `BUILD.md`
   for the command and default sweep grid.

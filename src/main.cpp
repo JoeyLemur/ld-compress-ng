@@ -34,6 +34,7 @@ struct Options {
     bool unpack = false;
     bool container_explicit = false;
     bool show_stats = false;
+    bool bench_include_opencl = false;
     unsigned level = 11;
     unsigned threads = 1;
     unsigned native_frame_samples = kDefaultNativeFrameSamples;
@@ -61,7 +62,7 @@ struct Options {
         << "  ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng verify [--source ORIGINAL.lds] INPUT\n"
         << "  ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]\n"
-        << "  ld-compress-ng bench [--threads 1,4,8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] [--lpc-precision N[,N...]] [--rice-partition-order N[,N...]] INPUT\n"
+        << "  ld-compress-ng bench [--threads 1,4,8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] [--lpc-precision N[,N...]] [--rice-partition-order N[,N...]] [--include-opencl] [--device INDEX|--opencl-device INDEX] INPUT\n"
         << "  ld-compress-ng devices\n"
         << "  ld-compress-ng --help\n";
     std::exit(exit_code);
@@ -78,6 +79,23 @@ bool is_native_flac_backend(ldcompress::CompressionBackend backend)
     return backend == ldcompress::CompressionBackend::NativeVerbatimFlac ||
         backend == ldcompress::CompressionBackend::NativeFixedFlac ||
         backend == ldcompress::CompressionBackend::OpenClNativeFlac;
+}
+
+std::optional<std::size_t> available_opencl_device_index(
+    std::optional<std::size_t> requested_index)
+{
+    if (!ldcompress::opencl_support_built()) {
+        return std::nullopt;
+    }
+
+    for (const auto& device : ldcompress::list_opencl_devices()) {
+        if (device.available &&
+            (!requested_index.has_value() || device.flat_index == *requested_index)) {
+            return device.flat_index;
+        }
+    }
+
+    return std::nullopt;
 }
 
 ldcompress::FlacContainer default_container_for_backend(ldcompress::CompressionBackend backend)
@@ -529,6 +547,13 @@ Options parse_bench(int argc, char** argv)
             }
             options.bench_rice_partition_orders = parse_bounded_unsigned_list(
                 argv[i], "native FLAC max Rice partition order", 0, 8);
+        } else if (arg == "--include-opencl") {
+            options.bench_include_opencl = true;
+        } else if (arg == "--device" || arg == "--opencl-device") {
+            if (++i >= argc) {
+                throw std::runtime_error(std::string(arg) + " requires a value");
+            }
+            options.opencl_device_index = parse_device_index(argv[i]);
         } else if (arg == "--help" || arg == "-h") {
             usage(0);
         } else if (!arg.empty() && arg.front() == '-') {
@@ -555,6 +580,9 @@ Options parse_bench(int argc, char** argv)
     }
     if (options.bench_rice_partition_orders.empty()) {
         options.bench_rice_partition_orders.push_back(options.native_max_rice_partition_order);
+    }
+    if (options.opencl_device_index.has_value() && !options.bench_include_opencl) {
+        throw std::runtime_error("--device is supported by bench only with --include-opencl");
     }
 
     options.input = positional[0];
@@ -796,6 +824,7 @@ struct BenchCase {
     unsigned native_max_lpc_order;
     unsigned native_lpc_precision;
     unsigned native_max_rice_partition_order;
+    std::optional<std::size_t> opencl_device_index;
     bool show_frame_samples;
     bool show_lpc_order;
     bool show_lpc_precision;
@@ -842,6 +871,7 @@ BenchResult run_bench_case(
         .native_lpc_precision = bench_case.native_lpc_precision,
         .native_max_rice_partition_order = bench_case.native_max_rice_partition_order,
         .native_stats = collect_native_stats ? &native_stats : nullptr,
+        .opencl_device_index = bench_case.opencl_device_index,
     };
 
     const auto started = std::chrono::steady_clock::now();
@@ -920,6 +950,7 @@ int run_bench(const Options& options)
             .native_max_lpc_order = kDefaultNativeMaxLpcOrder,
             .native_lpc_precision = kDefaultNativeLpcPrecision,
             .native_max_rice_partition_order = kDefaultNativeMaxRicePartitionOrder,
+            .opencl_device_index = std::nullopt,
             .show_frame_samples = false,
             .show_lpc_order = false,
             .show_lpc_precision = false,
@@ -936,6 +967,7 @@ int run_bench(const Options& options)
             .native_max_lpc_order = 0,
             .native_lpc_precision = kDefaultNativeLpcPrecision,
             .native_max_rice_partition_order = kDefaultNativeMaxRicePartitionOrder,
+            .opencl_device_index = std::nullopt,
             .show_frame_samples = true,
             .show_lpc_order = false,
             .show_lpc_precision = false,
@@ -956,6 +988,7 @@ int run_bench(const Options& options)
                             .native_max_lpc_order = lpc_order,
                             .native_lpc_precision = lpc_precision,
                             .native_max_rice_partition_order = rice_partition_order,
+                            .opencl_device_index = std::nullopt,
                             .show_frame_samples = true,
                             .show_lpc_order = true,
                             .show_lpc_precision = true,
@@ -963,6 +996,43 @@ int run_bench(const Options& options)
                         });
                     }
                 }
+            }
+        }
+    }
+
+    if (options.bench_include_opencl) {
+        const auto opencl_device_index =
+            available_opencl_device_index(options.opencl_device_index);
+        if (opencl_device_index.has_value()) {
+            for (const unsigned frame_samples : options.bench_frame_samples) {
+                for (const unsigned lpc_order : options.bench_lpc_orders) {
+                    for (const unsigned lpc_precision : options.bench_lpc_precisions) {
+                        for (const unsigned rice_partition_order : options.bench_rice_partition_orders) {
+                            cases.push_back(BenchCase {
+                                .backend = ldcompress::CompressionBackend::OpenClNativeFlac,
+                                .container = ldcompress::FlacContainer::Native,
+                                .threads = 1,
+                                .native_frame_samples = frame_samples,
+                                .native_max_lpc_order = lpc_order,
+                                .native_lpc_precision = lpc_precision,
+                                .native_max_rice_partition_order = rice_partition_order,
+                                .opencl_device_index = opencl_device_index,
+                                .show_frame_samples = true,
+                                .show_lpc_order = true,
+                                .show_lpc_precision = true,
+                                .show_rice_partition_order = true,
+                            });
+                        }
+                    }
+                }
+            }
+        } else {
+            if (options.opencl_device_index.has_value()) {
+                std::cerr << "bench: requested OpenCL device "
+                          << *options.opencl_device_index
+                          << " is not available; omitting opencl rows\n";
+            } else {
+                std::cerr << "bench: OpenCL requested but no available device was found; omitting opencl rows\n";
             }
         }
     }
