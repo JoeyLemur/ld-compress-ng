@@ -22,6 +22,7 @@ struct Options {
     bool unpack = false;
     bool container_explicit = false;
     unsigned level = 11;
+    unsigned threads = 1;
     ldcompress::CompressionBackend backend = ldcompress::CompressionBackend::CpuLibFlac;
     ldcompress::FlacContainer container = ldcompress::FlacContainer::Ogg;
     std::string input;
@@ -33,7 +34,7 @@ struct Options {
 {
     std::ostream& out = exit_code == 0 ? std::cout : std::cerr;
     out << "Usage:\n"
-        << "  ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]\n"
+        << "  ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng verify [--source ORIGINAL.lds] INPUT\n"
         << "  ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]\n"
@@ -146,6 +147,24 @@ unsigned parse_level(std::string_view text)
     return level;
 }
 
+unsigned parse_threads(std::string_view text)
+{
+    unsigned threads = 0;
+    if (text.empty()) {
+        throw std::runtime_error("empty thread count");
+    }
+    for (const char ch : text) {
+        if (ch < '0' || ch > '9') {
+            throw std::runtime_error("invalid thread count: " + std::string(text));
+        }
+        threads = (threads * 10U) + static_cast<unsigned>(ch - '0');
+    }
+    if (threads == 0U || threads > 1024U) {
+        throw std::runtime_error("thread count must be 1..1024");
+    }
+    return threads;
+}
+
 Options parse_compress(int argc, char** argv)
 {
     Options options;
@@ -176,6 +195,11 @@ Options parse_compress(int argc, char** argv)
                 throw std::runtime_error("--level requires a value");
             }
             options.level = parse_level(argv[i]);
+        } else if (arg == "--threads") {
+            if (++i >= argc) {
+                throw std::runtime_error("--threads requires a value");
+            }
+            options.threads = parse_threads(argv[i]);
         } else if (arg == "--container") {
             if (++i >= argc) {
                 throw std::runtime_error("--container requires a value");
@@ -204,6 +228,11 @@ Options parse_compress(int argc, char** argv)
 
     if (!options.container_explicit) {
         options.container = default_container_for_backend(options.backend);
+    }
+
+    if (options.threads != 1 &&
+        options.backend == ldcompress::CompressionBackend::CpuLibFlac) {
+        throw std::runtime_error("--threads is currently supported only by native FLAC backends");
     }
 
     if ((options.backend == ldcompress::CompressionBackend::NativeVerbatimFlac ||
@@ -352,11 +381,14 @@ int run_compress(const Options& options)
         .container = options.container,
         .compression_level = options.level,
         .sample_rate = 40000,
+        .thread_count = options.threads,
     };
     const auto stats = ldcompress::compress_lds(input, options.output, compress_options);
     std::cerr << "compressed " << stats.input_bytes << " bytes to "
               << stats.output_bytes << " bytes (" << stats.samples
-              << " samples, " << ldcompress::backend_name(options.backend) << " backend)\n";
+              << " samples, " << ldcompress::backend_name(options.backend)
+              << " backend, " << options.threads << " thread"
+              << (options.threads == 1 ? "" : "s") << ")\n";
     return 0;
 }
 

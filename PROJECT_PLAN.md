@@ -114,6 +114,9 @@ provided.
 - Add a scalar fixed-predictor/Rice backend as the first actually compressed
   native FLAC output path, then extend it with conservative Rice partition
   search before optimized partition ranges or GPU residual work.
+- Add opt-in frame-level threading for native FLAC encoding. Keep output ordered
+  by frame number and keep bounded in-flight work so large captures do not turn
+  into unbounded memory use.
 - Port FlaLDF host-side encoder logic to native C++.
 - Reuse or adapt the existing OpenCL kernel from `FlaLDF/`.
 - Extend the initial OpenCL platform/device enumeration into explicit device
@@ -150,6 +153,8 @@ provided.
 - Verify native fixed-predictor/Rice output against the same decode/repack
   parity checks, including partitioned residuals, before adding wider partition
   search or GPU acceleration.
+- Verify threaded native FLAC output is byte-for-byte identical to the
+  single-threaded output for generated fixtures.
 - For the OpenCL phase, test device enumeration, explicit device selection, CPU
   fallback behavior, and decompressed-output parity with the CPU backend.
 

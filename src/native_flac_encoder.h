@@ -10,11 +10,13 @@ namespace ldcompress {
 ConversionStats compress_lds_to_native_verbatim_flac(
     std::istream& lds_input,
     const std::string& output_path,
-    unsigned sample_rate);
+    unsigned sample_rate,
+    unsigned thread_count);
 
 ConversionStats compress_lds_to_native_fixed_flac(
     std::istream& lds_input,
     const std::string& output_path,
-    unsigned sample_rate);
+    unsigned sample_rate,
+    unsigned thread_count);
 
 }  // namespace ldcompress

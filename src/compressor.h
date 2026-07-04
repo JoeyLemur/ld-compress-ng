@@ -20,6 +20,7 @@ struct CompressionOptions {
     FlacContainer container = FlacContainer::Ogg;
     unsigned compression_level = 11;
     unsigned sample_rate = 40000;
+    unsigned thread_count = 1;
 };
 
 const char* backend_name(CompressionBackend backend);

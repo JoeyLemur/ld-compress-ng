@@ -42,6 +42,7 @@ The current implementation provides:
   that writes `.flac.ldf` streams with verbatim frames.
 - An experimental scalar `native-fixed` backend that writes native FLAC fixed
   predictor/Rice-coded frames.
+- Optional frame-level threading for the native FLAC backends.
 - Optional OpenCL device enumeration.
 
 The OpenCL/FlaLDF-derived GPU compression backend is not implemented yet.
@@ -49,7 +50,7 @@ The OpenCL/FlaLDF-derived GPU compression backend is not implemented yet.
 ## Usage
 
 ```sh
-ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]
+ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]
 ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]
 ld-compress-ng verify [--source ORIGINAL.lds] INPUT
 ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]
@@ -66,6 +67,8 @@ Defaults:
 - `--backend native-fixed` writes native FLAC `.flac.ldf` output using scalar
   fixed prediction and Rice residuals with partition-order search `0..4`. It is
   a correctness milestone for the native/GPU path, not tuned compression yet.
+- `--threads N` is currently supported for native FLAC backends and parallelizes
+  frame encoding while preserving output order. It defaults to `1`.
 - `--backend opencl` is reserved for the future FlaLDF-derived native FLAC path
   and currently fails before writing output.
 - `--container flac` writes native FLAC, useful for compatibility testing with

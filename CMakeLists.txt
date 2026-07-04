@@ -14,6 +14,7 @@ include(CTest)
 option(LDCOMPRESS_ENABLE_OPENCL "Enable OpenCL device enumeration support" ON)
 
 find_package(PkgConfig REQUIRED)
+find_package(Threads REQUIRED)
 pkg_check_modules(FLAC REQUIRED IMPORTED_TARGET flac)
 pkg_check_modules(OGG REQUIRED IMPORTED_TARGET ogg)
 
@@ -58,6 +59,7 @@ target_link_libraries(ldcompress_core
     PUBLIC
         PkgConfig::FLAC
         PkgConfig::OGG
+        Threads::Threads
 )
 
 if(LDCOMPRESS_HAVE_OPENCL)

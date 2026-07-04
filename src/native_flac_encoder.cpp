@@ -6,10 +6,15 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <deque>
 #include <filesystem>
+#include <future>
 #include <fstream>
 #include <istream>
+#include <ostream>
+#include <sstream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace ldcompress {
@@ -132,14 +137,63 @@ void write_frame(
     throw std::runtime_error("unknown native FLAC frame coding");
 }
 
+std::string encode_frame(
+    std::vector<std::int32_t> samples,
+    std::uint64_t frame_number,
+    unsigned sample_rate,
+    NativeFrameCoding coding)
+{
+    std::ostringstream output(std::ios::out | std::ios::binary);
+    write_frame(output, samples, frame_number, sample_rate, coding);
+    if (!output) {
+        throw std::runtime_error("failed to encode native FLAC frame");
+    }
+    return output.str();
+}
+
+void write_frame_bytes(std::ostream& output, const std::string& bytes)
+{
+    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!output) {
+        throw std::runtime_error("failed to write native FLAC frame output");
+    }
+}
+
+struct PendingFrame {
+    std::uint64_t frame_number = 0;
+    std::future<std::string> bytes;
+};
+
+void flush_next_pending_frame(
+    std::ostream& output,
+    std::deque<PendingFrame>& pending_frames,
+    std::uint64_t& next_frame_to_write)
+{
+    if (pending_frames.empty()) {
+        return;
+    }
+    auto pending = std::move(pending_frames.front());
+    pending_frames.pop_front();
+    if (pending.frame_number != next_frame_to_write) {
+        throw std::runtime_error("internal native FLAC frame ordering error");
+    }
+    write_frame_bytes(output, pending.bytes.get());
+    ++next_frame_to_write;
+}
+
 }  // namespace
 
 ConversionStats compress_lds_to_native_flac(
     std::istream& lds_input,
     const std::string& output_path,
     unsigned sample_rate,
-    NativeFrameCoding coding)
+    NativeFrameCoding coding,
+    unsigned thread_count)
 {
+    if (thread_count == 0) {
+        throw std::runtime_error("native FLAC thread count must be at least 1");
+    }
+
     const auto start = lds_input.tellg();
     if (start == std::streampos(-1)) {
         throw std::runtime_error("native FLAC backend requires a seekable LDS input");
@@ -163,16 +217,44 @@ ConversionStats compress_lds_to_native_flac(
     std::vector<std::int32_t> frame_samples;
     frame_samples.reserve(kFrameSamples);
     std::uint64_t frame_number = 0;
+    std::uint64_t next_frame_to_write = 0;
+    std::deque<PendingFrame> pending_frames;
+    const auto submit_frame = [&](std::vector<std::int32_t> samples, std::uint64_t current_frame) {
+        if (thread_count == 1) {
+            write_frame(output, samples, current_frame, sample_rate, coding);
+            ++next_frame_to_write;
+            return;
+        }
+
+        pending_frames.push_back(PendingFrame {
+            .frame_number = current_frame,
+            .bytes = std::async(
+                std::launch::async, encode_frame, std::move(samples),
+                current_frame, sample_rate, coding),
+        });
+        while (pending_frames.size() > thread_count) {
+            flush_next_pending_frame(output, pending_frames, next_frame_to_write);
+        }
+    };
+
     const auto encoded_stats = process_lds_samples(lds_input, [&](std::int16_t sample) {
         frame_samples.push_back(sample);
         if (frame_samples.size() == kFrameSamples) {
-            write_frame(output, frame_samples, frame_number, sample_rate, coding);
+            submit_frame(std::move(frame_samples), frame_number);
             ++frame_number;
             frame_samples.clear();
+            frame_samples.reserve(kFrameSamples);
         }
     });
     if (!frame_samples.empty()) {
-        write_frame(output, frame_samples, frame_number, sample_rate, coding);
+        submit_frame(std::move(frame_samples), frame_number);
+        ++frame_number;
+    }
+    while (!pending_frames.empty()) {
+        flush_next_pending_frame(output, pending_frames, next_frame_to_write);
+    }
+    if (next_frame_to_write != frame_number) {
+        throw std::runtime_error("internal native FLAC frame count mismatch");
     }
 
     if (encoded_stats.input_bytes != stats.input_bytes ||
@@ -196,19 +278,21 @@ ConversionStats compress_lds_to_native_flac(
 ConversionStats compress_lds_to_native_verbatim_flac(
     std::istream& lds_input,
     const std::string& output_path,
-    unsigned sample_rate)
+    unsigned sample_rate,
+    unsigned thread_count)
 {
     return compress_lds_to_native_flac(
-        lds_input, output_path, sample_rate, NativeFrameCoding::Verbatim);
+        lds_input, output_path, sample_rate, NativeFrameCoding::Verbatim, thread_count);
 }
 
 ConversionStats compress_lds_to_native_fixed_flac(
     std::istream& lds_input,
     const std::string& output_path,
-    unsigned sample_rate)
+    unsigned sample_rate,
+    unsigned thread_count)
 {
     return compress_lds_to_native_flac(
-        lds_input, output_path, sample_rate, NativeFrameCoding::FixedRice);
+        lds_input, output_path, sample_rate, NativeFrameCoding::FixedRice, thread_count);
 }
 
 }  // namespace ldcompress
