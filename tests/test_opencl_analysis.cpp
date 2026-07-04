@@ -217,6 +217,18 @@ void require_lpc_task_matches(
     }
 }
 
+void require_lpc_coefficients_fit_precision(
+    const ldcompress::opencl_detail::FlacClSubframeTask& task,
+    const char* label)
+{
+    const auto min_value = -(std::int64_t {1} << (task.data.cbits - 1));
+    const auto max_value = (std::int64_t {1} << (task.data.cbits - 1)) - 1;
+    for (int i = 0; i < task.data.residualOrder; ++i) {
+        const auto coefficient = task.coefs[static_cast<std::size_t>(i)];
+        require(coefficient >= min_value && coefficient <= max_value, label);
+    }
+}
+
 ldcompress::opencl_detail::OpenClMonoAnalysisTaskPlan make_single_lpc_task_plan(
     const ldcompress::opencl_detail::FlacClSubframeTask& task)
 {
@@ -226,6 +238,19 @@ ldcompress::opencl_detail::OpenClMonoAnalysisTaskPlan make_single_lpc_task_plan(
     plan.residual_tasks_per_frame = 1;
     plan.estimate_tasks_per_frame = 1;
     return plan;
+}
+
+void reset_lpc_generated_fields(
+    ldcompress::opencl_detail::OpenClMonoAnalysisTaskPlan& plan)
+{
+    for (auto& task : plan.residual_tasks) {
+        task.data.shift = 0;
+        task.data.cbits = 0;
+        task.data.size = task.data.obits * task.data.blocksize;
+        task.data.abits = 0;
+        task.data.porder = 99;
+        task.coefs.fill(0);
+    }
 }
 
 ldcompress::opencl_detail::OpenClMonoAnalysisTaskPlan make_lpc_order_task_plan(
@@ -925,6 +950,100 @@ void test_opencl_lpc_multi_order_analysis_smoke()
     }
 }
 
+void test_opencl_lpc_generated_analysis_smoke()
+{
+    using namespace ldcompress::opencl_detail;
+
+    if (!ldcompress::opencl_support_built()) {
+        std::cout << "OpenCL generated LPC analysis smoke skipped: OpenCL support was not built\n";
+        return;
+    }
+
+    const auto device_index = first_available_opencl_device_index();
+    if (!device_index.has_value()) {
+        std::cout << "OpenCL generated LPC analysis smoke skipped: no available OpenCL device\n";
+        return;
+    }
+
+    OpenClMonoAnalysisTaskOptions options;
+    options.frame_samples = 512;
+    options.max_lpc_order = 12;
+    options.include_constant = false;
+    options.min_fixed_order = 0;
+    options.max_fixed_order = 4;
+
+    auto samples = make_lpc_friendly_samples();
+    const auto alternate = make_lpc_friendly_alternate_samples();
+    samples.insert(samples.end(), alternate.begin(), alternate.end());
+
+    std::vector<FlacClSubframeTask> expected_tasks;
+    std::vector<FlacClSubframeTask> expected_best_tasks;
+    auto plan = make_lpc_order_task_plan(
+        samples, 2, options, 12, 5, expected_tasks, expected_best_tasks);
+    reset_lpc_generated_fields(plan);
+
+    const auto result =
+        run_opencl_mono_lpc_generated_analysis(samples, plan, device_index, 12, 5);
+    require(!result.device_name.empty(),
+        "OpenCL generated LPC result did not report a device");
+    require(result.analyzed_tasks.size() == plan.residual_tasks.size(),
+        "OpenCL generated LPC analyzed task count mismatch");
+    require(result.best_tasks.size() == 2,
+        "OpenCL generated LPC best task count mismatch");
+
+    for (std::size_t i = 0; i < result.analyzed_tasks.size(); ++i) {
+        const auto& task = result.analyzed_tasks[i];
+        require(task.data.type == kFlacClSubframeLpc,
+            "OpenCL generated LPC task type mismatch");
+        require(task.data.residualOrder == static_cast<int>((i % options.max_lpc_order) + 1U),
+            "OpenCL generated LPC residual order mismatch");
+        require(task.data.shift >= 0 && task.data.shift <= 15,
+            "OpenCL generated LPC shift out of range");
+        require(task.data.cbits > 0 && task.data.cbits <= 12,
+            "OpenCL generated LPC coefficient precision out of range");
+        require(task.data.porder >= 0 && task.data.porder <= 5,
+            "OpenCL generated LPC partition order out of range");
+        require(task.data.size > 0,
+            "OpenCL generated LPC exact size was not populated");
+        require_lpc_coefficients_fit_precision(task,
+            "OpenCL generated LPC coefficient does not fit precision");
+    }
+
+    for (std::size_t frame = 0; frame < 2; ++frame) {
+        const auto begin = frame * options.max_lpc_order;
+        auto best_size = result.analyzed_tasks[begin].data.size;
+        for (std::size_t i = 1; i < options.max_lpc_order; ++i) {
+            best_size = std::min(best_size,
+                result.analyzed_tasks[begin + i].data.size);
+        }
+        require(result.best_tasks[frame].data.size == best_size,
+            "OpenCL generated LPC best task did not choose the smallest exact size");
+        require(result.best_tasks[frame].data.size <
+                result.best_tasks[frame].data.obits * result.best_tasks[frame].data.blocksize,
+            "OpenCL generated LPC best task did not beat raw size");
+    }
+
+    auto exact_plan = plan;
+    exact_plan.residual_tasks = result.analyzed_tasks;
+    for (auto& task : exact_plan.residual_tasks) {
+        task.data.size = task.data.obits * task.data.blocksize;
+        task.data.abits = 0;
+        task.data.porder = 99;
+    }
+    const auto exact_result =
+        run_opencl_mono_lpc_analysis(samples, exact_plan, device_index, 5);
+    require_analysis_matches(exact_result, result,
+        "OpenCL generated LPC tasks were not stable under exact re-analysis");
+    for (std::size_t i = 0; i < result.analyzed_tasks.size(); ++i) {
+        require_lpc_task_matches(exact_result.analyzed_tasks[i], result.analyzed_tasks[i],
+            "OpenCL generated LPC analyzed task changed under exact re-analysis");
+    }
+    for (std::size_t i = 0; i < result.best_tasks.size(); ++i) {
+        require_lpc_task_matches(exact_result.best_tasks[i], result.best_tasks[i],
+            "OpenCL generated LPC best task changed under exact re-analysis");
+    }
+}
+
 }  // namespace
 
 int main()
@@ -943,6 +1062,7 @@ int main()
         test_opencl_fixed_constant_analysis_smoke();
         test_opencl_lpc_analysis_smoke();
         test_opencl_lpc_multi_order_analysis_smoke();
+        test_opencl_lpc_generated_analysis_smoke();
     } catch (const std::exception& ex) {
         std::cerr << "test_opencl_analysis: " << ex.what() << '\n';
         return 1;

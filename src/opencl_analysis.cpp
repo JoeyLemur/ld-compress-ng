@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -303,6 +304,55 @@ void validate_lpc_analysis_inputs(
                     static_cast<unsigned>(task.data.cbits))) {
                 throw std::runtime_error("OpenCL mono LPC analysis coefficient does not fit precision");
             }
+        }
+    }
+}
+
+void validate_lpc_generation_inputs(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    unsigned lpc_coefficient_precision)
+{
+    const auto frame_count = mono_plan_frame_count(plan);
+    if (frame_count == 0) {
+        throw std::runtime_error("OpenCL mono generated LPC analysis has no frames");
+    }
+    if (plan.residual_tasks_per_frame > kFlacClMaxOrder) {
+        throw std::runtime_error("OpenCL mono generated LPC analysis has too many LPC tasks per frame");
+    }
+    if (lpc_coefficient_precision == 0 || lpc_coefficient_precision > 15) {
+        throw std::runtime_error("OpenCL mono generated LPC analysis coefficient precision must be 1..15");
+    }
+
+    std::optional<std::int32_t> blocksize;
+    for (const auto& task : plan.residual_tasks) {
+        if (task.data.type != kFlacClSubframeLpc) {
+            throw std::runtime_error("OpenCL mono generated LPC analysis received non-LPC task");
+        }
+        if (task.data.residualOrder <= 0 ||
+            task.data.residualOrder > static_cast<std::int32_t>(kFlacClMaxOrder)) {
+            throw std::runtime_error("OpenCL mono generated LPC analysis received invalid LPC order");
+        }
+        if (task.data.obits != static_cast<std::int32_t>(kOpenClAnalysisBitsPerSample)) {
+            throw std::runtime_error("OpenCL mono generated LPC analysis currently supports 16-bit tasks only");
+        }
+        if (task.data.blocksize <= 0 ||
+            static_cast<std::size_t>(task.data.blocksize) > kOpenClAnalysisMaxBlockSize) {
+            throw std::runtime_error("OpenCL mono generated LPC analysis block size is unsupported");
+        }
+        if (task.data.residualOrder >= task.data.blocksize) {
+            throw std::runtime_error("OpenCL mono generated LPC analysis LPC order exceeds block size");
+        }
+        if (task.data.samplesOffs < 0 ||
+            static_cast<std::size_t>(task.data.samplesOffs) > samples.size() ||
+            static_cast<std::size_t>(task.data.blocksize) >
+                samples.size() - static_cast<std::size_t>(task.data.samplesOffs)) {
+            throw std::runtime_error("OpenCL mono generated LPC analysis task samples are out of range");
+        }
+        if (!blocksize.has_value()) {
+            blocksize = task.data.blocksize;
+        } else if (*blocksize != task.data.blocksize) {
+            throw std::runtime_error("OpenCL mono generated LPC analysis requires one block size per launch");
         }
     }
 }
@@ -727,8 +777,11 @@ const char* mono_analysis_kernel_source()
  *
  * Local modifications for ld-compress-ng, 2026-07-04:
  * - Reduced to mono analysis kernels used by the native LaserDisc RF encoder.
- * - Uses the FLACCLSubframeTask ABI but omits stereo, LPC autocorrelation,
- *   Rice-output, and bitstream output kernels.
+ * - Uses the FLACCLSubframeTask ABI but omits stereo, Rice-output, and
+ *   bitstream output kernels.
+ * - Adds a mono, one-window LPC autocorrelation/coefficient-generation path
+ *   that feeds the exact residual analyzer without FLACCL's multi-window
+ *   order-pruning pass.
  * - Keeps the CPU-style one-work-item estimate path and adds exact fixed/LPC
  *   Rice partition analysis for scalar parity testing.
  */
@@ -807,6 +860,156 @@ void ldcompressFindWastedBits(
     {
         ptask[i].data.wbits = w;
         ptask[i].data.abits = a;
+    }
+}
+
+__kernel __attribute__((reqd_work_group_size(1, 1, 1)))
+void ldcompressComputeAutocor(
+    __global float* output,
+    __global const int* samples,
+    __global const float* window,
+    __global FLACCLSubframeTask* tasks,
+    int tasksPerFrame)
+{
+    FLACCLSubframeData task = tasks[get_group_id(0) * tasksPerFrame].data;
+    const int blocksize = task.blocksize;
+    const int windowOffset = get_group_id(1) * blocksize;
+    __global float* out =
+        &output[(get_group_id(0) * get_num_groups(1) + get_group_id(1)) * (MAX_ORDER + 1)];
+
+    for (int lag = 0; lag <= MAX_ORDER; lag++)
+    {
+        float sum = 0.0f;
+        for (int pos = lag; pos < blocksize; pos++)
+        {
+            const float sample0 =
+                (float)samples[task.samplesOffs + pos] * window[windowOffset + pos];
+            const float sample1 =
+                (float)samples[task.samplesOffs + pos - lag] * window[windowOffset + pos - lag];
+            sum += sample0 * sample1;
+        }
+        out[lag] = sum;
+    }
+}
+
+__kernel __attribute__((reqd_work_group_size(1, 1, 1)))
+void ldcompressComputeLpc(
+    __global const float* autocor,
+    __global float* lpcs,
+    int windowCount)
+{
+    const int frame = get_group_id(0);
+    const int window = get_group_id(1);
+    const int lpcOffset =
+        (frame * windowCount + window) * (MAX_ORDER + 1) * 32;
+    const int autocorOffset =
+        (frame * windowCount + window) * (MAX_ORDER + 1);
+    __global const float* autoc = &autocor[autocorOffset];
+
+    float ldr[32];
+    float gen0[32];
+    float gen1[32];
+    float err[32];
+
+    for (int i = 0; i < MAX_ORDER; i++)
+    {
+        gen0[i] = autoc[i + 1];
+        gen1[i] = autoc[i + 1];
+        ldr[i] = 0.0f;
+        err[i] = 0.0f;
+    }
+
+    float error = autoc[0];
+    for (int order = 0; order < MAX_ORDER; order++)
+    {
+        float reflection = 0.0f;
+        if (error > 0.0f)
+            reflection = -gen1[0] / error;
+        if (!isfinite(reflection))
+            reflection = 0.0f;
+
+        error *= 1.0f - (reflection * reflection);
+        if (!isfinite(error) || error < 0.0f)
+            error = 0.0f;
+
+        for (int j = 0; j < MAX_ORDER - 1 - order; j++)
+        {
+            const float nextGen1 = gen1[j + 1] + (reflection * gen0[j]);
+            gen0[j] = gen1[j + 1] * reflection + gen0[j];
+            gen1[j] = nextGen1;
+        }
+
+        err[order] = error;
+
+        ldr[order] = reflection;
+        for (int j = 0; j < order / 2; j++)
+        {
+            const float tmp = ldr[j];
+            ldr[j] += reflection * ldr[order - 1 - j];
+            ldr[order - 1 - j] += reflection * tmp;
+        }
+        if ((order & 1) != 0)
+            ldr[order / 2] += ldr[order / 2] * reflection;
+
+        for (int j = 0; j <= order; j++)
+            lpcs[lpcOffset + order * 32 + j] = -ldr[order - j];
+    }
+
+    for (int j = 0; j < MAX_ORDER; j++)
+        lpcs[lpcOffset + MAX_ORDER * 32 + j] = err[j];
+}
+
+__kernel __attribute__((reqd_work_group_size(1, 1, 1)))
+void ldcompressQuantizeLpcOrders(
+    __global FLACCLSubframeTask* tasks,
+    __global const float* lpcs,
+    int tasksPerFrame,
+    int lpcTasksPerWindow,
+    int coefficientPrecision)
+{
+    const int frame = get_group_id(0);
+    const int window = get_group_id(1);
+    const int lpcOffset =
+        (frame * get_num_groups(1) + window) * (MAX_ORDER + 1) * 32;
+
+    for (int slot = 0; slot < lpcTasksPerWindow; slot++)
+    {
+        const int order = slot + 1;
+        const int taskNo = frame * tasksPerFrame + window * lpcTasksPerWindow + slot;
+        FLACCLSubframeTask task = tasks[taskNo];
+
+        int maxCoefficient = 0;
+        for (int i = 0; i < order; i++)
+        {
+            const float lpc = lpcs[lpcOffset + (order - 1) * 32 + i];
+            const int coefficient = convert_int_rte(lpc * (float)(1 << 15));
+            maxCoefficient |= coefficient ^ (coefficient >> 31);
+        }
+
+        const int desiredBits = clamp(coefficientPrecision, 1, 15);
+        int shift = 0;
+        if (maxCoefficient != 0)
+            shift = clamp(clz(maxCoefficient) - 18 + desiredBits, 0, 15);
+        const int limit = (1 << (desiredBits - 1)) - 1;
+
+        int actualMaxCoefficient = 0;
+        for (int i = 0; i < MAX_ORDER; i++)
+            task.coefs[i] = 0;
+        for (int i = 0; i < order; i++)
+        {
+            const float lpc = lpcs[lpcOffset + (order - 1) * 32 + i];
+            const int coefficient = clamp(
+                convert_int_rte(lpc * (float)(1 << shift)), -limit, limit);
+            actualMaxCoefficient |= coefficient ^ (coefficient >> 31);
+            task.coefs[i] = coefficient;
+        }
+
+        task.data.residualOrder = order;
+        task.data.shift = shift;
+        task.data.cbits = actualMaxCoefficient == 0
+            ? 1
+            : 1 + 32 - clz(actualMaxCoefficient);
+        tasks[taskNo] = task;
     }
 }
 
@@ -1944,6 +2147,246 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_analysis(
     (void)samples;
     (void)plan;
     (void)requested_device_index;
+    (void)max_rice_partition_order;
+    throw std::runtime_error("OpenCL support was not built");
+#endif
+}
+
+OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_generated_analysis(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    std::optional<std::size_t> requested_device_index,
+    unsigned lpc_coefficient_precision,
+    unsigned max_rice_partition_order)
+{
+#if LDCOMPRESS_HAVE_OPENCL
+    validate_lpc_generation_inputs(samples, plan, lpc_coefficient_precision);
+    if (max_rice_partition_order > kExactMaxRicePartitionOrder) {
+        throw std::runtime_error("OpenCL generated LPC analysis max Rice partition order must be 0..8");
+    }
+
+    const auto selected_device = choose_opencl_device(requested_device_index);
+
+    cl_int status = CL_SUCCESS;
+    ClContext context(clCreateContext(nullptr, 1, &selected_device.id, nullptr, nullptr, &status));
+    require_cl(status, "clCreateContext");
+
+    ClCommandQueue queue(clCreateCommandQueue(context.get(), selected_device.id, 0, &status));
+    require_cl(status, "clCreateCommandQueue");
+
+    const char* source = mono_analysis_kernel_source();
+    const std::size_t source_length = std::char_traits<char>::length(source);
+    ClProgram program(clCreateProgramWithSource(context.get(), 1, &source, &source_length, &status));
+    require_cl(status, "clCreateProgramWithSource");
+
+    const cl_int build_status = clBuildProgram(program.get(), 1, &selected_device.id, nullptr, nullptr, nullptr);
+    if (build_status != CL_SUCCESS) {
+        const auto log = program_build_log(program.get(), selected_device.id);
+        throw std::runtime_error("clBuildProgram failed: " + cl_error_name(build_status) +
+            (log.empty() ? std::string {} : "\n" + log));
+    }
+
+    ClKernel wasted_kernel(clCreateKernel(program.get(), "ldcompressFindWastedBits", &status));
+    require_cl(status, "clCreateKernel(ldcompressFindWastedBits)");
+    ClKernel autocor_kernel(clCreateKernel(program.get(), "ldcompressComputeAutocor", &status));
+    require_cl(status, "clCreateKernel(ldcompressComputeAutocor)");
+    ClKernel lpc_kernel(clCreateKernel(program.get(), "ldcompressComputeLpc", &status));
+    require_cl(status, "clCreateKernel(ldcompressComputeLpc)");
+    ClKernel quantize_kernel(clCreateKernel(program.get(), "ldcompressQuantizeLpcOrders", &status));
+    require_cl(status, "clCreateKernel(ldcompressQuantizeLpcOrders)");
+    ClKernel exact_kernel(clCreateKernel(program.get(), "ldcompressAnalyzeSubframeExact", &status));
+    require_cl(status, "clCreateKernel(ldcompressAnalyzeSubframeExact)");
+    ClKernel choose_kernel(clCreateKernel(program.get(), "ldcompressChooseBestMethod", &status));
+    require_cl(status, "clCreateKernel(ldcompressChooseBestMethod)");
+
+    ClMem samples_buffer(clCreateBuffer(context.get(),
+        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        samples.size() * sizeof(std::int32_t),
+        const_cast<std::int32_t*>(samples.data()),
+        &status));
+    require_cl(status, "clCreateBuffer(samples)");
+
+    ClMem tasks_buffer(clCreateBuffer(context.get(),
+        CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+        plan.residual_tasks.size() * sizeof(FlacClSubframeTask),
+        const_cast<FlacClSubframeTask*>(plan.residual_tasks.data()),
+        &status));
+    require_cl(status, "clCreateBuffer(tasks)");
+
+    ClMem selected_buffer(clCreateBuffer(context.get(),
+        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        plan.selected_tasks.size() * sizeof(std::int32_t),
+        const_cast<std::int32_t*>(plan.selected_tasks.data()),
+        &status));
+    require_cl(status, "clCreateBuffer(selectedTasks)");
+
+    const auto frame_count = plan.selected_tasks.size() / plan.estimate_tasks_per_frame;
+    const auto blocksize = static_cast<std::size_t>(plan.residual_tasks.front().data.blocksize);
+    constexpr std::size_t kGeneratedWindowCount = 1;
+    std::vector<float> window(blocksize * kGeneratedWindowCount, 1.0f);
+    ClMem window_buffer(clCreateBuffer(context.get(),
+        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+        window.size() * sizeof(float),
+        window.data(),
+        &status));
+    require_cl(status, "clCreateBuffer(window)");
+
+    const auto autocor_count = frame_count * kGeneratedWindowCount * (kFlacClMaxOrder + 1U);
+    ClMem autocor_buffer(clCreateBuffer(context.get(),
+        CL_MEM_READ_WRITE,
+        autocor_count * sizeof(float),
+        nullptr,
+        &status));
+    require_cl(status, "clCreateBuffer(autocor)");
+
+    const auto lpc_count =
+        frame_count * kGeneratedWindowCount * (kFlacClMaxOrder + 1U) * kFlacClMaxOrder;
+    ClMem lpc_buffer(clCreateBuffer(context.get(),
+        CL_MEM_READ_WRITE,
+        lpc_count * sizeof(float),
+        nullptr,
+        &status));
+    require_cl(status, "clCreateBuffer(lpc)");
+
+    std::vector<FlacClSubframeTask> analyzed_tasks(plan.residual_tasks.size());
+    std::vector<FlacClSubframeTask> best_tasks(frame_count);
+    ClMem best_buffer(clCreateBuffer(context.get(),
+        CL_MEM_WRITE_ONLY,
+        best_tasks.size() * sizeof(FlacClSubframeTask),
+        nullptr,
+        &status));
+    require_cl(status, "clCreateBuffer(tasks_out)");
+
+    cl_mem tasks_mem = tasks_buffer.get();
+    cl_mem samples_mem = samples_buffer.get();
+    cl_mem selected_mem = selected_buffer.get();
+    cl_mem window_mem = window_buffer.get();
+    cl_mem autocor_mem = autocor_buffer.get();
+    cl_mem lpc_mem = lpc_buffer.get();
+    cl_mem best_mem = best_buffer.get();
+    const auto residual_tasks_per_frame =
+        static_cast<std::int32_t>(plan.residual_tasks_per_frame);
+    const auto estimate_tasks_per_frame =
+        static_cast<std::int32_t>(plan.estimate_tasks_per_frame);
+
+    require_cl(clSetKernelArg(wasted_kernel.get(), 0, sizeof(tasks_mem), &tasks_mem),
+        "clSetKernelArg(wasted.tasks)");
+    require_cl(clSetKernelArg(wasted_kernel.get(), 1, sizeof(samples_mem), &samples_mem),
+        "clSetKernelArg(wasted.samples)");
+    require_cl(clSetKernelArg(wasted_kernel.get(), 2, sizeof(residual_tasks_per_frame),
+                   &residual_tasks_per_frame),
+        "clSetKernelArg(wasted.tasksPerChannel)");
+
+    const std::size_t one = 1;
+    const std::size_t frame_global_work_size = frame_count;
+    require_cl(clEnqueueNDRangeKernel(queue.get(), wasted_kernel.get(), 1, nullptr,
+                   &frame_global_work_size, &one, 0, nullptr, nullptr),
+        "clEnqueueNDRangeKernel(ldcompressFindWastedBits)");
+
+    require_cl(clSetKernelArg(autocor_kernel.get(), 0, sizeof(autocor_mem), &autocor_mem),
+        "clSetKernelArg(autocor.output)");
+    require_cl(clSetKernelArg(autocor_kernel.get(), 1, sizeof(samples_mem), &samples_mem),
+        "clSetKernelArg(autocor.samples)");
+    require_cl(clSetKernelArg(autocor_kernel.get(), 2, sizeof(window_mem), &window_mem),
+        "clSetKernelArg(autocor.window)");
+    require_cl(clSetKernelArg(autocor_kernel.get(), 3, sizeof(tasks_mem), &tasks_mem),
+        "clSetKernelArg(autocor.tasks)");
+    require_cl(clSetKernelArg(autocor_kernel.get(), 4, sizeof(residual_tasks_per_frame),
+                   &residual_tasks_per_frame),
+        "clSetKernelArg(autocor.tasksPerFrame)");
+
+    const std::array<std::size_t, 2> generation_global {
+        frame_count,
+        kGeneratedWindowCount,
+    };
+    const std::array<std::size_t, 2> generation_local { 1, 1 };
+    require_cl(clEnqueueNDRangeKernel(queue.get(), autocor_kernel.get(), 2, nullptr,
+                   generation_global.data(), generation_local.data(), 0, nullptr, nullptr),
+        "clEnqueueNDRangeKernel(ldcompressComputeAutocor)");
+
+    const auto window_count_arg = static_cast<std::int32_t>(kGeneratedWindowCount);
+    require_cl(clSetKernelArg(lpc_kernel.get(), 0, sizeof(autocor_mem), &autocor_mem),
+        "clSetKernelArg(lpc.autocor)");
+    require_cl(clSetKernelArg(lpc_kernel.get(), 1, sizeof(lpc_mem), &lpc_mem),
+        "clSetKernelArg(lpc.lpcs)");
+    require_cl(clSetKernelArg(lpc_kernel.get(), 2, sizeof(window_count_arg), &window_count_arg),
+        "clSetKernelArg(lpc.windowCount)");
+    require_cl(clEnqueueNDRangeKernel(queue.get(), lpc_kernel.get(), 2, nullptr,
+                   generation_global.data(), generation_local.data(), 0, nullptr, nullptr),
+        "clEnqueueNDRangeKernel(ldcompressComputeLpc)");
+
+    const auto lpc_tasks_per_window =
+        static_cast<std::int32_t>(plan.residual_tasks_per_frame);
+    const auto lpc_coefficient_precision_arg =
+        static_cast<std::int32_t>(lpc_coefficient_precision);
+    require_cl(clSetKernelArg(quantize_kernel.get(), 0, sizeof(tasks_mem), &tasks_mem),
+        "clSetKernelArg(quantize.tasks)");
+    require_cl(clSetKernelArg(quantize_kernel.get(), 1, sizeof(lpc_mem), &lpc_mem),
+        "clSetKernelArg(quantize.lpcs)");
+    require_cl(clSetKernelArg(quantize_kernel.get(), 2, sizeof(residual_tasks_per_frame),
+                   &residual_tasks_per_frame),
+        "clSetKernelArg(quantize.tasksPerFrame)");
+    require_cl(clSetKernelArg(quantize_kernel.get(), 3, sizeof(lpc_tasks_per_window),
+                   &lpc_tasks_per_window),
+        "clSetKernelArg(quantize.lpcTasksPerWindow)");
+    require_cl(clSetKernelArg(quantize_kernel.get(), 4, sizeof(lpc_coefficient_precision_arg),
+                   &lpc_coefficient_precision_arg),
+        "clSetKernelArg(quantize.coefficientPrecision)");
+    require_cl(clEnqueueNDRangeKernel(queue.get(), quantize_kernel.get(), 2, nullptr,
+                   generation_global.data(), generation_local.data(), 0, nullptr, nullptr),
+        "clEnqueueNDRangeKernel(ldcompressQuantizeLpcOrders)");
+
+    const auto max_rice_partition_order_arg =
+        static_cast<std::int32_t>(max_rice_partition_order);
+    require_cl(clSetKernelArg(exact_kernel.get(), 0, sizeof(samples_mem), &samples_mem),
+        "clSetKernelArg(exact.samples)");
+    require_cl(clSetKernelArg(exact_kernel.get(), 1, sizeof(selected_mem), &selected_mem),
+        "clSetKernelArg(exact.selectedTasks)");
+    require_cl(clSetKernelArg(exact_kernel.get(), 2, sizeof(tasks_mem), &tasks_mem),
+        "clSetKernelArg(exact.tasks)");
+    require_cl(clSetKernelArg(exact_kernel.get(), 3, sizeof(max_rice_partition_order_arg),
+                   &max_rice_partition_order_arg),
+        "clSetKernelArg(exact.maxRicePartitionOrder)");
+
+    const std::size_t estimate_global_work_size = plan.selected_tasks.size();
+    require_cl(clEnqueueNDRangeKernel(queue.get(), exact_kernel.get(), 1, nullptr,
+                   &estimate_global_work_size, &one, 0, nullptr, nullptr),
+        "clEnqueueNDRangeKernel(ldcompressAnalyzeSubframeExact)");
+
+    require_cl(clSetKernelArg(choose_kernel.get(), 0, sizeof(best_mem), &best_mem),
+        "clSetKernelArg(choose.tasks_out)");
+    require_cl(clSetKernelArg(choose_kernel.get(), 1, sizeof(tasks_mem), &tasks_mem),
+        "clSetKernelArg(choose.tasks)");
+    require_cl(clSetKernelArg(choose_kernel.get(), 2, sizeof(selected_mem), &selected_mem),
+        "clSetKernelArg(choose.selectedTasks)");
+    require_cl(clSetKernelArg(choose_kernel.get(), 3, sizeof(estimate_tasks_per_frame),
+                   &estimate_tasks_per_frame),
+        "clSetKernelArg(choose.taskCount)");
+
+    require_cl(clEnqueueNDRangeKernel(queue.get(), choose_kernel.get(), 1, nullptr,
+                   &frame_global_work_size, nullptr, 0, nullptr, nullptr),
+        "clEnqueueNDRangeKernel(ldcompressChooseBestMethod)");
+
+    require_cl(clEnqueueReadBuffer(queue.get(), tasks_buffer.get(), CL_TRUE, 0,
+                   analyzed_tasks.size() * sizeof(FlacClSubframeTask), analyzed_tasks.data(),
+                   0, nullptr, nullptr),
+        "clEnqueueReadBuffer(tasks)");
+    require_cl(clEnqueueReadBuffer(queue.get(), best_buffer.get(), CL_TRUE, 0,
+                   best_tasks.size() * sizeof(FlacClSubframeTask), best_tasks.data(),
+                   0, nullptr, nullptr),
+        "clEnqueueReadBuffer(tasks_out)");
+    require_cl(clFinish(queue.get()), "clFinish");
+
+    return OpenClMonoFixedConstantAnalysisResult {
+        .analyzed_tasks = std::move(analyzed_tasks),
+        .best_tasks = std::move(best_tasks),
+        .device_name = selected_device.name,
+    };
+#else
+    (void)samples;
+    (void)plan;
+    (void)requested_device_index;
+    (void)lpc_coefficient_precision;
     (void)max_rice_partition_order;
     throw std::runtime_error("OpenCL support was not built");
 #endif
