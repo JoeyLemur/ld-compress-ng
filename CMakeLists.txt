@@ -13,7 +13,9 @@ include(CTest)
 
 option(LDCOMPRESS_ENABLE_OPENCL "Enable OpenCL device enumeration support" ON)
 option(LDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS "Enable opt-in tests against external real LDS fixtures" OFF)
+option(LDCOMPRESS_ENABLE_FLAC_TEST_FILE_TESTS "Enable opt-in tests against external FLAC decoder testbench files" OFF)
 set(LDCOMPRESS_REAL_FIXTURE_DIR "" CACHE PATH "Directory containing external .lds fixtures for opt-in real-fixture tests")
+set(LDCOMPRESS_FLAC_TEST_FILE_DIR "" CACHE PATH "Directory containing external FLAC decoder testbench files")
 
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
@@ -182,5 +184,26 @@ if(BUILD_TESTING)
 
         add_test(NAME real_fixtures COMMAND test_real_fixtures "${LDCOMPRESS_REAL_FIXTURE_DIR}")
         set_tests_properties(real_fixtures PROPERTIES LABELS real-fixtures)
+    endif()
+
+    if(LDCOMPRESS_ENABLE_FLAC_TEST_FILE_TESTS)
+        if(NOT LDCOMPRESS_FLAC_TEST_FILE_DIR)
+            message(FATAL_ERROR "LDCOMPRESS_FLAC_TEST_FILE_DIR must be set when LDCOMPRESS_ENABLE_FLAC_TEST_FILE_TESTS=ON")
+        endif()
+        if(NOT IS_DIRECTORY "${LDCOMPRESS_FLAC_TEST_FILE_DIR}")
+            message(FATAL_ERROR "LDCOMPRESS_FLAC_TEST_FILE_DIR is not a directory: ${LDCOMPRESS_FLAC_TEST_FILE_DIR}")
+        endif()
+
+        add_executable(test_flac_test_files
+            tests/test_flac_test_files.cpp
+        )
+
+        target_link_libraries(test_flac_test_files
+            PRIVATE
+                ldcompress_core
+        )
+
+        add_test(NAME flac_test_files COMMAND test_flac_test_files "${LDCOMPRESS_FLAC_TEST_FILE_DIR}")
+        set_tests_properties(flac_test_files PROPERTIES LABELS flac-test-files)
     endif()
 endif()

@@ -21,6 +21,7 @@ namespace {
 
 constexpr unsigned kChannels = 1;
 constexpr unsigned kBitsPerSample = 16;
+constexpr unsigned kSampleRate = 40000;
 constexpr std::size_t kGroupsPerChunk = 8192;
 
 struct EncoderDeleter {
@@ -64,6 +65,9 @@ struct DecoderClient {
     Md5 sample_md5;
     std::array<std::uint8_t, 16> expected_sample_md5 {};
     std::uint64_t expected_total_samples = 0;
+    unsigned expected_sample_rate = 0;
+    unsigned expected_channels = 0;
+    unsigned expected_bits_per_sample = 0;
     bool have_streaminfo = false;
     SampleGroup pending {};
     std::size_t pending_count = 0;
@@ -97,6 +101,10 @@ FLAC__StreamDecoderWriteStatus write_callback(
     }
     if (frame->header.bits_per_sample != kBitsPerSample) {
         client.error = "FLAC stream is not 16-bit";
+        return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
+    }
+    if (frame->header.sample_rate != kSampleRate) {
+        client.error = "FLAC stream sample rate is not 40000 Hz";
         return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
     }
 
@@ -139,6 +147,9 @@ void metadata_callback(
 
     client.have_streaminfo = true;
     client.expected_total_samples = metadata->data.stream_info.total_samples;
+    client.expected_sample_rate = metadata->data.stream_info.sample_rate;
+    client.expected_channels = metadata->data.stream_info.channels;
+    client.expected_bits_per_sample = metadata->data.stream_info.bits_per_sample;
     std::copy(std::begin(metadata->data.stream_info.md5sum),
         std::end(metadata->data.stream_info.md5sum),
         client.expected_sample_md5.begin());
@@ -308,6 +319,15 @@ ConversionStats decompress_flac_to_lds(
     }
     if (!client.have_streaminfo) {
         throw std::runtime_error("FLAC stream did not provide STREAMINFO metadata");
+    }
+    if (client.expected_channels != kChannels) {
+        throw std::runtime_error("FLAC STREAMINFO channel count is not mono");
+    }
+    if (client.expected_bits_per_sample != kBitsPerSample) {
+        throw std::runtime_error("FLAC STREAMINFO bit depth is not 16-bit");
+    }
+    if (client.expected_sample_rate != kSampleRate) {
+        throw std::runtime_error("FLAC STREAMINFO sample rate is not 40000 Hz");
     }
     if (client.expected_total_samples != 0 &&
         client.stats.samples != client.expected_total_samples) {

@@ -143,6 +143,25 @@ each fixture through the CPU/libFLAC and threaded native-fixed backends. It
 prints ratio, timing, and compact native decision-stat columns as a local
 regression scoreboard. The fixture tree remains ignored by Git.
 
+## Opt-In FLAC Decoder Testbench
+
+The local `reference/flac-test-files/` tree can be used for targeted FLAC
+compatibility checks. These are not general audio playback tests; they verify
+that `ld-compress-ng` accepts only RF-shaped FLAC input for decompression and
+rejects non-40 kHz, non-mono, non-16-bit, missing-STREAMINFO, and raw-frame
+testbench cases cleanly.
+
+```sh
+cmake -S . -B build-flac-test-files -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DLDCOMPRESS_ENABLE_FLAC_TEST_FILE_TESTS=ON \
+    -DLDCOMPRESS_FLAC_TEST_FILE_DIR=reference/flac-test-files
+cmake --build build-flac-test-files --parallel
+ctest --test-dir build-flac-test-files -L flac-test-files --output-on-failure
+```
+
+The FLAC testbench tree remains ignored by Git and is used only when the opt-in
+CMake option is enabled.
+
 ## Real Fixture Tuning Sweep
 
 For native encoder tuning work, use the helper script to run `bench` across all

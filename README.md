@@ -28,8 +28,8 @@ optional; when CMake cannot find it, the CPU compressor still builds and
 `ld-compress-ng` itself does not depend on Qt, ffmpeg, `.NET`, Mono, FlaLDF,
 OpenSSL, or `ld-lds-converter`. Some of those tools remain useful for regenerating
 legacy reference fixtures, but they are not normal build or runtime dependencies.
-Ignored real RF fixtures can be exercised with the opt-in CMake real-fixture
-suite documented in `BUILD.md`.
+Ignored real RF fixtures and local FLAC decoder testbench files can be exercised
+with the opt-in CMake suites documented in `BUILD.md`.
 
 ## Current Status
 
@@ -38,7 +38,8 @@ The current implementation provides:
 - Native LDS 10-bit pack/unpack conversion.
 - CPU compression to Ogg FLAC `.ldf` using `libFLAC`/`libogg`.
 - Decompression from Ogg FLAC and native FLAC to packed `.lds`.
-- Decode-time STREAMINFO/sample-count/PCM-MD5 validation for FLAC inputs.
+- Decode-time STREAMINFO/sample-rate/sample-count/PCM-MD5 validation for FLAC
+  inputs.
 - MD5-based verification, optionally against an original `.lds`.
 - A backend selection facade for CPU now and OpenCL later.
 - Native FLAC bitstream primitives and an experimental `native-verbatim` backend

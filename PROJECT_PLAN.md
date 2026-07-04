@@ -72,9 +72,11 @@ Implemented:
   in-flight work.
 - Native decision stats for subframe type, fixed/LPC predictor order, Rice
   partition order, and wasted-bit counts.
-- Native FLAC decode hardening for STREAMINFO presence, decoded sample count,
-  and decoded PCM MD5.
+- Native FLAC decode hardening for STREAMINFO presence, RF-shaped 40 kHz mono
+  16-bit streams, decoded sample count, and decoded PCM MD5.
 - Native FLAC STREAMINFO/frame-header contract tests.
+- Opt-in FLAC decoder testbench regression coverage for rejecting non-RF-shaped
+  and malformed FLAC inputs cleanly.
 - Generated test fixtures, opt-in real-fixture regression tests, and a
   real-fixture tuning sweep helper at `tools/sweep_real_fixtures.py`.
 
@@ -106,7 +108,8 @@ Immediate engineering focus:
   compressed-RF input support, or if this project grows a decoded TBC/CVBS
   export path suitable for Decode-Orc pipeline tests.
 - Add targeted tests from `reference/flac-test-files/` only when they are useful
-  for this compressor's native FLAC surface.
+  for this compressor's native FLAC surface. Done for the first rejection-focused
+  opt-in suite; expand only as native FLAC compatibility work needs it.
 - Keep CPU/libFLAC Ogg `.ldf` as the production default until native/GPU output
   is both compatible and competitive.
 
@@ -272,6 +275,9 @@ provided.
   single-threaded output for generated fixtures.
 - Verify native FLAC STREAMINFO/frame header fields and reject decoded streams
   whose sample count or PCM MD5 does not match STREAMINFO.
+- Run opt-in FLAC decoder testbench checks against `reference/flac-test-files/`
+  to verify clean rejection of valid audio FLAC files that are not RF-shaped
+  inputs, malformed metadata, and raw FLAC frame streams.
 - For the OpenCL phase, test device enumeration, explicit device selection, CPU
   fallback behavior, and decompressed-output parity with the CPU backend.
 
