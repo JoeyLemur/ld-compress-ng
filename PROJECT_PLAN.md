@@ -114,6 +114,8 @@ provided.
 - Add a scalar fixed-predictor/Rice backend as the first actually compressed
   native FLAC output path, then extend it with conservative Rice partition
   search before optimized partition ranges or GPU residual work.
+- Add scalar subframe selection so native FLAC can choose constant, fixed/Rice,
+  or verbatim subframes per frame before adding heavier predictors.
 - Add opt-in frame-level threading for native FLAC encoding. Keep output ordered
   by frame number and keep bounded in-flight work so large captures do not turn
   into unbounded memory use.
@@ -153,6 +155,8 @@ provided.
 - Verify native fixed-predictor/Rice output against the same decode/repack
   parity checks, including partitioned residuals, before adding wider partition
   search or GPU acceleration.
+- Verify native subframe selection for constant, fixed/Rice, and verbatim
+  fallback frames.
 - Verify threaded native FLAC output is byte-for-byte identical to the
   single-threaded output for generated fixtures.
 - For the OpenCL phase, test device enumeration, explicit device selection, CPU

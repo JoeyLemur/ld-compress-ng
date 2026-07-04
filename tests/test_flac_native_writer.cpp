@@ -92,14 +92,24 @@ struct FirstFrameFixedInfo {
     unsigned partition_order = 0;
 };
 
+std::size_t first_frame_subframe_bit_offset()
+{
+    constexpr std::size_t kStreamInfoBytes = 42;
+    constexpr std::size_t kSmallFirstFrameHeaderBytes = 7;
+    return (kStreamInfoBytes + kSmallFirstFrameHeaderBytes) * 8U;
+}
+
+unsigned first_frame_subframe_type(const std::filesystem::path& flac_path)
+{
+    const auto bytes = read_file(flac_path);
+    return read_bits(bytes, first_frame_subframe_bit_offset() + 1U, 6);
+}
+
 FirstFrameFixedInfo first_frame_fixed_info(const std::filesystem::path& flac_path)
 {
     const auto bytes = read_file(flac_path);
-    constexpr std::size_t kStreamInfoBytes = 42;
-    constexpr std::size_t kSmallFirstFrameHeaderBytes = 7;
-    const auto subframe_bit_offset =
-        (kStreamInfoBytes + kSmallFirstFrameHeaderBytes) * 8U;
-    const auto type = read_bits(bytes, subframe_bit_offset + 1U, 6);
+    const auto subframe_bit_offset = first_frame_subframe_bit_offset();
+    const auto type = first_frame_subframe_type(flac_path);
     if (type < 8 || type > 12) {
         throw std::runtime_error("first frame did not use a fixed predictor subframe");
     }
@@ -112,9 +122,15 @@ FirstFrameFixedInfo first_frame_fixed_info(const std::filesystem::path& flac_pat
     };
 }
 
+using FrameWriter = void (*)(
+    std::ostream&,
+    const std::vector<std::int32_t>&,
+    const ldcompress::FlacFrameInfo&);
+
 void write_fixed_rice_file(
     const std::filesystem::path& flac_path,
-    const std::vector<std::int32_t>& samples)
+    const std::vector<std::int32_t>& samples,
+    FrameWriter writer = ldcompress::write_mono_fixed_rice_frame)
 {
     std::ofstream output(flac_path, std::ios::binary);
     if (!output) {
@@ -139,7 +155,7 @@ void write_fixed_rice_file(
         .sample_rate = 40000,
         .bits_per_sample = 16,
     };
-    ldcompress::write_mono_fixed_rice_frame(output, samples, frame_info);
+    writer(output, samples, frame_info);
 }
 
 void verify_fixed_rice_round_trip(
@@ -162,6 +178,24 @@ void verify_fixed_rice_round_trip(
     require(stats.samples == samples.size(), "unexpected fixed/Rice decoded sample count");
     require(stats.output_bytes == expected.size(), "unexpected fixed/Rice decoded LDS byte count");
     require(decoded.str() == expected, "native fixed/Rice FLAC did not round-trip to expected LDS");
+}
+
+void verify_selected_round_trip(
+    const std::filesystem::path& flac_path,
+    const std::vector<std::int32_t>& samples,
+    unsigned expected_type)
+{
+    write_fixed_rice_file(flac_path, samples, ldcompress::write_mono_best_frame);
+    require(first_frame_subframe_type(flac_path) == expected_type,
+        "native best-frame writer chose an unexpected subframe type");
+
+    std::ostringstream decoded;
+    const auto stats = ldcompress::decompress_flac_to_lds(flac_path.string(), decoded);
+    const auto expected = pack_expected_lds(samples);
+
+    require(stats.samples == samples.size(), "unexpected best-frame decoded sample count");
+    require(stats.output_bytes == expected.size(), "unexpected best-frame decoded LDS byte count");
+    require(decoded.str() == expected, "native best-frame FLAC did not round-trip to expected LDS");
 }
 
 void test_native_verbatim_round_trip()
@@ -257,6 +291,27 @@ void test_native_fixed_rice_round_trip()
     std::filesystem::remove_all(temp_dir);
 }
 
+void test_native_best_subframe_selection()
+{
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+        ("ld-compress-ng-native-best-test-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directory(temp_dir);
+
+    verify_selected_round_trip(temp_dir / "constant.flac",
+        std::vector<std::int32_t>(16, -4096), 0);
+    verify_selected_round_trip(temp_dir / "fixed.flac", {
+        0, 64, 128, 192, 256, 320, 384, 448,
+        512, 576, 640, 704, 768, 832, 896, 960,
+    }, 10);
+    verify_selected_round_trip(temp_dir / "verbatim.flac", {
+        32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
+        32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
+    }, 1);
+
+    std::filesystem::remove_all(temp_dir);
+}
+
 }  // namespace
 
 int main()
@@ -264,6 +319,7 @@ int main()
     try {
         test_native_verbatim_round_trip();
         test_native_fixed_rice_round_trip();
+        test_native_best_subframe_selection();
     } catch (const std::exception& ex) {
         std::cerr << "test_flac_native_writer: " << ex.what() << '\n';
         return 1;

@@ -40,8 +40,8 @@ The current implementation provides:
 - A backend selection facade for CPU now and OpenCL later.
 - Native FLAC bitstream primitives and an experimental `native-verbatim` backend
   that writes `.flac.ldf` streams with verbatim frames.
-- An experimental scalar `native-fixed` backend that writes native FLAC fixed
-  predictor/Rice-coded frames.
+- An experimental scalar `native-fixed` backend that selects native FLAC
+  constant, verbatim, or fixed predictor/Rice-coded frames.
 - Optional frame-level threading for the native FLAC backends.
 - Optional OpenCL device enumeration.
 
@@ -65,8 +65,10 @@ Defaults:
   uncompressed verbatim FLAC frames. This is mainly a compatibility stepping
   stone for the future native/GPU encoder, not the final compressed path.
 - `--backend native-fixed` writes native FLAC `.flac.ldf` output using scalar
-  fixed prediction and Rice residuals with partition-order search `0..4`. It is
-  a correctness milestone for the native/GPU path, not tuned compression yet.
+  subframe selection: constant for flat frames, fixed prediction/Rice residuals
+  with partition-order search `0..4` when useful, and verbatim fallback when
+  fixed/Rice would be larger. It is a correctness milestone for the native/GPU
+  path, not tuned compression yet.
 - `--threads N` is currently supported for native FLAC backends and parallelizes
   frame encoding while preserving output order. It defaults to `1`.
 - `--backend opencl` is reserved for the future FlaLDF-derived native FLAC path

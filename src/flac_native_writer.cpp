@@ -247,7 +247,21 @@ struct FixedRiceSubframe {
     unsigned partition_order = 0;
     std::vector<unsigned> rice_parameters;
     std::vector<std::int64_t> residuals;
+    std::uint64_t bits = 0;
 };
+
+bool all_samples_equal(const std::vector<std::int32_t>& samples)
+{
+    return std::all_of(samples.begin(), samples.end(), [&](std::int32_t sample) {
+        return sample == samples.front();
+    });
+}
+
+std::uint64_t verbatim_subframe_bits(std::size_t block_size, unsigned bits_per_sample)
+{
+    constexpr unsigned kSubframeHeaderBits = 8;
+    return kSubframeHeaderBits + (static_cast<std::uint64_t>(block_size) * bits_per_sample);
+}
 
 bool valid_partition_order(std::size_t block_size, unsigned predictor_order, unsigned partition_order)
 {
@@ -345,6 +359,7 @@ FixedRiceSubframe choose_fixed_rice_subframe(
                 best.partition_order = partition_order;
                 best.rice_parameters = std::move(rice_parameters);
                 best.residuals = residuals;
+                best.bits = bits;
             }
         }
     }
@@ -415,6 +430,41 @@ void write_frame_with_body(
     write_u16be(output, crc);
 }
 
+void write_fixed_rice_frame(
+    std::ostream& output,
+    const std::vector<std::int32_t>& samples,
+    const FlacFrameInfo& info,
+    const FixedRiceSubframe& subframe)
+{
+    BitWriter frame_body;
+    frame_body.write_bits(0, 1);
+    frame_body.write_bits(0x08U + subframe.order, 6);
+    frame_body.write_bits(0, 1);
+    for (unsigned i = 0; i < subframe.order; ++i) {
+        frame_body.write_signed(samples[i], info.bits_per_sample);
+    }
+    frame_body.write_bits(0, 2);
+    frame_body.write_bits(subframe.partition_order, 4);
+
+    std::size_t residual_offset = 0;
+    const auto partition_count = std::size_t {1} << subframe.partition_order;
+    for (std::size_t partition = 0; partition < partition_count; ++partition) {
+        const auto residual_count = partition_residual_count(
+            samples.size(), subframe.order, subframe.partition_order, partition);
+        const auto rice_parameter = subframe.rice_parameters.at(partition);
+        frame_body.write_bits(rice_parameter, 4);
+        for (std::size_t i = 0; i < residual_count; ++i) {
+            write_rice_signed(frame_body, subframe.residuals.at(residual_offset + i),
+                rice_parameter);
+        }
+        residual_offset += residual_count;
+    }
+    if (residual_offset != subframe.residuals.size()) {
+        throw std::runtime_error("internal FLAC residual partition accounting error");
+    }
+    write_frame_with_body(output, samples.size(), info, frame_body);
+}
+
 }  // namespace
 
 void write_native_flac_streaminfo(std::ostream& output, const FlacStreamInfo& info)
@@ -468,6 +518,27 @@ void write_mono_verbatim_frame(
     write_frame_with_body(output, samples.size(), info, frame_body);
 }
 
+void write_mono_constant_frame(
+    std::ostream& output,
+    const std::vector<std::int32_t>& samples,
+    const FlacFrameInfo& info)
+{
+    if (samples.empty()) {
+        throw std::runtime_error("cannot write an empty FLAC frame");
+    }
+    if (!all_samples_equal(samples)) {
+        throw std::runtime_error("constant FLAC subframe received varying samples");
+    }
+    validate_sample(samples.front(), info.bits_per_sample);
+
+    BitWriter frame_body;
+    frame_body.write_bits(0, 1);
+    frame_body.write_bits(0, 6);
+    frame_body.write_bits(0, 1);
+    frame_body.write_signed(samples.front(), info.bits_per_sample);
+    write_frame_with_body(output, samples.size(), info, frame_body);
+}
+
 void write_mono_fixed_rice_frame(
     std::ostream& output,
     const std::vector<std::int32_t>& samples,
@@ -481,34 +552,33 @@ void write_mono_fixed_rice_frame(
     }
 
     const auto subframe = choose_fixed_rice_subframe(samples, info.bits_per_sample);
+    write_fixed_rice_frame(output, samples, info, subframe);
+}
 
-    BitWriter frame_body;
-    frame_body.write_bits(0, 1);
-    frame_body.write_bits(0x08U + subframe.order, 6);
-    frame_body.write_bits(0, 1);
-    for (unsigned i = 0; i < subframe.order; ++i) {
-        frame_body.write_signed(samples[i], info.bits_per_sample);
+void write_mono_best_frame(
+    std::ostream& output,
+    const std::vector<std::int32_t>& samples,
+    const FlacFrameInfo& info)
+{
+    if (samples.empty()) {
+        throw std::runtime_error("cannot write an empty FLAC frame");
     }
-    frame_body.write_bits(0, 2);
-    frame_body.write_bits(subframe.partition_order, 4);
+    for (const auto sample : samples) {
+        validate_sample(sample, info.bits_per_sample);
+    }
 
-    std::size_t residual_offset = 0;
-    const auto partition_count = std::size_t {1} << subframe.partition_order;
-    for (std::size_t partition = 0; partition < partition_count; ++partition) {
-        const auto residual_count = partition_residual_count(
-            samples.size(), subframe.order, subframe.partition_order, partition);
-        const auto rice_parameter = subframe.rice_parameters.at(partition);
-        frame_body.write_bits(rice_parameter, 4);
-        for (std::size_t i = 0; i < residual_count; ++i) {
-            write_rice_signed(frame_body, subframe.residuals.at(residual_offset + i),
-                rice_parameter);
-        }
-        residual_offset += residual_count;
+    if (all_samples_equal(samples)) {
+        write_mono_constant_frame(output, samples, info);
+        return;
     }
-    if (residual_offset != subframe.residuals.size()) {
-        throw std::runtime_error("internal FLAC residual partition accounting error");
+
+    const auto fixed = choose_fixed_rice_subframe(samples, info.bits_per_sample);
+    const auto verbatim_bits = verbatim_subframe_bits(samples.size(), info.bits_per_sample);
+    if (fixed.bits < verbatim_bits) {
+        write_fixed_rice_frame(output, samples, info, fixed);
+        return;
     }
-    write_frame_with_body(output, samples.size(), info, frame_body);
+    write_mono_verbatim_frame(output, samples, info);
 }
 
 }  // namespace ldcompress

@@ -131,7 +131,7 @@ void write_frame(
         write_mono_verbatim_frame(output, samples, frame_info);
         return;
     case NativeFrameCoding::FixedRice:
-        write_mono_fixed_rice_frame(output, samples, frame_info);
+        write_mono_best_frame(output, samples, frame_info);
         return;
     }
     throw std::runtime_error("unknown native FLAC frame coding");
