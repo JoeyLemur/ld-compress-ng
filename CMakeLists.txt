@@ -10,8 +10,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(CTest)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FLAC REQUIRED IMPORTED_TARGET flac)
+pkg_check_modules(OGG REQUIRED IMPORTED_TARGET ogg)
 
 add_library(ldcompress_core
+    src/flac_codec.cpp
+    src/hash.cpp
     src/lds_codec.cpp
 )
 
@@ -23,6 +28,12 @@ target_include_directories(ldcompress_core
 target_compile_options(ldcompress_core
     PRIVATE
         $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-Wall -Wextra -Wpedantic>
+)
+
+target_link_libraries(ldcompress_core
+    PUBLIC
+        PkgConfig::FLAC
+        PkgConfig::OGG
 )
 
 add_executable(ld-compress-ng
@@ -50,4 +61,15 @@ if(BUILD_TESTING)
     )
 
     add_test(NAME lds_codec COMMAND test_lds_codec)
+
+    add_executable(test_flac_roundtrip
+        tests/test_flac_roundtrip.cpp
+    )
+
+    target_link_libraries(test_flac_roundtrip
+        PRIVATE
+            ldcompress_core
+    )
+
+    add_test(NAME flac_roundtrip COMMAND test_flac_roundtrip)
 endif()
