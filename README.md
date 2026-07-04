@@ -41,9 +41,10 @@ The current implementation provides:
 - Decode-time STREAMINFO/sample-rate/sample-count/PCM-MD5 validation for FLAC
   inputs.
 - MD5-based verification, optionally against an original `.lds`.
-- A backend selection facade for CPU now and OpenCL later.
-- OpenCL device enumeration and explicit device-selection plumbing for the
-  reserved GPU backend.
+- A backend selection facade for CPU, scalar native FLAC, and OpenCL-native
+  FLAC output.
+- OpenCL device enumeration and explicit device-selection plumbing for the GPU
+  backend.
 - Native FLAC bitstream primitives and an experimental `native-verbatim` backend
   that writes `.flac.ldf` streams with verbatim frames.
 - An experimental scalar `native-fixed` backend that selects native FLAC
@@ -51,12 +52,15 @@ The current implementation provides:
 - Optional frame-level threading for the native FLAC backends using a bounded
   worker pool with ordered output.
 - Optional OpenCL device enumeration.
-- A hardware-optional OpenCL analysis smoke path for FLACCL-compatible mono
-  task buffers, including fixed/constant wasted-bits and residual-size kernels.
-  This has been validated on a Linux/NVIDIA OpenCL host; macOS currently builds
-  the optional OpenCL path but has no local usable OpenCL device.
+- A hardware-optional OpenCL analysis and compression path for
+  FLACCL-compatible mono task buffers, including generated LPC, exact
+  residual/Rice analysis, and selected native FLAC frame writing. This has been
+  validated on a Linux/NVIDIA OpenCL host; macOS currently builds the optional
+  OpenCL path but has no local usable OpenCL device.
 
-The OpenCL/FlaLDF-derived GPU compression backend is not implemented yet.
+The OpenCL/FlaLDF-derived GPU compression backend is implemented as an
+experimental Linux-first native FLAC path. CPU/libFLAC remains the default
+production backend.
 
 ## Usage
 
@@ -83,8 +87,9 @@ Defaults:
   wasted-bits handling for the low zero bits in LDS-derived PCM, and verbatim
   fallback when predictive coding would be larger. It is still experimental,
   but now tracks CPU/libFLAC closely on the current real-fixture set.
-- `--threads N` is currently supported for native FLAC backends and parallelizes
-  frame encoding while preserving output order. It defaults to `1`.
+- `--threads N` is currently supported for scalar native FLAC backends and
+  parallelizes frame encoding while preserving output order. The OpenCL backend
+  currently requires `--threads 1`. It defaults to `1`.
 - `--frame-samples N` is currently supported for native FLAC backends and sets
   the FLAC block size used by the native encoder. It defaults to `4608` and is
   constrained to `16..4608` for 40 kHz subset compatibility.
@@ -101,10 +106,10 @@ Defaults:
 - `--stats` is currently supported for native FLAC backends and prints per-frame
   subframe counts, fixed/LPC predictor order counts, Rice partition order
   counts, and wasted-bits counts.
-- `--backend opencl` is reserved for the future FlaLDF-derived native FLAC path.
-  It currently validates native-FLAC output and optional `--device INDEX`
-  selection, then fails before writing output because the encoder is not
-  implemented yet.
+- `--backend opencl` writes experimental native FLAC `.flac.ldf` output. Full
+  frames are analyzed on the selected OpenCL device and written through the
+  native selected-subframe writer; a short final frame is encoded with the
+  scalar native selector.
 - `--device INDEX` / `--opencl-device INDEX` is currently accepted only with
   `--backend opencl`. The indexes are the flattened indexes printed by
   `ld-compress-ng devices`.

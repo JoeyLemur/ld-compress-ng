@@ -58,11 +58,10 @@ Implemented:
 - MD5-based verification, optionally against an original `.lds`.
 - `compress`, `decompress`, `verify`, `convert`, `bench`, and `devices`
   subcommands.
-- Optional OpenCL device enumeration. OpenCL compression remains reserved and
-  fails before writing output.
-- Explicit OpenCL device-selection plumbing for the reserved GPU backend.
+- Optional OpenCL device enumeration.
+- Explicit OpenCL device-selection plumbing for the GPU backend.
 - A separate `opencl_backend` boundary that validates native-FLAC output and
-  device selection before the encoder is implemented.
+  device selection before running the OpenCL/native-FLAC encoder path.
 - Native FLAC writer primitives, STREAMINFO, frame headers, CRC handling, and
   native `.flac.ldf` output.
 - Experimental `native-verbatim` backend.
@@ -111,6 +110,10 @@ Implemented:
   constant, fixed/Rice, and LPC/Rice subframes without exposing private writer
   residual/Rice structures, including hardware-optional OpenCL-selected native
   FLAC round-trip coverage.
+- Initial OpenCL native FLAC compression backend that analyzes full frames on
+  the selected OpenCL device, writes selected native FLAC subframes, handles a
+  short final frame through the scalar native selector, and round-trips through
+  the CLI on hosts with an available OpenCL device.
 - Linux OpenCL validation on `smaug`, Debian 13-era amd64 kernel
   `6.12.94+deb13-amd64`, NVIDIA OpenCL 3.0 CUDA runtime. The OpenCL analysis
   smoke tests compiled and ran on an RTX 4070 SUPER / RTX 5070 Ti host, and the
@@ -199,8 +202,7 @@ Initial behavior:
 - `compress` defaults to CPU compression using Ogg FLAC-compatible `.ldf` output.
 - `compress --backend cpu|native-verbatim|native-fixed|opencl` should select
   between the implemented CPU path, experimental native FLAC writer paths, and
-  the later OpenCL-native FLAC encoder. Until the GPU encoder exists, `opencl`
-  is a reserved backend name that must fail before writing output.
+  the experimental OpenCL-native FLAC encoder.
 - `decompress` accepts existing `.ldf`, `.raw.oga`, and `.flac.ldf` inputs where
   supported by the implemented decoder path.
 - `verify` reports hashes for the compressed input and the decompressed/repacked

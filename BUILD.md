@@ -14,7 +14,7 @@ build time or runtime.
 | `pkg-config` / `pkgconf` | Yes | Locate FLAC/Ogg | CMake uses imported pkg-config targets. |
 | `libFLAC` development files | Yes | CPU FLAC encode/decode | Requires pkg-config module `flac`. |
 | `libogg` development files | Yes | Ogg FLAC container support | Requires pkg-config module `ogg`. |
-| OpenCL headers + loader/framework | Optional | `devices` enumeration, future GPU backend | Disable with `-DLDCOMPRESS_ENABLE_OPENCL=OFF`. |
+| OpenCL headers + loader/framework | Optional | `devices` enumeration, experimental OpenCL backend | Disable with `-DLDCOMPRESS_ENABLE_OPENCL=OFF`. |
 | `ffmpeg` | No | Legacy fixture regeneration only | Not used by normal builds/tests/runtime. |
 | `ld-lds-converter` | No | Legacy fixture regeneration only | Reference binary may live under `build-ld-lds-converter/`. |
 | Qt | No | Reference converter build only | `ld-compress-ng` itself does not link Qt. |
@@ -157,9 +157,9 @@ ctest --test-dir build --output-on-failure
 
 `ld-compress-ng devices` prints flattened OpenCL device indexes for
 `compress --backend opencl --device INDEX` or `--opencl-device INDEX`, plus
-platform-local `platform/device` coordinates. The OpenCL compression backend
-still stops before writing output until the FlaLDF-derived encoder is
-implemented.
+platform-local `platform/device` coordinates. The OpenCL compression backend is
+an experimental native FLAC path and requires an available OpenCL device at
+runtime.
 
 ## Opt-In Real Fixture Regression
 

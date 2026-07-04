@@ -1,9 +1,11 @@
 #include "lds_codec.h"
+#include "opencl_devices.h"
 
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -90,6 +92,21 @@ std::string make_lds_fixture()
     return data;
 }
 
+std::optional<std::size_t> first_available_opencl_device_index()
+{
+    if (!ldcompress::opencl_support_built()) {
+        return std::nullopt;
+    }
+
+    for (const auto& device : ldcompress::list_opencl_devices()) {
+        if (device.available) {
+            return device.flat_index;
+        }
+    }
+
+    return std::nullopt;
+}
+
 void test_cli(const std::filesystem::path& exe)
 {
     const auto temp_dir = std::filesystem::temp_directory_path() /
@@ -100,6 +117,7 @@ void test_cli(const std::filesystem::path& exe)
     const auto lds = temp_dir / "fixture.lds";
     const auto default_lds = temp_dir / "default-name.lds";
     const auto alias_lds = temp_dir / "alias-name.lds";
+    const auto opencl_default_lds = temp_dir / "opencl-default.lds";
     const auto pcm = temp_dir / "fixture.s16";
     const auto repacked = temp_dir / "fixture.repacked.lds";
     const auto compressed = temp_dir / "fixture.ldf";
@@ -142,12 +160,24 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_cpu_device = temp_dir / "fixture.bad-cpu-device.ldf";
     const auto bad_native_device = temp_dir / "fixture.bad-native-device.ldf";
     const auto bad_native_opencl_device = temp_dir / "fixture.bad-native-opencl-device.ldf";
+    const auto bad_opencl_threads = temp_dir / "fixture.bad-opencl-threads.flac.ldf";
     const auto empty_lds = temp_dir / "empty.lds";
     const auto empty_native_verbatim = temp_dir / "empty.native-verbatim.flac.ldf";
     const auto empty_native_verbatim_out = temp_dir / "empty.native-verbatim.out.lds";
     const auto empty_native_fixed = temp_dir / "empty.native-fixed.flac.ldf";
     const auto empty_native_fixed_out = temp_dir / "empty.native-fixed.out.lds";
     const auto opencl_output = temp_dir / "fixture.opencl.flac.ldf";
+    const auto opencl_output_out = temp_dir / "fixture.opencl.out.lds";
+    const auto opencl_stats = temp_dir / "fixture.opencl-stats.flac.ldf";
+    const auto opencl_stats_out = temp_dir / "fixture.opencl-stats.out.lds";
+    const auto opencl_container = temp_dir / "fixture.opencl-container.flac.ldf";
+    const auto opencl_container_out = temp_dir / "fixture.opencl-container.out.lds";
+    const auto opencl_fixed_only = temp_dir / "fixture.opencl-fixed-only.flac.ldf";
+    const auto opencl_fixed_only_out = temp_dir / "fixture.opencl-fixed-only.out.lds";
+    const auto opencl_default = temp_dir / "opencl-default.flac.ldf";
+    const auto opencl_default_out = temp_dir / "opencl-default.out.lds";
+    const auto empty_opencl = temp_dir / "empty.opencl.flac.ldf";
+    const auto empty_opencl_out = temp_dir / "empty.opencl.out.lds";
     const auto bad_opencl_device = temp_dir / "fixture.bad-opencl-device.flac.ldf";
     const auto bad_opencl_container = temp_dir / "fixture.bad-opencl-container.ldf";
 
@@ -155,6 +185,7 @@ void test_cli(const std::filesystem::path& exe)
     write_file(lds, fixture);
     write_file(default_lds, fixture);
     write_file(alias_lds, fixture);
+    write_file(opencl_default_lds, fixture);
     write_file(empty_lds, "");
 
     run_ok(shell_quote(exe) + " convert --unpack " + shell_quote(lds) + " " + shell_quote(pcm));
@@ -262,8 +293,41 @@ void test_cli(const std::filesystem::path& exe)
     run_ok(shell_quote(exe) + " verify --source " + shell_quote(empty_lds) + " " + shell_quote(empty_native_fixed));
     run_ok(shell_quote(exe) + " decompress " + shell_quote(empty_native_fixed) + " " + shell_quote(empty_native_fixed_out));
     require(read_file(empty_native_fixed_out).empty(), "empty native-fixed FLAC produced decoded LDS bytes");
-    run_fails(shell_quote(exe) + " compress --backend opencl " + shell_quote(lds) + " " + shell_quote(opencl_output));
-    require(!std::filesystem::exists(opencl_output), "unimplemented OpenCL backend wrote output");
+    const auto opencl_device_index = first_available_opencl_device_index();
+    if (opencl_device_index.has_value()) {
+        const auto opencl_device_arg = " --device " + std::to_string(*opencl_device_index);
+        run_ok(shell_quote(exe) + " compress --backend opencl" + opencl_device_arg + " " + shell_quote(lds) + " " + shell_quote(opencl_output));
+        run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(opencl_output));
+        run_ok(shell_quote(exe) + " decompress " + shell_quote(opencl_output) + " " + shell_quote(opencl_output_out));
+        require(read_file(opencl_output_out) == fixture, "OpenCL FLAC round trip changed LDS bytes");
+        run_ok(shell_quote(exe) + " compress --backend opencl --stats" + opencl_device_arg + " " + shell_quote(lds) + " " + shell_quote(opencl_stats));
+        run_ok(shell_quote(exe) + " decompress " + shell_quote(opencl_stats) + " " + shell_quote(opencl_stats_out));
+        require(read_file(opencl_stats_out) == fixture, "OpenCL --stats round trip changed LDS bytes");
+        require(read_file(opencl_stats) == read_file(opencl_output),
+            "OpenCL --stats output differed from normal output");
+        run_ok(shell_quote(exe) + " compress --backend opencl --container flac" + opencl_device_arg + " " + shell_quote(lds) + " " + shell_quote(opencl_container));
+        run_ok(shell_quote(exe) + " decompress " + shell_quote(opencl_container) + " " + shell_quote(opencl_container_out));
+        require(read_file(opencl_container_out) == fixture,
+            "OpenCL explicit native container round trip changed LDS bytes");
+        run_ok(shell_quote(exe) + " compress --backend opencl --lpc-order 0" + opencl_device_arg + " " + shell_quote(lds) + " " + shell_quote(opencl_fixed_only));
+        run_ok(shell_quote(exe) + " decompress " + shell_quote(opencl_fixed_only) + " " + shell_quote(opencl_fixed_only_out));
+        require(read_file(opencl_fixed_only_out) == fixture,
+            "OpenCL fixed-only round trip changed LDS bytes");
+        run_ok("cd " + shell_quote(temp_dir) + " && " + shell_quote(exe) + " compress --backend opencl" + opencl_device_arg + " opencl-default.lds");
+        require(std::filesystem::exists(opencl_default), "OpenCL default output name was not .flac.ldf");
+        run_ok(shell_quote(exe) + " decompress " + shell_quote(opencl_default) + " " + shell_quote(opencl_default_out));
+        require(read_file(opencl_default_out) == fixture,
+            "OpenCL default-name round trip changed LDS bytes");
+        run_ok(shell_quote(exe) + " compress --backend opencl" + opencl_device_arg + " " + shell_quote(empty_lds) + " " + shell_quote(empty_opencl));
+        run_ok(shell_quote(exe) + " verify --source " + shell_quote(empty_lds) + " " + shell_quote(empty_opencl));
+        run_ok(shell_quote(exe) + " decompress " + shell_quote(empty_opencl) + " " + shell_quote(empty_opencl_out));
+        require(read_file(empty_opencl_out).empty(), "empty OpenCL FLAC produced decoded LDS bytes");
+    } else {
+        run_fails(shell_quote(exe) + " compress --backend opencl " + shell_quote(lds) + " " + shell_quote(opencl_output));
+        require(!std::filesystem::exists(opencl_output), "unavailable OpenCL backend wrote output");
+    }
+    run_fails(shell_quote(exe) + " compress --backend opencl --threads 2 " + shell_quote(lds) + " " + shell_quote(bad_opencl_threads));
+    require(!std::filesystem::exists(bad_opencl_threads), "OpenCL --threads rejection wrote output");
     run_fails(shell_quote(exe) + " compress --backend opencl --device nope " + shell_quote(lds) + " " + shell_quote(bad_opencl_device));
     require(!std::filesystem::exists(bad_opencl_device), "invalid OpenCL device index wrote output");
     run_fails(shell_quote(exe) + " compress --backend opencl --container ogg " + shell_quote(lds) + " " + shell_quote(bad_opencl_container));
