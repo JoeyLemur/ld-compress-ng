@@ -85,7 +85,8 @@ Defaults:
   matching the 40 kHz FLAC subset cap; `0` disables LPC.
 - `--lpc-precision N` is currently supported for native FLAC backends and sets
   the LPC coefficient precision considered by `native-fixed`. It defaults to
-  `12`; FLAC subset-compatible values `1..15` are accepted.
+  `10`, based on the current real-fixture tuning sweep; FLAC subset-compatible
+  values `1..15` are accepted.
 - `--rice-partition-order N` is currently supported for native FLAC backends and
   sets the maximum Rice partition order considered by `native-fixed`. It
   defaults to `4`; values `0..8` are accepted for FLAC subset compatibility.

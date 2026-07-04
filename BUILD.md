@@ -172,6 +172,12 @@ Use `--dry-run` to print the generated `bench` commands and `--limit N` for a
 quick subset check. The helper depends only on Python 3 stdlib, the built
 `ld-compress-ng` binary, and local ignored fixture files.
 
+The first broad sweep over the six current real fixtures selected frame size
+`4608`, LPC order `12`, LPC coefficient precision `10`, and Rice partition order
+`4` as the best aggregate native-fixed size. That changed the default LPC
+coefficient precision from `12` to `10`; CPU/libFLAC still remains smaller than
+native-fixed on the current fixture set.
+
 ## Legacy Fixture Regeneration
 
 Committed tests do not require `ffmpeg` or `ld-lds-converter`; the legacy Ogg

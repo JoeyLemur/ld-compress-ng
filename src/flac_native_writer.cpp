@@ -278,7 +278,7 @@ struct LpcRiceSubframe {
     unsigned partition_order = 0;
     unsigned wasted_bits = 0;
     unsigned effective_bits_per_sample = 0;
-    unsigned coefficient_precision = 12;
+    unsigned coefficient_precision = 10;
     int quantization_shift = 0;
     std::vector<std::int32_t> shifted_samples;
     std::vector<std::int32_t> coefficients;

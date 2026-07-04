@@ -194,7 +194,7 @@ ldcompress::FlacSubframeDecision write_fixed_rice_file(
     const std::vector<std::int32_t>& samples,
     FrameWriter writer = ldcompress::write_mono_fixed_rice_frame,
     unsigned max_lpc_order = 12,
-    unsigned lpc_coefficient_precision = 12,
+    unsigned lpc_coefficient_precision = 10,
     unsigned max_rice_partition_order = 4)
 {
     std::ofstream output(flac_path, std::ios::binary);
@@ -284,7 +284,7 @@ void verify_selected_round_trip(
 void verify_lpc_round_trip(
     const std::filesystem::path& flac_path,
     const std::vector<std::int32_t>& samples,
-    unsigned lpc_coefficient_precision = 12)
+    unsigned lpc_coefficient_precision = 10)
 {
     const auto decision = write_fixed_rice_file(
         flac_path, samples, ldcompress::write_mono_best_frame, 12,
@@ -463,6 +463,8 @@ void test_native_best_subframe_selection()
         32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
     }, 1, 6);
     verify_lpc_round_trip(temp_dir / "lpc.flac", make_lpc_friendly_samples());
+    verify_lpc_round_trip(temp_dir / "lpc-precision12.flac",
+        make_lpc_friendly_samples(), 12);
     verify_lpc_round_trip(temp_dir / "lpc-precision15.flac",
         make_lpc_friendly_samples(), 15);
 
