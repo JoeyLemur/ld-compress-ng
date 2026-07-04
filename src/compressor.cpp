@@ -40,13 +40,15 @@ ConversionStats compress_lds(
             throw std::runtime_error("native-verbatim backend writes native FLAC only");
         }
         return compress_lds_to_native_verbatim_flac(
-            lds_input, output_path, options.sample_rate, options.thread_count);
+            lds_input, output_path, options.sample_rate, options.thread_count,
+            options.native_stats);
     case CompressionBackend::NativeFixedFlac:
         if (options.container != FlacContainer::Native) {
             throw std::runtime_error("native-fixed backend writes native FLAC only");
         }
         return compress_lds_to_native_fixed_flac(
-            lds_input, output_path, options.sample_rate, options.thread_count);
+            lds_input, output_path, options.sample_rate, options.thread_count,
+            options.native_stats);
     case CompressionBackend::OpenClNativeFlac:
         throw std::runtime_error("OpenCL compression backend is not implemented yet");
     }

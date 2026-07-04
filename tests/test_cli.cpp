@@ -113,6 +113,8 @@ void test_cli(const std::filesystem::path& exe)
     const auto native_fixed_out = temp_dir / "fixture.native-fixed.out.lds";
     const auto native_fixed_threads = temp_dir / "fixture.native-fixed-threads.flac.ldf";
     const auto native_fixed_threads_out = temp_dir / "fixture.native-fixed-threads.out.lds";
+    const auto native_fixed_stats = temp_dir / "fixture.native-fixed-stats.flac.ldf";
+    const auto native_fixed_stats_out = temp_dir / "fixture.native-fixed-stats.out.lds";
     const auto default_native_fixed = temp_dir / "default-name.flac.ldf";
     const auto alias_native_fixed = temp_dir / "alias-name.flac.ldf";
     const auto backend_order_cpu = temp_dir / "backend-order-cpu.ldf";
@@ -120,6 +122,7 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_native_fixed = temp_dir / "fixture.bad-native-fixed.ldf";
     const auto bad_native_fixed_reversed = temp_dir / "fixture.bad-native-fixed-reversed.ldf";
     const auto bad_native_fixed_threads = temp_dir / "fixture.bad-native-fixed-threads.ldf";
+    const auto bad_cpu_stats = temp_dir / "fixture.bad-cpu-stats.ldf";
     const auto bad_cpu_threads = temp_dir / "fixture.bad-cpu-threads.ldf";
     const auto empty_lds = temp_dir / "empty.lds";
     const auto empty_native_verbatim = temp_dir / "empty.native-verbatim.flac.ldf";
@@ -170,8 +173,15 @@ void test_cli(const std::filesystem::path& exe)
     require(read_file(native_fixed_threads_out) == fixture, "threaded native-fixed FLAC round trip changed LDS bytes");
     require(read_file(native_fixed_threads) == read_file(native_fixed),
         "threaded native-fixed output differed from single-threaded output");
+    run_ok(shell_quote(exe) + " compress --backend native-fixed --stats " + shell_quote(lds) + " " + shell_quote(native_fixed_stats));
+    run_ok(shell_quote(exe) + " decompress " + shell_quote(native_fixed_stats) + " " + shell_quote(native_fixed_stats_out));
+    require(read_file(native_fixed_stats_out) == fixture, "native-fixed --stats round trip changed LDS bytes");
+    require(read_file(native_fixed_stats) == read_file(native_fixed),
+        "native-fixed --stats output differed from normal output");
     run_fails(shell_quote(exe) + " compress --backend native-fixed --threads 0 " + shell_quote(lds) + " " + shell_quote(bad_native_fixed_threads));
     require(!std::filesystem::exists(bad_native_fixed_threads), "invalid native-fixed thread count wrote output");
+    run_fails(shell_quote(exe) + " compress --stats " + shell_quote(lds) + " " + shell_quote(bad_cpu_stats));
+    require(!std::filesystem::exists(bad_cpu_stats), "CPU --stats rejection wrote output");
     run_fails(shell_quote(exe) + " compress --threads 2 " + shell_quote(lds) + " " + shell_quote(bad_cpu_threads));
     require(!std::filesystem::exists(bad_cpu_threads), "CPU --threads rejection wrote output");
     run_ok("cd " + shell_quote(temp_dir) + " && " + shell_quote(exe) + " compress --backend native-fixed default-name.lds");

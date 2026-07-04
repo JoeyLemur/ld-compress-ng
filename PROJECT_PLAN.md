@@ -122,6 +122,8 @@ provided.
   or verbatim subframes per frame before adding heavier predictors.
 - Add FLAC wasted-bits support so native subframes can avoid storing the low
   zero bits that are inherent in unpacked 10-bit LDS samples.
+- Add native compression stats for frame/subframe decisions so optimization work
+  is driven by fixture behavior rather than guesses.
 - Add opt-in frame-level threading for native FLAC encoding. Keep output ordered
   by frame number and keep bounded in-flight work so large captures do not turn
   into unbounded memory use.

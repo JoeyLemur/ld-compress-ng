@@ -50,7 +50,7 @@ The OpenCL/FlaLDF-derived GPU compression backend is not implemented yet.
 ## Usage
 
 ```sh
-ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]
+ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--stats] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]
 ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]
 ld-compress-ng verify [--source ORIGINAL.lds] INPUT
 ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]
@@ -73,6 +73,9 @@ Defaults:
   compression yet.
 - `--threads N` is currently supported for native FLAC backends and parallelizes
   frame encoding while preserving output order. It defaults to `1`.
+- `--stats` is currently supported for native FLAC backends and prints per-frame
+  subframe counts, fixed predictor order counts, Rice partition order counts,
+  and wasted-bits counts.
 - `--backend opencl` is reserved for the future FlaLDF-derived native FLAC path
   and currently fails before writing output.
 - `--container flac` writes native FLAC, useful for compatibility testing with

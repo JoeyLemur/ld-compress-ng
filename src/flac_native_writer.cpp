@@ -266,6 +266,12 @@ std::uint64_t verbatim_subframe_bits(std::size_t block_size, unsigned bits_per_s
     return kSubframeHeaderBits + (static_cast<std::uint64_t>(block_size) * bits_per_sample);
 }
 
+std::uint64_t constant_subframe_bits(unsigned bits_per_sample)
+{
+    constexpr unsigned kSubframeHeaderBits = 8;
+    return kSubframeHeaderBits + bits_per_sample;
+}
+
 std::uint64_t subframe_wasted_bits_overhead(unsigned wasted_bits)
 {
     return wasted_bits == 0 ? 0 : wasted_bits;
@@ -277,6 +283,12 @@ std::uint64_t verbatim_subframe_bits(
     unsigned wasted_bits)
 {
     return verbatim_subframe_bits(block_size, bits_per_sample - wasted_bits) +
+        subframe_wasted_bits_overhead(wasted_bits);
+}
+
+std::uint64_t constant_subframe_bits(unsigned bits_per_sample, unsigned wasted_bits)
+{
+    return constant_subframe_bits(bits_per_sample - wasted_bits) +
         subframe_wasted_bits_overhead(wasted_bits);
 }
 
@@ -521,7 +533,7 @@ void write_frame_with_body(
     write_u16be(output, crc);
 }
 
-void write_fixed_rice_frame(
+FlacSubframeDecision write_fixed_rice_frame(
     std::ostream& output,
     const FlacFrameInfo& info,
     const FixedRiceSubframe& subframe)
@@ -553,6 +565,13 @@ void write_fixed_rice_frame(
         throw std::runtime_error("internal FLAC residual partition accounting error");
     }
     write_frame_with_body(output, subframe.shifted_samples.size(), info, frame_body);
+    return FlacSubframeDecision {
+        .kind = FlacSubframeKind::FixedRice,
+        .fixed_order = subframe.order,
+        .rice_partition_order = subframe.partition_order,
+        .wasted_bits = subframe.wasted_bits,
+        .estimated_bits = subframe.bits,
+    };
 }
 
 }  // namespace
@@ -588,7 +607,7 @@ void write_native_flac_streaminfo(std::ostream& output, const FlacStreamInfo& in
     }
 }
 
-void write_mono_verbatim_frame(
+FlacSubframeDecision write_mono_verbatim_frame(
     std::ostream& output,
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& info)
@@ -611,9 +630,17 @@ void write_mono_verbatim_frame(
         frame_body.write_signed(sample, effective_bits_per_sample);
     }
     write_frame_with_body(output, samples.size(), info, frame_body);
+    return FlacSubframeDecision {
+        .kind = FlacSubframeKind::Verbatim,
+        .fixed_order = 0,
+        .rice_partition_order = 0,
+        .wasted_bits = wasted_bits,
+        .estimated_bits = verbatim_subframe_bits(
+            samples.size(), info.bits_per_sample, wasted_bits),
+    };
 }
 
-void write_mono_constant_frame(
+FlacSubframeDecision write_mono_constant_frame(
     std::ostream& output,
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& info)
@@ -634,9 +661,16 @@ void write_mono_constant_frame(
     write_subframe_header(frame_body, 0, wasted_bits);
     frame_body.write_signed(shifted_samples.front(), effective_bits_per_sample);
     write_frame_with_body(output, samples.size(), info, frame_body);
+    return FlacSubframeDecision {
+        .kind = FlacSubframeKind::Constant,
+        .fixed_order = 0,
+        .rice_partition_order = 0,
+        .wasted_bits = wasted_bits,
+        .estimated_bits = constant_subframe_bits(info.bits_per_sample, wasted_bits),
+    };
 }
 
-void write_mono_fixed_rice_frame(
+FlacSubframeDecision write_mono_fixed_rice_frame(
     std::ostream& output,
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& info)
@@ -649,10 +683,10 @@ void write_mono_fixed_rice_frame(
     }
 
     const auto subframe = choose_fixed_rice_subframe(samples, info.bits_per_sample);
-    write_fixed_rice_frame(output, info, subframe);
+    return write_fixed_rice_frame(output, info, subframe);
 }
 
-void write_mono_best_frame(
+FlacSubframeDecision write_mono_best_frame(
     std::ostream& output,
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& info)
@@ -665,8 +699,7 @@ void write_mono_best_frame(
     }
 
     if (all_samples_equal(samples)) {
-        write_mono_constant_frame(output, samples, info);
-        return;
+        return write_mono_constant_frame(output, samples, info);
     }
 
     const auto wasted_bits = common_wasted_bits(samples, info.bits_per_sample);
@@ -674,10 +707,9 @@ void write_mono_best_frame(
     const auto verbatim_bits = verbatim_subframe_bits(
         samples.size(), info.bits_per_sample, wasted_bits);
     if (fixed.bits < verbatim_bits) {
-        write_fixed_rice_frame(output, info, fixed);
-        return;
+        return write_fixed_rice_frame(output, info, fixed);
     }
-    write_mono_verbatim_frame(output, samples, info);
+    return write_mono_verbatim_frame(output, samples, info);
 }
 
 }  // namespace ldcompress

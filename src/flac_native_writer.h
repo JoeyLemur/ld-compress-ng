@@ -25,24 +25,38 @@ struct FlacFrameInfo {
     unsigned bits_per_sample = 16;
 };
 
+enum class FlacSubframeKind {
+    Constant,
+    Verbatim,
+    FixedRice,
+};
+
+struct FlacSubframeDecision {
+    FlacSubframeKind kind = FlacSubframeKind::Verbatim;
+    unsigned fixed_order = 0;
+    unsigned rice_partition_order = 0;
+    unsigned wasted_bits = 0;
+    std::uint64_t estimated_bits = 0;
+};
+
 void write_native_flac_streaminfo(std::ostream& output, const FlacStreamInfo& info);
 
-void write_mono_verbatim_frame(
+FlacSubframeDecision write_mono_verbatim_frame(
     std::ostream& output,
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& info);
 
-void write_mono_constant_frame(
+FlacSubframeDecision write_mono_constant_frame(
     std::ostream& output,
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& info);
 
-void write_mono_fixed_rice_frame(
+FlacSubframeDecision write_mono_fixed_rice_frame(
     std::ostream& output,
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& info);
 
-void write_mono_best_frame(
+FlacSubframeDecision write_mono_best_frame(
     std::ostream& output,
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& info);

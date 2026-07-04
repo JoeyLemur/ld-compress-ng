@@ -4,6 +4,7 @@
 #include "lds_codec.h"
 #include "opencl_devices.h"
 
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -25,6 +26,7 @@ struct Options {
     bool pack = false;
     bool unpack = false;
     bool container_explicit = false;
+    bool show_stats = false;
     unsigned level = 11;
     unsigned threads = 1;
     std::vector<unsigned> bench_threads;
@@ -39,7 +41,7 @@ struct Options {
 {
     std::ostream& out = exit_code == 0 ? std::cout : std::cerr;
     out << "Usage:\n"
-        << "  ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]\n"
+        << "  ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--stats] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng verify [--source ORIGINAL.lds] INPUT\n"
         << "  ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]\n"
@@ -198,6 +200,8 @@ Options parse_compress(int argc, char** argv)
         const std::string_view arg(argv[i]);
         if (arg == "--overwrite") {
             options.overwrite = true;
+        } else if (arg == "--stats") {
+            options.show_stats = true;
         } else if (arg == "--backend") {
             if (++i >= argc) {
                 throw std::runtime_error("--backend requires a value");
@@ -257,6 +261,10 @@ Options parse_compress(int argc, char** argv)
     if (options.threads != 1 &&
         options.backend == ldcompress::CompressionBackend::CpuLibFlac) {
         throw std::runtime_error("--threads is currently supported only by native FLAC backends");
+    }
+    if (options.show_stats &&
+        options.backend == ldcompress::CompressionBackend::CpuLibFlac) {
+        throw std::runtime_error("--stats is currently supported only by native FLAC backends");
     }
 
     if ((options.backend == ldcompress::CompressionBackend::NativeVerbatimFlac ||
@@ -422,6 +430,40 @@ private:
     std::uint64_t bytes_ = 0;
 };
 
+template <std::size_t N>
+void print_nonzero_counts(
+    std::ostream& output,
+    std::string_view label,
+    const std::array<std::uint64_t, N>& counts)
+{
+    output << label << ':';
+    bool any = false;
+    for (std::size_t i = 0; i < counts.size(); ++i) {
+        if (counts[i] == 0) {
+            continue;
+        }
+        output << (any ? ", " : " ") << i << '=' << counts[i];
+        any = true;
+    }
+    if (!any) {
+        output << " none";
+    }
+    output << '\n';
+}
+
+void print_native_stats(const ldcompress::NativeCompressionStats& stats)
+{
+    std::cerr << "native stats: frames=" << stats.frames
+              << " constant=" << stats.constant_frames
+              << " fixed-rice=" << stats.fixed_rice_frames
+              << " verbatim=" << stats.verbatim_frames
+              << " estimated-subframe-bits=" << stats.estimated_subframe_bits
+              << '\n';
+    print_nonzero_counts(std::cerr, "fixed orders", stats.fixed_order_counts);
+    print_nonzero_counts(std::cerr, "partition orders", stats.partition_order_counts);
+    print_nonzero_counts(std::cerr, "wasted bits", stats.wasted_bits_counts);
+}
+
 int run_compress(const Options& options)
 {
     ensure_distinct_input_output(options.input, options.output);
@@ -432,12 +474,14 @@ int run_compress(const Options& options)
         throw std::runtime_error("could not open input: " + options.input);
     }
 
+    ldcompress::NativeCompressionStats native_stats;
     const ldcompress::CompressionOptions compress_options {
         .backend = options.backend,
         .container = options.container,
         .compression_level = options.level,
         .sample_rate = 40000,
         .thread_count = options.threads,
+        .native_stats = options.show_stats ? &native_stats : nullptr,
     };
     const auto stats = ldcompress::compress_lds(input, options.output, compress_options);
     std::cerr << "compressed " << stats.input_bytes << " bytes to "
@@ -445,6 +489,9 @@ int run_compress(const Options& options)
               << " samples, " << ldcompress::backend_name(options.backend)
               << " backend, " << options.threads << " thread"
               << (options.threads == 1 ? "" : "s") << ")\n";
+    if (options.show_stats) {
+        print_native_stats(native_stats);
+    }
     return 0;
 }
 

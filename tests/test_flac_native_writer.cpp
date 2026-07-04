@@ -158,7 +158,7 @@ FirstFrameFixedInfo first_frame_fixed_info(const std::filesystem::path& flac_pat
     };
 }
 
-using FrameWriter = void (*)(
+using FrameWriter = ldcompress::FlacSubframeDecision (*)(
     std::ostream&,
     const std::vector<std::int32_t>&,
     const ldcompress::FlacFrameInfo&);
