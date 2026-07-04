@@ -175,8 +175,9 @@ quick subset check. The helper depends only on Python 3 stdlib, the built
 The first broad sweep over the six current real fixtures selected frame size
 `4608`, LPC order `12`, LPC coefficient precision `10`, and Rice partition order
 `4` as the best aggregate native-fixed size. That changed the default LPC
-coefficient precision from `12` to `10`; CPU/libFLAC still remains smaller than
-native-fixed on the current fixture set.
+coefficient precision from `12` to `10`. After LPC quantization candidate
+selection, that default native-fixed configuration produces `81,329,035` bytes
+across the current real fixtures, still about `+1.55%` larger than CPU/libFLAC.
 
 ## Legacy Fixture Regeneration
 

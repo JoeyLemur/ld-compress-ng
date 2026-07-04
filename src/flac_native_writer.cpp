@@ -287,6 +287,11 @@ struct LpcRiceSubframe {
     std::uint64_t bits = 0;
 };
 
+struct QuantizedLpcCoefficients {
+    int quantization_shift = 0;
+    std::vector<std::int32_t> coefficients;
+};
+
 bool all_samples_equal(const std::vector<std::int32_t>& samples)
 {
     return std::all_of(samples.begin(), samples.end(), [&](std::int32_t sample) {
@@ -546,10 +551,35 @@ std::vector<double> levinson_durbin_coefficients(
     return coefficients;
 }
 
-std::vector<std::int32_t> quantize_lpc_coefficients(
+void append_quantized_lpc_candidate(
+    std::vector<QuantizedLpcCoefficients>& candidates,
+    int quantization_shift,
+    std::vector<std::int32_t> coefficients)
+{
+    const auto any_nonzero = std::any_of(
+        coefficients.begin(), coefficients.end(), [](std::int32_t value) {
+            return value != 0;
+        });
+    if (!any_nonzero) {
+        return;
+    }
+    const auto duplicate = std::any_of(
+        candidates.begin(), candidates.end(), [&](const QuantizedLpcCoefficients& candidate) {
+            return candidate.quantization_shift == quantization_shift &&
+                candidate.coefficients == coefficients;
+        });
+    if (duplicate) {
+        return;
+    }
+    candidates.push_back(QuantizedLpcCoefficients {
+        .quantization_shift = quantization_shift,
+        .coefficients = std::move(coefficients),
+    });
+}
+
+std::vector<QuantizedLpcCoefficients> quantize_lpc_coefficients(
     const std::vector<double>& coefficients,
-    unsigned coefficient_precision,
-    int& quantization_shift)
+    unsigned coefficient_precision)
 {
     double max_abs = 0.0;
     for (const auto coefficient : coefficients) {
@@ -564,22 +594,43 @@ std::vector<std::int32_t> quantize_lpc_coefficients(
 
     const auto min_quantized = -(std::int64_t {1} << (coefficient_precision - 1U));
     const auto max_quantized = (std::int64_t {1} << (coefficient_precision - 1U)) - 1;
-    const auto ideal_shift = std::floor(std::log2(
-        static_cast<double>(max_quantized) / max_abs));
-    quantization_shift = static_cast<int>(
-        std::clamp(ideal_shift, 0.0, 15.0));
+    int exponent = 0;
+    std::frexp(max_abs, &exponent);
+    const int log2_max_abs = exponent - 1;
+    const int coefficient_magnitude_bits = static_cast<int>(coefficient_precision) - 1;
+    const int raw_shift = coefficient_magnitude_bits - log2_max_abs - 1;
+    const int quantization_shift = std::clamp(raw_shift, 0, 15);
 
-    const auto scale = static_cast<double>(std::int64_t {1} << quantization_shift);
-    std::vector<std::int32_t> quantized;
-    quantized.reserve(coefficients.size());
-    bool any_nonzero = false;
+    std::vector<QuantizedLpcCoefficients> candidates;
+
+    std::vector<std::int32_t> independently_rounded;
+    independently_rounded.reserve(coefficients.size());
     for (const auto coefficient : coefficients) {
-        auto value = static_cast<std::int64_t>(std::llround(coefficient * scale));
+        auto value = static_cast<std::int64_t>(
+            std::llround(std::ldexp(coefficient, quantization_shift)));
         value = std::clamp(value, min_quantized, max_quantized);
-        any_nonzero = any_nonzero || value != 0;
-        quantized.push_back(static_cast<std::int32_t>(value));
+        independently_rounded.push_back(static_cast<std::int32_t>(value));
     }
-    return any_nonzero ? quantized : std::vector<std::int32_t> {};
+    append_quantized_lpc_candidate(
+        candidates, quantization_shift, std::move(independently_rounded));
+
+    std::vector<std::int32_t> error_feedback_rounded;
+    error_feedback_rounded.reserve(coefficients.size());
+    double error = 0.0;
+    for (const auto coefficient : coefficients) {
+        const auto scaled = raw_shift < 0
+            ? std::ldexp(coefficient, raw_shift)
+            : std::ldexp(coefficient, quantization_shift);
+        error += scaled;
+        auto value = static_cast<std::int64_t>(std::llround(error));
+        value = std::clamp(value, min_quantized, max_quantized);
+        error -= static_cast<double>(value);
+        error_feedback_rounded.push_back(static_cast<std::int32_t>(value));
+    }
+    append_quantized_lpc_candidate(
+        candidates, quantization_shift, std::move(error_feedback_rounded));
+
+    return candidates;
 }
 
 std::vector<std::int64_t> lpc_residuals(
@@ -691,52 +742,59 @@ LpcRiceSubframe choose_lpc_rice_subframe(
             continue;
         }
 
-        int quantization_shift = 0;
-        auto quantized_coefficients = quantize_lpc_coefficients(
-            coefficients, lpc_coefficient_precision, quantization_shift);
-        if (quantized_coefficients.size() != order || quantization_shift < 0 ||
-            quantization_shift > 15) {
+        auto quantized_candidates = quantize_lpc_coefficients(
+            coefficients, lpc_coefficient_precision);
+        if (quantized_candidates.empty()) {
             continue;
         }
 
-        auto residuals = lpc_residuals(
-            shifted_samples, quantized_coefficients, order, quantization_shift);
-        for (unsigned partition_order = 0; partition_order <= max_rice_partition_order; ++partition_order) {
-            if (!valid_partition_order(shifted_samples.size(), order, partition_order)) {
+        for (const auto& quantized : quantized_candidates) {
+            if (quantized.coefficients.size() != order ||
+                quantized.quantization_shift < 0 ||
+                quantized.quantization_shift > 15) {
                 continue;
             }
 
-            const auto partition_count = std::size_t {1} << partition_order;
-            std::vector<unsigned> rice_parameters;
-            rice_parameters.reserve(partition_count);
-            std::size_t residual_offset = 0;
-            for (std::size_t partition = 0; partition < partition_count; ++partition) {
-                const auto residual_count = partition_residual_count(
-                    shifted_samples.size(), order, partition_order, partition);
-                rice_parameters.push_back(choose_rice_parameter(
-                    residuals, residual_offset, residual_count));
-                residual_offset += residual_count;
-            }
-            if (residual_offset != residuals.size()) {
-                throw std::runtime_error("internal FLAC LPC residual partition accounting error");
-            }
+            auto residuals = lpc_residuals(
+                shifted_samples, quantized.coefficients, order,
+                quantized.quantization_shift);
+            for (unsigned partition_order = 0; partition_order <= max_rice_partition_order; ++partition_order) {
+                if (!valid_partition_order(shifted_samples.size(), order, partition_order)) {
+                    continue;
+                }
 
-            const auto bits = lpc_rice_subframe_bits(
-                order, partition_order, wasted_bits, lpc_coefficient_precision,
-                rice_parameters, residuals, shifted_samples.size(),
-                effective_bits_per_sample);
-            if (bits < best.bits) {
-                best.order = order;
-                best.partition_order = partition_order;
-                best.wasted_bits = wasted_bits;
-                best.effective_bits_per_sample = effective_bits_per_sample;
-                best.coefficient_precision = lpc_coefficient_precision;
-                best.quantization_shift = quantization_shift;
-                best.shifted_samples = shifted_samples;
-                best.coefficients = quantized_coefficients;
-                best.rice_parameters = std::move(rice_parameters);
-                best.residuals = residuals;
-                best.bits = bits;
+                const auto partition_count = std::size_t {1} << partition_order;
+                std::vector<unsigned> rice_parameters;
+                rice_parameters.reserve(partition_count);
+                std::size_t residual_offset = 0;
+                for (std::size_t partition = 0; partition < partition_count; ++partition) {
+                    const auto residual_count = partition_residual_count(
+                        shifted_samples.size(), order, partition_order, partition);
+                    rice_parameters.push_back(choose_rice_parameter(
+                        residuals, residual_offset, residual_count));
+                    residual_offset += residual_count;
+                }
+                if (residual_offset != residuals.size()) {
+                    throw std::runtime_error("internal FLAC LPC residual partition accounting error");
+                }
+
+                const auto bits = lpc_rice_subframe_bits(
+                    order, partition_order, wasted_bits, lpc_coefficient_precision,
+                    rice_parameters, residuals, shifted_samples.size(),
+                    effective_bits_per_sample);
+                if (bits < best.bits) {
+                    best.order = order;
+                    best.partition_order = partition_order;
+                    best.wasted_bits = wasted_bits;
+                    best.effective_bits_per_sample = effective_bits_per_sample;
+                    best.coefficient_precision = lpc_coefficient_precision;
+                    best.quantization_shift = quantized.quantization_shift;
+                    best.shifted_samples = shifted_samples;
+                    best.coefficients = quantized.coefficients;
+                    best.rice_parameters = std::move(rice_parameters);
+                    best.residuals = residuals;
+                    best.bits = bits;
+                }
             }
         }
     }

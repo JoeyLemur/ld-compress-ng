@@ -85,11 +85,12 @@ Real-fixture sweep result:
 - Broad sweep artifact paths are under ignored `build/real-fixture-sweeps/`.
 - Current broad sweep winner across the six local real fixtures:
   `threads=8`, `frame=4608`, `lpc=12`, `prec=10`, `rice=4`.
-- Aggregate native-fixed size from that sweep: `81,381,147` bytes, still about
-  `+1.62%` larger than CPU/libFLAC for the same fixtures.
-- This justified changing the native LPC coefficient precision default from
-  `12` to `10`, but also shows that the native scalar encoder still needs
-  algorithmic work rather than only knob tuning.
+- Aggregate native-fixed size after LPC quantization candidate selection:
+  `81,329,035` bytes, still about `+1.55%` larger than CPU/libFLAC for the same
+  fixtures.
+- The broad sweep justified changing the native LPC coefficient precision default
+  from `12` to `10`, but the native scalar encoder still needs algorithmic work
+  rather than only knob tuning.
 
 Immediate engineering focus:
 
