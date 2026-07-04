@@ -31,6 +31,7 @@ endif()
 add_library(ldcompress_core
     src/compressor.cpp
     src/flac_codec.cpp
+    src/flac_native_writer.cpp
     src/flac_primitives.cpp
     src/hash.cpp
     src/lds_codec.cpp
@@ -112,6 +113,17 @@ if(BUILD_TESTING)
     )
 
     add_test(NAME flac_primitives COMMAND test_flac_primitives)
+
+    add_executable(test_flac_native_writer
+        tests/test_flac_native_writer.cpp
+    )
+
+    target_link_libraries(test_flac_native_writer
+        PRIVATE
+            ldcompress_core
+    )
+
+    add_test(NAME flac_native_writer COMMAND test_flac_native_writer)
 
     add_executable(test_reference_ogg
         tests/test_reference_ogg.cpp
