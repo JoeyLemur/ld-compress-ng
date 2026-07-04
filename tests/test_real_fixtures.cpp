@@ -3,6 +3,7 @@
 #include "hash.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -10,6 +11,7 @@
 #include <iomanip>
 #include <iostream>
 #include <ostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -64,6 +66,8 @@ private:
 
 struct TimedStats {
     ldcompress::ConversionStats stats;
+    ldcompress::NativeCompressionStats native_stats;
+    bool show_native_stats = false;
     double elapsed_seconds = 0.0;
 };
 
@@ -179,8 +183,59 @@ TimedStats compress_fixture(
 
     return TimedStats {
         .stats = stats,
+        .native_stats = options.native_stats == nullptr
+            ? ldcompress::NativeCompressionStats {}
+            : *options.native_stats,
+        .show_native_stats = options.native_stats != nullptr,
         .elapsed_seconds = elapsed.count(),
     };
+}
+
+template <std::size_t N>
+std::string summarize_nonzero_counts(
+    const std::array<std::uint64_t, N>& counts,
+    std::size_t max_items = 3)
+{
+    std::vector<std::pair<std::uint64_t, std::size_t>> nonzero;
+    nonzero.reserve(counts.size());
+    for (std::size_t i = 0; i < counts.size(); ++i) {
+        if (counts[i] != 0) {
+            nonzero.emplace_back(counts[i], i);
+        }
+    }
+    if (nonzero.empty()) {
+        return "-";
+    }
+
+    std::sort(nonzero.begin(), nonzero.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.first != rhs.first) {
+            return lhs.first > rhs.first;
+        }
+        return lhs.second < rhs.second;
+    });
+
+    std::ostringstream out;
+    const auto limit = std::min(max_items, nonzero.size());
+    for (std::size_t i = 0; i < limit; ++i) {
+        if (i != 0) {
+            out << ',';
+        }
+        out << nonzero[i].second << ':' << nonzero[i].first;
+    }
+    return out.str();
+}
+
+std::string summarize_subframes(const ldcompress::NativeCompressionStats& stats)
+{
+    if (stats.frames == 0) {
+        return "-";
+    }
+    std::ostringstream out;
+    out << "c" << stats.constant_frames
+        << ",f" << stats.fixed_rice_frames
+        << ",l" << stats.lpc_rice_frames
+        << ",v" << stats.verbatim_frames;
+    return out.str();
 }
 
 void print_result(
@@ -207,6 +262,10 @@ void print_result(
               << std::setw(9) << std::fixed << std::setprecision(4) << ratio
               << std::setw(10) << std::fixed << std::setprecision(3) << result.elapsed_seconds
               << std::setw(10) << std::fixed << std::setprecision(2) << mib_per_second
+              << std::setw(28) << (result.show_native_stats ? summarize_subframes(result.native_stats) : "-")
+              << std::setw(24) << (result.show_native_stats ? summarize_nonzero_counts(result.native_stats.lpc_order_counts) : "-")
+              << std::setw(24) << (result.show_native_stats ? summarize_nonzero_counts(result.native_stats.partition_order_counts) : "-")
+              << std::setw(24) << (result.show_native_stats ? summarize_nonzero_counts(result.native_stats.wasted_bits_counts) : "-")
               << '\n';
 }
 
@@ -234,6 +293,10 @@ void print_header()
               << std::setw(9) << "ratio"
               << std::setw(10) << "elapsed_s"
               << std::setw(10) << "mib_s"
+              << std::setw(28) << "subframes"
+              << std::setw(24) << "lpc_orders"
+              << std::setw(24) << "rice_orders"
+              << std::setw(24) << "wasted_bits"
               << '\n';
 }
 
@@ -272,6 +335,7 @@ void test_real_fixtures(const std::filesystem::path& root)
         print_result(fixture_name, "cpu", 1, cpu_result);
 
         const auto native_output = temp_dir.path() / ("case-" + std::to_string(i) + ".flac.ldf");
+        ldcompress::NativeCompressionStats native_stats;
         const ldcompress::CompressionOptions native_options {
             .backend = ldcompress::CompressionBackend::NativeFixedFlac,
             .container = ldcompress::FlacContainer::Native,
@@ -281,6 +345,7 @@ void test_real_fixtures(const std::filesystem::path& root)
             .native_frame_samples = 4608,
             .native_max_lpc_order = 12,
             .native_max_rice_partition_order = 4,
+            .native_stats = &native_stats,
         };
         const auto native_result = compress_fixture(fixture.path, native_output, native_options);
         require_digest_match(source_digest, decode_digest(native_output), fixture_name + " native-fixed");

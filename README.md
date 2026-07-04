@@ -100,8 +100,9 @@ Benchmarking:
 
 - `bench` runs the CPU/libFLAC Ogg path, the native-verbatim path, and the
   native-fixed path for each requested thread count, then prints bytes, ratio,
-  elapsed seconds, and MiB/s. For native backend tuning, `bench` accepts
-  comma-separated `--frame-samples`, `--lpc-order`, and
+  elapsed seconds, MiB/s, and compact native decision stats for native backends.
+  For native backend tuning, `bench` accepts comma-separated `--frame-samples`,
+  `--lpc-order`, and
   `--rice-partition-order` lists and runs the native-fixed cross product.
 - Benchmark output files are temporary and removed after each run; use
   `compress` when you want to keep the encoded result.

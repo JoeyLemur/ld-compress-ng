@@ -558,6 +558,53 @@ void print_nonzero_counts(
     output << '\n';
 }
 
+template <std::size_t N>
+std::string summarize_nonzero_counts(
+    const std::array<std::uint64_t, N>& counts,
+    std::size_t max_items = 3)
+{
+    std::vector<std::pair<std::uint64_t, std::size_t>> nonzero;
+    nonzero.reserve(counts.size());
+    for (std::size_t i = 0; i < counts.size(); ++i) {
+        if (counts[i] != 0) {
+            nonzero.emplace_back(counts[i], i);
+        }
+    }
+    if (nonzero.empty()) {
+        return "-";
+    }
+
+    std::sort(nonzero.begin(), nonzero.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.first != rhs.first) {
+            return lhs.first > rhs.first;
+        }
+        return lhs.second < rhs.second;
+    });
+
+    std::ostringstream out;
+    const auto limit = std::min(max_items, nonzero.size());
+    for (std::size_t i = 0; i < limit; ++i) {
+        if (i != 0) {
+            out << ',';
+        }
+        out << nonzero[i].second << ':' << nonzero[i].first;
+    }
+    return out.str();
+}
+
+std::string summarize_subframes(const ldcompress::NativeCompressionStats& stats)
+{
+    if (stats.frames == 0) {
+        return "-";
+    }
+    std::ostringstream out;
+    out << "c" << stats.constant_frames
+        << ",f" << stats.fixed_rice_frames
+        << ",l" << stats.lpc_rice_frames
+        << ",v" << stats.verbatim_frames;
+    return out.str();
+}
+
 void print_native_stats(const ldcompress::NativeCompressionStats& stats)
 {
     std::cerr << "native stats: frames=" << stats.frames
@@ -708,6 +755,8 @@ struct BenchResult {
     bool show_lpc_order;
     bool show_rice_partition_order;
     ldcompress::ConversionStats stats;
+    ldcompress::NativeCompressionStats native_stats;
+    bool show_native_stats;
     double elapsed_seconds;
 };
 
@@ -721,6 +770,8 @@ BenchResult run_bench_case(
         throw std::runtime_error("could not open input: " + input_path);
     }
 
+    ldcompress::NativeCompressionStats native_stats;
+    const bool collect_native_stats = is_native_flac_backend(bench_case.backend);
     const ldcompress::CompressionOptions compress_options {
         .backend = bench_case.backend,
         .container = bench_case.container,
@@ -730,6 +781,7 @@ BenchResult run_bench_case(
         .native_frame_samples = bench_case.native_frame_samples,
         .native_max_lpc_order = bench_case.native_max_lpc_order,
         .native_max_rice_partition_order = bench_case.native_max_rice_partition_order,
+        .native_stats = collect_native_stats ? &native_stats : nullptr,
     };
 
     const auto started = std::chrono::steady_clock::now();
@@ -747,6 +799,8 @@ BenchResult run_bench_case(
         .show_lpc_order = bench_case.show_lpc_order,
         .show_rice_partition_order = bench_case.show_rice_partition_order,
         .stats = stats,
+        .native_stats = native_stats,
+        .show_native_stats = collect_native_stats,
         .elapsed_seconds = elapsed.count(),
     };
 }
@@ -783,6 +837,10 @@ void print_bench_result(const BenchResult& result)
               << std::setw(10) << std::fixed << std::setprecision(4) << ratio
               << std::setw(11) << std::fixed << std::setprecision(3) << result.elapsed_seconds
               << std::setw(11) << std::fixed << std::setprecision(2) << mib_per_second
+              << std::setw(28) << (result.show_native_stats ? summarize_subframes(result.native_stats) : "-")
+              << std::setw(24) << (result.show_native_stats ? summarize_nonzero_counts(result.native_stats.lpc_order_counts) : "-")
+              << std::setw(24) << (result.show_native_stats ? summarize_nonzero_counts(result.native_stats.partition_order_counts) : "-")
+              << std::setw(24) << (result.show_native_stats ? summarize_nonzero_counts(result.native_stats.wasted_bits_counts) : "-")
               << '\n';
 }
 
@@ -849,6 +907,10 @@ int run_bench(const Options& options)
               << std::setw(10) << "ratio"
               << std::setw(11) << "elapsed_s"
               << std::setw(11) << "mib_per_s"
+              << std::setw(28) << "subframes"
+              << std::setw(24) << "lpc_orders"
+              << std::setw(24) << "rice_orders"
+              << std::setw(24) << "wasted_bits"
               << '\n';
 
     for (std::size_t i = 0; i < cases.size(); ++i) {

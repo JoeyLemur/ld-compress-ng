@@ -140,8 +140,8 @@ ctest --test-dir build-real-fixtures -L real-fixtures --output-on-failure
 The real-fixture test recursively finds `.lds` files under the configured
 directory, verifies matching legacy `.ldf` files when present, and round-trips
 each fixture through the CPU/libFLAC and threaded native-fixed backends. It
-prints ratio and timing columns as a local regression scoreboard. The fixture
-tree remains ignored by Git.
+prints ratio, timing, and compact native decision-stat columns as a local
+regression scoreboard. The fixture tree remains ignored by Git.
 
 ## Legacy Fixture Regeneration
 
