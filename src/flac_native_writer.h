@@ -24,6 +24,7 @@ struct FlacFrameInfo {
     unsigned sample_rate = 0;
     unsigned bits_per_sample = 16;
     unsigned max_lpc_order = 12;
+    unsigned max_rice_partition_order = 4;
 };
 
 enum class FlacSubframeKind {

@@ -192,7 +192,9 @@ using FrameWriter = ldcompress::FlacSubframeDecision (*)(
 ldcompress::FlacSubframeDecision write_fixed_rice_file(
     const std::filesystem::path& flac_path,
     const std::vector<std::int32_t>& samples,
-    FrameWriter writer = ldcompress::write_mono_fixed_rice_frame)
+    FrameWriter writer = ldcompress::write_mono_fixed_rice_frame,
+    unsigned max_lpc_order = 12,
+    unsigned max_rice_partition_order = 4)
 {
     std::ofstream output(flac_path, std::ios::binary);
     if (!output) {
@@ -216,6 +218,8 @@ ldcompress::FlacSubframeDecision write_fixed_rice_file(
         .frame_number = 0,
         .sample_rate = 40000,
         .bits_per_sample = 16,
+        .max_lpc_order = max_lpc_order,
+        .max_rice_partition_order = max_rice_partition_order,
     };
     return writer(output, samples, frame_info);
 }
@@ -225,9 +229,14 @@ void verify_fixed_rice_round_trip(
     const std::vector<std::int32_t>& samples,
     unsigned expected_order,
     unsigned expected_partition_order,
-    int expected_wasted_bits = -1)
+    int expected_wasted_bits = -1,
+    unsigned max_rice_partition_order = 4)
 {
-    write_fixed_rice_file(flac_path, samples);
+    const auto decision = write_fixed_rice_file(
+        flac_path, samples, ldcompress::write_mono_fixed_rice_frame, 12,
+        max_rice_partition_order);
+    require(decision.rice_partition_order == expected_partition_order,
+        "native fixed/Rice writer reported an unexpected Rice partition order");
     const auto frame_info = first_frame_fixed_info(flac_path);
     require(frame_info.order == expected_order,
         "native fixed/Rice writer chose an unexpected fixed predictor order");
@@ -371,19 +380,41 @@ void test_native_fixed_rice_round_trip()
     }
     verify_fixed_rice_round_trip(temp_dir / "order3.flac", quadratic, 3, 0);
     verify_fixed_rice_round_trip(temp_dir / "order4.flac", cubic, 4, 0);
-    verify_fixed_rice_round_trip(temp_dir / "partitioned.flac", {
+    const std::vector<std::int32_t> partitioned {
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
         32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
         32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
         32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
-    }, 0, 1);
+    };
+    verify_fixed_rice_round_trip(temp_dir / "partitioned.flac", partitioned, 0, 1);
+    verify_fixed_rice_round_trip(temp_dir / "partitioned-max0.flac", partitioned, 0, 0, -1, 0);
     verify_fixed_rice_round_trip(temp_dir / "tiny.flac", {0, -1, 1, -2}, 0, 0);
     verify_fixed_rice_round_trip(temp_dir / "wide.flac", {
         32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
         32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
     }, 0, 0);
+
+    std::filesystem::remove_all(temp_dir);
+}
+
+void test_native_rice_partition_order_limit()
+{
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+        ("ld-compress-ng-native-rice-limit-test-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directory(temp_dir);
+
+    bool threw = false;
+    try {
+        write_fixed_rice_file(temp_dir / "too-wide.flac",
+            std::vector<std::int32_t>(16, 0),
+            ldcompress::write_mono_fixed_rice_frame, 12, 9);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    require(threw, "native writer accepted an out-of-range Rice partition order");
 
     std::filesystem::remove_all(temp_dir);
 }
@@ -417,6 +448,7 @@ int main()
     try {
         test_native_verbatim_round_trip();
         test_native_fixed_rice_round_trip();
+        test_native_rice_partition_order_limit();
         test_native_best_subframe_selection();
     } catch (const std::exception& ex) {
         std::cerr << "test_flac_native_writer: " << ex.what() << '\n';

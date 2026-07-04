@@ -15,6 +15,7 @@ ConversionStats compress_lds_to_native_verbatim_flac(
     unsigned thread_count,
     unsigned frame_samples,
     unsigned max_lpc_order,
+    unsigned max_rice_partition_order,
     NativeCompressionStats* stats = nullptr);
 
 ConversionStats compress_lds_to_native_fixed_flac(
@@ -24,6 +25,7 @@ ConversionStats compress_lds_to_native_fixed_flac(
     unsigned thread_count,
     unsigned frame_samples,
     unsigned max_lpc_order,
+    unsigned max_rice_partition_order,
     NativeCompressionStats* stats = nullptr);
 
 }  // namespace ldcompress

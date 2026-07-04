@@ -31,9 +31,11 @@ struct Options {
     unsigned threads = 1;
     unsigned native_frame_samples = 4608;
     unsigned native_max_lpc_order = 12;
+    unsigned native_max_rice_partition_order = 4;
     std::vector<unsigned> bench_threads;
     std::vector<unsigned> bench_frame_samples;
     std::vector<unsigned> bench_lpc_orders;
+    std::vector<unsigned> bench_rice_partition_orders;
     ldcompress::CompressionBackend backend = ldcompress::CompressionBackend::CpuLibFlac;
     ldcompress::FlacContainer container = ldcompress::FlacContainer::Ogg;
     std::string input;
@@ -45,11 +47,11 @@ struct Options {
 {
     std::ostream& out = exit_code == 0 ? std::cout : std::cerr;
     out << "Usage:\n"
-        << "  ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--frame-samples N] [--lpc-order N] [--stats] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]\n"
+        << "  ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--frame-samples N] [--lpc-order N] [--rice-partition-order N] [--stats] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng verify [--source ORIGINAL.lds] INPUT\n"
         << "  ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]\n"
-        << "  ld-compress-ng bench [--threads 1,4,8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] INPUT\n"
+        << "  ld-compress-ng bench [--threads 1,4,8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] [--rice-partition-order N[,N...]] INPUT\n"
         << "  ld-compress-ng devices\n"
         << "  ld-compress-ng --help\n";
     std::exit(exit_code);
@@ -294,6 +296,12 @@ Options parse_compress(int argc, char** argv)
             }
             options.native_max_lpc_order = parse_bounded_unsigned(
                 argv[i], "native FLAC max LPC order", 0, 12);
+        } else if (arg == "--rice-partition-order") {
+            if (++i >= argc) {
+                throw std::runtime_error("--rice-partition-order requires a value");
+            }
+            options.native_max_rice_partition_order = parse_bounded_unsigned(
+                argv[i], "native FLAC max Rice partition order", 0, 8);
         } else if (arg == "--container") {
             if (++i >= argc) {
                 throw std::runtime_error("--container requires a value");
@@ -333,8 +341,10 @@ Options parse_compress(int argc, char** argv)
         throw std::runtime_error("--stats is currently supported only by native FLAC backends");
     }
     if (options.backend == ldcompress::CompressionBackend::CpuLibFlac &&
-        (options.native_frame_samples != 4608 || options.native_max_lpc_order != 12)) {
-        throw std::runtime_error("--frame-samples and --lpc-order are supported only by native FLAC backends");
+        (options.native_frame_samples != 4608 ||
+            options.native_max_lpc_order != 12 ||
+            options.native_max_rice_partition_order != 4)) {
+        throw std::runtime_error("--frame-samples, --lpc-order, and --rice-partition-order are supported only by native FLAC backends");
     }
 
     if ((options.backend == ldcompress::CompressionBackend::NativeVerbatimFlac ||
@@ -463,6 +473,12 @@ Options parse_bench(int argc, char** argv)
             }
             options.bench_lpc_orders = parse_bounded_unsigned_list(
                 argv[i], "native FLAC max LPC order", 0, 12);
+        } else if (arg == "--rice-partition-order") {
+            if (++i >= argc) {
+                throw std::runtime_error("--rice-partition-order requires a value");
+            }
+            options.bench_rice_partition_orders = parse_bounded_unsigned_list(
+                argv[i], "native FLAC max Rice partition order", 0, 8);
         } else if (arg == "--help" || arg == "-h") {
             usage(0);
         } else if (!arg.empty() && arg.front() == '-') {
@@ -483,6 +499,9 @@ Options parse_bench(int argc, char** argv)
     }
     if (options.bench_lpc_orders.empty()) {
         options.bench_lpc_orders.push_back(options.native_max_lpc_order);
+    }
+    if (options.bench_rice_partition_orders.empty()) {
+        options.bench_rice_partition_orders.push_back(options.native_max_rice_partition_order);
     }
 
     options.input = positional[0];
@@ -573,6 +592,7 @@ int run_compress(const Options& options)
         .thread_count = options.threads,
         .native_frame_samples = options.native_frame_samples,
         .native_max_lpc_order = options.native_max_lpc_order,
+        .native_max_rice_partition_order = options.native_max_rice_partition_order,
         .native_stats = options.show_stats ? &native_stats : nullptr,
     };
     const auto stats = ldcompress::compress_lds(input, options.output, compress_options);
@@ -672,8 +692,10 @@ struct BenchCase {
     unsigned threads;
     unsigned native_frame_samples;
     unsigned native_max_lpc_order;
+    unsigned native_max_rice_partition_order;
     bool show_frame_samples;
     bool show_lpc_order;
+    bool show_rice_partition_order;
 };
 
 struct BenchResult {
@@ -681,8 +703,10 @@ struct BenchResult {
     unsigned threads;
     unsigned native_frame_samples;
     unsigned native_max_lpc_order;
+    unsigned native_max_rice_partition_order;
     bool show_frame_samples;
     bool show_lpc_order;
+    bool show_rice_partition_order;
     ldcompress::ConversionStats stats;
     double elapsed_seconds;
 };
@@ -705,6 +729,7 @@ BenchResult run_bench_case(
         .thread_count = bench_case.threads,
         .native_frame_samples = bench_case.native_frame_samples,
         .native_max_lpc_order = bench_case.native_max_lpc_order,
+        .native_max_rice_partition_order = bench_case.native_max_rice_partition_order,
     };
 
     const auto started = std::chrono::steady_clock::now();
@@ -717,8 +742,10 @@ BenchResult run_bench_case(
         .threads = bench_case.threads,
         .native_frame_samples = bench_case.native_frame_samples,
         .native_max_lpc_order = bench_case.native_max_lpc_order,
+        .native_max_rice_partition_order = bench_case.native_max_rice_partition_order,
         .show_frame_samples = bench_case.show_frame_samples,
         .show_lpc_order = bench_case.show_lpc_order,
+        .show_rice_partition_order = bench_case.show_rice_partition_order,
         .stats = stats,
         .elapsed_seconds = elapsed.count(),
     };
@@ -749,6 +776,7 @@ void print_bench_result(const BenchResult& result)
               << std::right << std::setw(9) << result.threads;
     print_optional_unsigned(result.native_frame_samples, result.show_frame_samples, 15);
     print_optional_unsigned(result.native_max_lpc_order, result.show_lpc_order, 10);
+    print_optional_unsigned(result.native_max_rice_partition_order, result.show_rice_partition_order, 11);
     std::cout << std::setw(14) << result.stats.input_bytes
               << std::setw(15) << result.stats.output_bytes
               << std::setw(12) << result.stats.samples
@@ -769,8 +797,10 @@ int run_bench(const Options& options)
             .threads = 1,
             .native_frame_samples = 4608,
             .native_max_lpc_order = 12,
+            .native_max_rice_partition_order = 4,
             .show_frame_samples = false,
             .show_lpc_order = false,
+            .show_rice_partition_order = false,
         },
     };
 
@@ -781,23 +811,29 @@ int run_bench(const Options& options)
             .threads = 1,
             .native_frame_samples = frame_samples,
             .native_max_lpc_order = 0,
+            .native_max_rice_partition_order = 4,
             .show_frame_samples = true,
             .show_lpc_order = false,
+            .show_rice_partition_order = false,
         });
     }
 
     for (const unsigned frame_samples : options.bench_frame_samples) {
         for (const unsigned lpc_order : options.bench_lpc_orders) {
-            for (const unsigned threads : options.bench_threads) {
-                cases.push_back(BenchCase {
-                    .backend = ldcompress::CompressionBackend::NativeFixedFlac,
-                    .container = ldcompress::FlacContainer::Native,
-                    .threads = threads,
-                    .native_frame_samples = frame_samples,
-                    .native_max_lpc_order = lpc_order,
-                    .show_frame_samples = true,
-                    .show_lpc_order = true,
-                });
+            for (const unsigned rice_partition_order : options.bench_rice_partition_orders) {
+                for (const unsigned threads : options.bench_threads) {
+                    cases.push_back(BenchCase {
+                        .backend = ldcompress::CompressionBackend::NativeFixedFlac,
+                        .container = ldcompress::FlacContainer::Native,
+                        .threads = threads,
+                        .native_frame_samples = frame_samples,
+                        .native_max_lpc_order = lpc_order,
+                        .native_max_rice_partition_order = rice_partition_order,
+                        .show_frame_samples = true,
+                        .show_lpc_order = true,
+                        .show_rice_partition_order = true,
+                    });
+                }
             }
         }
     }
@@ -806,6 +842,7 @@ int run_bench(const Options& options)
               << std::right << std::setw(9) << "threads"
               << std::setw(15) << "frame_samples"
               << std::setw(10) << "lpc_order"
+              << std::setw(11) << "rice_order"
               << std::setw(14) << "input_bytes"
               << std::setw(15) << "output_bytes"
               << std::setw(12) << "samples"

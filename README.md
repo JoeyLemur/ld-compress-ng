@@ -50,11 +50,11 @@ The OpenCL/FlaLDF-derived GPU compression backend is not implemented yet.
 ## Usage
 
 ```sh
-ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--frame-samples N] [--lpc-order N] [--stats] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]
+ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--frame-samples N] [--lpc-order N] [--rice-partition-order N] [--stats] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]
 ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]
 ld-compress-ng verify [--source ORIGINAL.lds] INPUT
 ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]
-ld-compress-ng bench [--threads 1,4,8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] INPUT
+ld-compress-ng bench [--threads 1,4,8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] [--rice-partition-order N[,N...]] INPUT
 ld-compress-ng devices
 ```
 
@@ -67,7 +67,8 @@ Defaults:
   stone for the future native/GPU encoder, not the final compressed path.
 - `--backend native-fixed` writes native FLAC `.flac.ldf` output using scalar
   subframe selection: constant for flat frames, fixed prediction/Rice residuals,
-  LPC/Rice residuals up to order 12, partition-order search `0..4` when useful,
+  LPC/Rice residuals up to order 12, partition-order search `0..4` by default
+  and up to `0..8` when requested,
   wasted-bits handling for the low zero bits in LDS-derived PCM, and verbatim
   fallback when predictive coding would be larger. It is a correctness milestone
   for the native/GPU path, not tuned compression yet.
@@ -79,6 +80,9 @@ Defaults:
 - `--lpc-order N` is currently supported for native FLAC backends and sets the
   maximum scalar LPC order considered by `native-fixed`. It defaults to `12`,
   matching the 40 kHz FLAC subset cap; `0` disables LPC.
+- `--rice-partition-order N` is currently supported for native FLAC backends and
+  sets the maximum Rice partition order considered by `native-fixed`. It
+  defaults to `4`; values `0..8` are accepted for FLAC subset compatibility.
 - `--stats` is currently supported for native FLAC backends and prints per-frame
   subframe counts, fixed/LPC predictor order counts, Rice partition order
   counts, and wasted-bits counts.
@@ -94,7 +98,7 @@ Benchmarking:
 - `bench` runs the CPU/libFLAC Ogg path, the native-verbatim path, and the
   native-fixed path for each requested thread count, then prints bytes, ratio,
   elapsed seconds, and MiB/s. For native backend tuning, `bench` accepts
-  comma-separated `--frame-samples` and `--lpc-order` lists and runs the
-  native-fixed cross product.
+  comma-separated `--frame-samples`, `--lpc-order`, and
+  `--rice-partition-order` lists and runs the native-fixed cross product.
 - Benchmark output files are temporary and removed after each run; use
   `compress` when you want to keep the encoded result.

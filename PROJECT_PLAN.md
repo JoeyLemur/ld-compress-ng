@@ -124,8 +124,9 @@ provided.
   zero bits that are inherent in unpacked 10-bit LDS samples.
 - Add scalar LPC/Rice subframes as the first heavier predictor path before
   porting the FlaLDF/OpenCL task scheduler.
-- Add native tuning controls for frame sample count and maximum LPC order so
-  FlaLDF-style settings can be benchmarked before changing defaults.
+- Add native tuning controls for frame sample count, maximum LPC order, and
+  maximum Rice partition order so FlaLDF-style settings can be benchmarked
+  before changing defaults.
 - Add native compression stats for frame/subframe decisions so optimization work
   is driven by fixture behavior rather than guesses.
 - Add opt-in frame-level threading for native FLAC encoding. Keep output ordered
@@ -149,8 +150,8 @@ provided.
 - Add performance checks against the old shell pipeline.
 - Keep a lightweight benchmark subcommand for local CPU/native backend
   comparisons across arm64 and amd64/x86_64 hosts.
-- Use benchmark sweeps across frame sizes, LPC orders, and thread counts before
-  changing native compression defaults.
+- Use benchmark sweeps across frame sizes, LPC orders, Rice partition orders,
+  and thread counts before changing native compression defaults.
 - Document compatibility with historical `.ldf`, `.raw.oga`, and `.flac.ldf`
   files.
 - Consider CPU-specific optimizations such as SIMD or tuned block processing only

@@ -13,7 +13,7 @@
 namespace ldcompress {
 namespace {
 
-constexpr unsigned kMaxRicePartitionOrder = 4;
+constexpr unsigned kMaxRicePartitionOrder = 8;
 constexpr unsigned kMaxLpcOrder = 12;
 constexpr unsigned kMinLpcBlockSize = 256;
 constexpr unsigned kLpcCoefficientPrecision = 12;
@@ -385,6 +385,14 @@ bool valid_partition_order(std::size_t block_size, unsigned predictor_order, uns
     return partition_samples > predictor_order;
 }
 
+unsigned checked_max_rice_partition_order(unsigned max_rice_partition_order)
+{
+    if (max_rice_partition_order > kMaxRicePartitionOrder) {
+        throw std::runtime_error("native FLAC max Rice partition order must be 0..8");
+    }
+    return max_rice_partition_order;
+}
+
 std::size_t partition_residual_count(
     std::size_t block_size,
     unsigned predictor_order,
@@ -581,8 +589,10 @@ std::vector<std::int64_t> lpc_residuals(
 
 FixedRiceSubframe choose_fixed_rice_subframe(
     const std::vector<std::int32_t>& samples,
-    unsigned bits_per_sample)
+    unsigned bits_per_sample,
+    unsigned max_rice_partition_order)
 {
+    max_rice_partition_order = checked_max_rice_partition_order(max_rice_partition_order);
     const auto wasted_bits = common_wasted_bits(samples, bits_per_sample);
     auto shifted_samples = shift_samples(samples, wasted_bits);
     const auto effective_bits_per_sample = bits_per_sample - wasted_bits;
@@ -595,7 +605,7 @@ FixedRiceSubframe choose_fixed_rice_subframe(
     auto best_bits = std::numeric_limits<std::uint64_t>::max();
     for (unsigned order = 0; order <= max_order; ++order) {
         auto residuals = fixed_residuals(shifted_samples, order);
-        for (unsigned partition_order = 0; partition_order <= kMaxRicePartitionOrder; ++partition_order) {
+        for (unsigned partition_order = 0; partition_order <= max_rice_partition_order; ++partition_order) {
             if (!valid_partition_order(shifted_samples.size(), order, partition_order)) {
                 continue;
             }
@@ -637,8 +647,10 @@ FixedRiceSubframe choose_fixed_rice_subframe(
 LpcRiceSubframe choose_lpc_rice_subframe(
     const std::vector<std::int32_t>& samples,
     unsigned bits_per_sample,
-    unsigned max_lpc_order)
+    unsigned max_lpc_order,
+    unsigned max_rice_partition_order)
 {
+    max_rice_partition_order = checked_max_rice_partition_order(max_rice_partition_order);
     LpcRiceSubframe best;
     best.bits = std::numeric_limits<std::uint64_t>::max();
 
@@ -669,7 +681,7 @@ LpcRiceSubframe choose_lpc_rice_subframe(
 
         auto residuals = lpc_residuals(
             shifted_samples, quantized_coefficients, order, quantization_shift);
-        for (unsigned partition_order = 0; partition_order <= kMaxRicePartitionOrder; ++partition_order) {
+        for (unsigned partition_order = 0; partition_order <= max_rice_partition_order; ++partition_order) {
             if (!valid_partition_order(shifted_samples.size(), order, partition_order)) {
                 continue;
             }
@@ -995,7 +1007,8 @@ FlacSubframeDecision write_mono_fixed_rice_frame(
         validate_sample(sample, info.bits_per_sample);
     }
 
-    const auto subframe = choose_fixed_rice_subframe(samples, info.bits_per_sample);
+    const auto subframe = choose_fixed_rice_subframe(
+        samples, info.bits_per_sample, info.max_rice_partition_order);
     return write_fixed_rice_frame(output, info, subframe);
 }
 
@@ -1016,9 +1029,11 @@ FlacSubframeDecision write_mono_best_frame(
     }
 
     const auto wasted_bits = common_wasted_bits(samples, info.bits_per_sample);
-    const auto fixed = choose_fixed_rice_subframe(samples, info.bits_per_sample);
+    const auto fixed = choose_fixed_rice_subframe(
+        samples, info.bits_per_sample, info.max_rice_partition_order);
     const auto lpc = choose_lpc_rice_subframe(
-        samples, info.bits_per_sample, info.max_lpc_order);
+        samples, info.bits_per_sample, info.max_lpc_order,
+        info.max_rice_partition_order);
     const auto verbatim_bits = verbatim_subframe_bits(
         samples.size(), info.bits_per_sample, wasted_bits);
     if (lpc.bits < fixed.bits && lpc.bits < verbatim_bits) {
