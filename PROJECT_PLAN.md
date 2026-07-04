@@ -98,6 +98,9 @@ Implemented:
   best-method selection.
 - Hardware-optional OpenCL mono LPC autocorrelation/coefficient generation for
   one-window all-order task groups, feeding the exact residual/Rice analyzer.
+- Device-free scalar generated-LPC task oracle for the current one-window
+  OpenCL path, plus hardware-optional validation of generated order, shift,
+  coefficient precision, coefficient ordering, and exact-analysis stability.
 - Linux OpenCL validation on `smaug`, Debian 13-era amd64 kernel
   `6.12.94+deb13-amd64`, NVIDIA OpenCL 3.0 CUDA runtime. The OpenCL analysis
   smoke tests compiled and ran on an RTX 4070 SUPER / RTX 5070 Ti host, and the

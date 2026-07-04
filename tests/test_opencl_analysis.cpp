@@ -3,8 +3,10 @@
 #include "opencl_devices.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <iostream>
 #include <limits>
@@ -226,6 +228,237 @@ void require_lpc_coefficients_fit_precision(
     for (int i = 0; i < task.data.residualOrder; ++i) {
         const auto coefficient = task.coefs[static_cast<std::size_t>(i)];
         require(coefficient >= min_value && coefficient <= max_value, label);
+    }
+}
+
+std::int32_t round_to_even_i32(float value)
+{
+    if (!std::isfinite(value)) {
+        return 0;
+    }
+
+    const double rounded = std::nearbyint(static_cast<double>(value));
+    if (rounded < static_cast<double>(std::numeric_limits<std::int32_t>::min()) ||
+        rounded > static_cast<double>(std::numeric_limits<std::int32_t>::max())) {
+        throw std::runtime_error("generated LPC oracle coefficient conversion overflowed int32");
+    }
+
+    return static_cast<std::int32_t>(rounded);
+}
+
+int count_leading_zero_bits(std::int32_t value)
+{
+    auto bits = static_cast<std::uint32_t>(value);
+    int count = 0;
+    for (int bit = 31; bit >= 0; --bit) {
+        if ((bits & (std::uint32_t {1} << bit)) != 0) {
+            break;
+        }
+        ++count;
+    }
+    return count;
+}
+
+std::int32_t opencl_abs_bits(std::int32_t value)
+{
+    return value ^ (value >> 31);
+}
+
+std::array<float, ldcompress::opencl_detail::kFlacClMaxOrder + 1U>
+generated_lpc_autocorrelation(
+    const std::vector<std::int32_t>& samples,
+    const ldcompress::opencl_detail::FlacClSubframeTask& first_frame_task)
+{
+    using namespace ldcompress::opencl_detail;
+
+    std::array<float, kFlacClMaxOrder + 1U> autocor {};
+    const auto sample_offset = static_cast<std::size_t>(first_frame_task.data.samplesOffs);
+    const auto blocksize = static_cast<std::size_t>(first_frame_task.data.blocksize);
+
+    for (std::size_t lag = 0; lag <= kFlacClMaxOrder; ++lag) {
+        float sum = 0.0f;
+        for (std::size_t pos = lag; pos < blocksize; ++pos) {
+            const float sample0 = static_cast<float>(samples[sample_offset + pos]);
+            const float sample1 = static_cast<float>(samples[sample_offset + pos - lag]);
+            sum += sample0 * sample1;
+        }
+        autocor[lag] = sum;
+    }
+
+    return autocor;
+}
+
+std::array<std::array<float, ldcompress::opencl_detail::kFlacClMaxOrder>,
+    ldcompress::opencl_detail::kFlacClMaxOrder + 1U>
+generated_lpc_coefficients(
+    const std::array<float, ldcompress::opencl_detail::kFlacClMaxOrder + 1U>& autocor)
+{
+    using namespace ldcompress::opencl_detail;
+
+    std::array<std::array<float, kFlacClMaxOrder>, kFlacClMaxOrder + 1U> lpcs {};
+    std::array<float, kFlacClMaxOrder> ldr {};
+    std::array<float, kFlacClMaxOrder> gen0 {};
+    std::array<float, kFlacClMaxOrder> gen1 {};
+    std::array<float, kFlacClMaxOrder> err {};
+
+    for (std::size_t i = 0; i < kFlacClMaxOrder; ++i) {
+        gen0[i] = autocor[i + 1U];
+        gen1[i] = autocor[i + 1U];
+    }
+
+    float error = autocor[0];
+    for (std::size_t order = 0; order < kFlacClMaxOrder; ++order) {
+        float reflection = 0.0f;
+        if (error > 0.0f) {
+            reflection = -gen1[0] / error;
+        }
+        if (!std::isfinite(reflection)) {
+            reflection = 0.0f;
+        }
+
+        error *= 1.0f - (reflection * reflection);
+        if (!std::isfinite(error) || error < 0.0f) {
+            error = 0.0f;
+        }
+
+        for (std::size_t j = 0; j < kFlacClMaxOrder - 1U - order; ++j) {
+            const float next_gen1 = gen1[j + 1U] + (reflection * gen0[j]);
+            gen0[j] = gen1[j + 1U] * reflection + gen0[j];
+            gen1[j] = next_gen1;
+        }
+
+        err[order] = error;
+
+        ldr[order] = reflection;
+        for (std::size_t j = 0; j < order / 2U; ++j) {
+            const float tmp = ldr[j];
+            ldr[j] += reflection * ldr[order - 1U - j];
+            ldr[order - 1U - j] += reflection * tmp;
+        }
+        if ((order & 1U) != 0) {
+            ldr[order / 2U] += ldr[order / 2U] * reflection;
+        }
+
+        for (std::size_t j = 0; j <= order; ++j) {
+            lpcs[order][j] = -ldr[order - j];
+        }
+    }
+
+    for (std::size_t j = 0; j < kFlacClMaxOrder; ++j) {
+        lpcs[kFlacClMaxOrder][j] = err[j];
+    }
+
+    return lpcs;
+}
+
+std::vector<ldcompress::opencl_detail::FlacClSubframeTask> make_generated_lpc_oracle_tasks(
+    const std::vector<std::int32_t>& samples,
+    const ldcompress::opencl_detail::OpenClMonoAnalysisTaskPlan& plan,
+    unsigned lpc_coefficient_precision)
+{
+    using namespace ldcompress::opencl_detail;
+
+    require(plan.residual_tasks_per_frame > 0,
+        "generated LPC oracle requires residual tasks");
+    require(plan.residual_tasks_per_frame <= kFlacClMaxOrder,
+        "generated LPC oracle task group exceeds FLACCL max order");
+    require(plan.residual_tasks.size() % plan.residual_tasks_per_frame == 0,
+        "generated LPC oracle task count is not frame-aligned");
+
+    auto tasks = plan.residual_tasks;
+    const auto frame_count = tasks.size() / plan.residual_tasks_per_frame;
+    const int desired_bits = std::clamp(
+        static_cast<int>(lpc_coefficient_precision), 1, 15);
+
+    for (std::size_t frame = 0; frame < frame_count; ++frame) {
+        const auto frame_base = frame * plan.residual_tasks_per_frame;
+        const auto autocor = generated_lpc_autocorrelation(samples, tasks[frame_base]);
+        const auto lpcs = generated_lpc_coefficients(autocor);
+
+        for (std::size_t slot = 0; slot < plan.residual_tasks_per_frame; ++slot) {
+            const auto order = slot + 1U;
+            auto& task = tasks[frame_base + slot];
+
+            std::int32_t max_coefficient = 0;
+            for (std::size_t i = 0; i < order; ++i) {
+                const float lpc = lpcs[order - 1U][i];
+                const auto coefficient = round_to_even_i32(lpc * static_cast<float>(1 << 15));
+                max_coefficient |= opencl_abs_bits(coefficient);
+            }
+
+            int shift = 0;
+            if (max_coefficient != 0) {
+                shift = std::clamp(
+                    count_leading_zero_bits(max_coefficient) - 18 + desired_bits,
+                    0,
+                    15);
+            }
+            const auto limit = (1 << (desired_bits - 1)) - 1;
+
+            std::int32_t actual_max_coefficient = 0;
+            task.coefs.fill(0);
+            for (std::size_t i = 0; i < order; ++i) {
+                const float lpc = lpcs[order - 1U][i];
+                const auto coefficient = std::clamp(
+                    round_to_even_i32(lpc * static_cast<float>(1 << shift)),
+                    -limit,
+                    limit);
+                actual_max_coefficient |= opencl_abs_bits(coefficient);
+                task.coefs[i] = coefficient;
+            }
+
+            task.data.residualOrder = static_cast<std::int32_t>(order);
+            task.data.shift = shift;
+            task.data.cbits = actual_max_coefficient == 0
+                ? 1
+                : 1 + 32 - count_leading_zero_bits(actual_max_coefficient);
+        }
+    }
+
+    return tasks;
+}
+
+void require_generated_lpc_fields_match(
+    const ldcompress::opencl_detail::FlacClSubframeTask& actual,
+    const ldcompress::opencl_detail::FlacClSubframeTask& expected,
+    const char* label)
+{
+    using namespace ldcompress::opencl_detail;
+
+    const auto fail = [label](const std::string& field, std::int32_t actual_value,
+                          std::int32_t expected_value) {
+        throw std::runtime_error(std::string(label) + ": " + field +
+            " actual=" + std::to_string(actual_value) +
+            " expected=" + std::to_string(expected_value));
+    };
+
+    if (actual.data.type != expected.data.type) {
+        fail("type", actual.data.type, expected.data.type);
+    }
+    if (actual.data.samplesOffs != expected.data.samplesOffs) {
+        fail("samplesOffs", actual.data.samplesOffs, expected.data.samplesOffs);
+    }
+    if (actual.data.blocksize != expected.data.blocksize) {
+        fail("blocksize", actual.data.blocksize, expected.data.blocksize);
+    }
+    if (actual.data.residualOrder != expected.data.residualOrder) {
+        fail("residualOrder", actual.data.residualOrder, expected.data.residualOrder);
+    }
+    if (actual.data.shift != expected.data.shift) {
+        fail("shift", actual.data.shift, expected.data.shift);
+    }
+    if (actual.data.cbits != expected.data.cbits) {
+        fail("cbits", actual.data.cbits, expected.data.cbits);
+    }
+    for (std::size_t i = 0; i < kFlacClMaxOrder; ++i) {
+        const auto difference = static_cast<std::int64_t>(actual.coefs[i]) -
+            static_cast<std::int64_t>(expected.coefs[i]);
+        const auto absolute_difference = difference < 0 ? -difference : difference;
+        const auto max_difference =
+            i < static_cast<std::size_t>(actual.data.residualOrder) ? 1 : 0;
+        if (absolute_difference > max_difference) {
+            fail("coefs[" + std::to_string(i) + "]", actual.coefs[i], expected.coefs[i]);
+        }
     }
 }
 
@@ -658,6 +891,56 @@ void test_scalar_exact_lpc_multi_order_task_plan()
     }
 }
 
+void test_scalar_generated_lpc_task_oracle()
+{
+    using namespace ldcompress::opencl_detail;
+
+    OpenClMonoAnalysisTaskOptions options;
+    options.frame_samples = 512;
+    options.max_lpc_order = 12;
+    options.include_constant = false;
+    options.min_fixed_order = 0;
+    options.max_fixed_order = 4;
+
+    auto samples = make_lpc_friendly_samples();
+    const auto alternate = make_lpc_friendly_alternate_samples();
+    samples.insert(samples.end(), alternate.begin(), alternate.end());
+
+    std::vector<FlacClSubframeTask> expected_tasks;
+    std::vector<FlacClSubframeTask> expected_best_tasks;
+    auto plan = make_lpc_order_task_plan(
+        samples, 2, options, 12, 5, expected_tasks, expected_best_tasks);
+    reset_lpc_generated_fields(plan);
+
+    const auto generated = make_generated_lpc_oracle_tasks(samples, plan, 12);
+    require(generated.size() == 24,
+        "generated LPC oracle task count mismatch");
+
+    bool found_nonzero_coefficient = false;
+    for (std::size_t i = 0; i < generated.size(); ++i) {
+        const auto& task = generated[i];
+        require(task.data.type == kFlacClSubframeLpc,
+            "generated LPC oracle task type mismatch");
+        require(task.data.residualOrder == static_cast<int>((i % options.max_lpc_order) + 1U),
+            "generated LPC oracle residual order mismatch");
+        require(task.data.shift >= 0 && task.data.shift <= 15,
+            "generated LPC oracle shift out of range");
+        require(task.data.cbits > 0 && task.data.cbits <= 12,
+            "generated LPC oracle coefficient precision out of range");
+        require_lpc_coefficients_fit_precision(task,
+            "generated LPC oracle coefficient does not fit precision");
+        for (int coefficient_index = 0; coefficient_index < task.data.residualOrder;
+             ++coefficient_index) {
+            found_nonzero_coefficient =
+                found_nonzero_coefficient ||
+                task.coefs[static_cast<std::size_t>(coefficient_index)] != 0;
+        }
+    }
+
+    require(found_nonzero_coefficient,
+        "generated LPC oracle did not produce any nonzero coefficients");
+}
+
 void test_opencl_lpc_analysis_input_validation()
 {
     using namespace ldcompress::opencl_detail;
@@ -981,6 +1264,7 @@ void test_opencl_lpc_generated_analysis_smoke()
     auto plan = make_lpc_order_task_plan(
         samples, 2, options, 12, 5, expected_tasks, expected_best_tasks);
     reset_lpc_generated_fields(plan);
+    const auto generated_tasks = make_generated_lpc_oracle_tasks(samples, plan, 12);
 
     const auto result =
         run_opencl_mono_lpc_generated_analysis(samples, plan, device_index, 12, 5);
@@ -1007,6 +1291,8 @@ void test_opencl_lpc_generated_analysis_smoke()
             "OpenCL generated LPC exact size was not populated");
         require_lpc_coefficients_fit_precision(task,
             "OpenCL generated LPC coefficient does not fit precision");
+        require_generated_lpc_fields_match(task, generated_tasks[i],
+            "OpenCL generated LPC fields diverged from scalar oracle");
     }
 
     for (std::size_t frame = 0; frame < 2; ++frame) {
@@ -1057,6 +1343,7 @@ int main()
         test_scalar_exact_rice_partition_search();
         test_scalar_exact_lpc_task_analysis();
         test_scalar_exact_lpc_multi_order_task_plan();
+        test_scalar_generated_lpc_task_oracle();
         test_opencl_lpc_analysis_input_validation();
         test_opencl_best_method_smoke();
         test_opencl_fixed_constant_analysis_smoke();

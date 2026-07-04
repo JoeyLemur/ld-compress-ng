@@ -786,6 +786,8 @@ const char* mono_analysis_kernel_source()
  *   Rice partition analysis for scalar parity testing.
  */
 
+#pragma OPENCL FP_CONTRACT OFF
+
 #define FLACCL_CPU
 #define MAX_ORDER 32
 #define GROUP_SIZE 1
