@@ -109,3 +109,6 @@ Benchmarking:
   `--rice-partition-order` lists and runs the native-fixed cross product.
 - Benchmark output files are temporary and removed after each run; use
   `compress` when you want to keep the encoded result.
+- `tools/sweep_real_fixtures.py` wraps `bench` across the ignored real-fixture
+  tree and writes CSV/Markdown summaries for native tuning work. See `BUILD.md`
+  for the command and default sweep grid.

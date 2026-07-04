@@ -143,6 +143,35 @@ each fixture through the CPU/libFLAC and threaded native-fixed backends. It
 prints ratio, timing, and compact native decision-stat columns as a local
 regression scoreboard. The fixture tree remains ignored by Git.
 
+## Real Fixture Tuning Sweep
+
+For native encoder tuning work, use the helper script to run `bench` across all
+ignored real fixtures and save CSV plus Markdown summaries under the ignored
+`build/` tree:
+
+```sh
+python3 tools/sweep_real_fixtures.py \
+    --binary build/ld-compress-ng \
+    --fixtures reference/testdata/ld-decode-testdata-ci/1cf698d2025e8515e9ef57e34adaf85a194da96a
+```
+
+The default sweep is intentionally focused: frame size `4608`, LPC orders
+`10,12`, LPC coefficient precisions `10,12`, Rice partition order `4`, and one
+thread. Expand the grid explicitly when doing a broader local tuning pass:
+
+```sh
+python3 tools/sweep_real_fixtures.py \
+    --threads 1,8 \
+    --frame-samples 2304,4608 \
+    --lpc-order 8,10,12 \
+    --lpc-precision 8,10,12,14 \
+    --rice-partition-order 3,4
+```
+
+Use `--dry-run` to print the generated `bench` commands and `--limit N` for a
+quick subset check. The helper depends only on Python 3 stdlib, the built
+`ld-compress-ng` binary, and local ignored fixture files.
+
 ## Legacy Fixture Regeneration
 
 Committed tests do not require `ffmpeg` or `ld-lds-converter`; the legacy Ogg

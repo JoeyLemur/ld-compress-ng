@@ -12,3 +12,5 @@ cmake-build-*/
 
 # Local/editor noise.
 .DS_Store
+__pycache__/
+*.pyc
