@@ -44,7 +44,8 @@ The current implementation provides:
   that writes `.flac.ldf` streams with verbatim frames.
 - An experimental scalar `native-fixed` backend that selects native FLAC
   constant, verbatim, fixed predictor/Rice-coded, or LPC/Rice-coded frames.
-- Optional frame-level threading for the native FLAC backends.
+- Optional frame-level threading for the native FLAC backends using a bounded
+  worker pool with ordered output.
 - Optional OpenCL device enumeration.
 
 The OpenCL/FlaLDF-derived GPU compression backend is not implemented yet.

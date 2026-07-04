@@ -5,16 +5,21 @@
 
 #include <algorithm>
 #include <array>
+#include <condition_variable>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <filesystem>
-#include <future>
 #include <fstream>
 #include <istream>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <ostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace ldcompress {
@@ -192,6 +197,11 @@ struct EncodedFrame {
     FlacSubframeDecision decision;
 };
 
+struct FrameJob {
+    std::uint64_t frame_number = 0;
+    std::vector<std::int32_t> samples;
+};
+
 EncodedFrame encode_frame(
     std::vector<std::int32_t> samples,
     std::uint64_t frame_number,
@@ -221,30 +231,139 @@ void write_frame_bytes(std::ostream& output, const std::string& bytes)
     }
 }
 
-struct PendingFrame {
-    std::uint64_t frame_number = 0;
-    std::future<EncodedFrame> frame;
-};
+class FrameEncoderPool final {
+public:
+    FrameEncoderPool(
+        unsigned thread_count,
+        unsigned sample_rate,
+        unsigned max_lpc_order,
+        unsigned max_rice_partition_order,
+        NativeFrameCoding coding)
+        : sample_rate_(sample_rate),
+          max_lpc_order_(max_lpc_order),
+          max_rice_partition_order_(max_rice_partition_order),
+          coding_(coding)
+    {
+        workers_.reserve(thread_count);
+        for (unsigned i = 0; i < thread_count; ++i) {
+            workers_.emplace_back([this] {
+                worker_loop();
+            });
+        }
+    }
 
-void flush_next_pending_frame(
-    std::ostream& output,
-    std::deque<PendingFrame>& pending_frames,
-    std::uint64_t& next_frame_to_write,
-    NativeCompressionStats* stats)
-{
-    if (pending_frames.empty()) {
-        return;
+    FrameEncoderPool(const FrameEncoderPool&) = delete;
+    FrameEncoderPool& operator=(const FrameEncoderPool&) = delete;
+
+    ~FrameEncoderPool()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+        }
+        jobs_available_.notify_all();
+        for (auto& worker : workers_) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
     }
-    auto pending = std::move(pending_frames.front());
-    pending_frames.pop_front();
-    if (pending.frame_number != next_frame_to_write) {
-        throw std::runtime_error("internal native FLAC frame ordering error");
+
+    void submit(std::uint64_t frame_number, std::vector<std::int32_t> samples)
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            rethrow_exception_if_present();
+            jobs_.push_back(FrameJob {
+                .frame_number = frame_number,
+                .samples = std::move(samples),
+            });
+            ++in_flight_;
+        }
+        jobs_available_.notify_one();
     }
-    const auto encoded_frame = pending.frame.get();
-    write_frame_bytes(output, encoded_frame.bytes);
-    record_native_stats(stats, encoded_frame.decision);
-    ++next_frame_to_write;
-}
+
+    std::size_t pending_count() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return in_flight_;
+    }
+
+    EncodedFrame take(std::uint64_t frame_number)
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        results_available_.wait(lock, [&] {
+            return exception_ != nullptr || results_.find(frame_number) != results_.end();
+        });
+        rethrow_exception_if_present();
+
+        auto result = std::move(results_.at(frame_number));
+        results_.erase(frame_number);
+        --in_flight_;
+        return result;
+    }
+
+private:
+    void rethrow_exception_if_present() const
+    {
+        if (exception_ != nullptr) {
+            std::rethrow_exception(exception_);
+        }
+    }
+
+    void worker_loop()
+    {
+        while (true) {
+            FrameJob job;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                jobs_available_.wait(lock, [&] {
+                    return stopping_ || !jobs_.empty();
+                });
+                if (stopping_) {
+                    return;
+                }
+                job = std::move(jobs_.front());
+                jobs_.pop_front();
+            }
+
+            try {
+                auto frame = encode_frame(std::move(job.samples), job.frame_number,
+                    sample_rate_, max_lpc_order_, max_rice_partition_order_, coding_);
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    results_.emplace(job.frame_number, std::move(frame));
+                }
+                results_available_.notify_all();
+            } catch (...) {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if (exception_ == nullptr) {
+                        exception_ = std::current_exception();
+                    }
+                    stopping_ = true;
+                }
+                jobs_available_.notify_all();
+                results_available_.notify_all();
+                return;
+            }
+        }
+    }
+
+    unsigned sample_rate_ = 0;
+    unsigned max_lpc_order_ = 0;
+    unsigned max_rice_partition_order_ = 0;
+    NativeFrameCoding coding_ = NativeFrameCoding::Verbatim;
+    mutable std::mutex mutex_;
+    std::condition_variable jobs_available_;
+    std::condition_variable results_available_;
+    std::deque<FrameJob> jobs_;
+    std::map<std::uint64_t, EncodedFrame> results_;
+    std::vector<std::thread> workers_;
+    std::exception_ptr exception_;
+    bool stopping_ = false;
+    std::size_t in_flight_ = 0;
+};
 
 }  // namespace
 
@@ -298,7 +417,24 @@ ConversionStats compress_lds_to_native_flac(
     frame_samples.reserve(frame_sample_count);
     std::uint64_t frame_number = 0;
     std::uint64_t next_frame_to_write = 0;
-    std::deque<PendingFrame> pending_frames;
+    std::unique_ptr<FrameEncoderPool> frame_pool;
+    if (thread_count != 1) {
+        frame_pool = std::make_unique<FrameEncoderPool>(
+            thread_count, sample_rate, max_lpc_order, max_rice_partition_order,
+            coding);
+    }
+    const auto max_pending_frames = static_cast<std::size_t>(thread_count) * 2U;
+
+    const auto flush_next_threaded_frame = [&] {
+        if (!frame_pool) {
+            return;
+        }
+        const auto encoded_frame = frame_pool->take(next_frame_to_write);
+        write_frame_bytes(output, encoded_frame.bytes);
+        record_native_stats(native_stats, encoded_frame.decision);
+        ++next_frame_to_write;
+    };
+
     const auto submit_frame = [&](std::vector<std::int32_t> samples, std::uint64_t current_frame) {
         if (thread_count == 1) {
             const auto decision = write_frame(
@@ -309,16 +445,10 @@ ConversionStats compress_lds_to_native_flac(
             return;
         }
 
-        pending_frames.push_back(PendingFrame {
-            .frame_number = current_frame,
-            .frame = std::async(
-                std::launch::async, encode_frame, std::move(samples),
-                current_frame, sample_rate, max_lpc_order,
-                max_rice_partition_order, coding),
-        });
-        while (pending_frames.size() > thread_count) {
-            flush_next_pending_frame(output, pending_frames, next_frame_to_write, native_stats);
+        while (frame_pool->pending_count() >= max_pending_frames) {
+            flush_next_threaded_frame();
         }
+        frame_pool->submit(current_frame, std::move(samples));
     };
 
     const auto encoded_stats = process_lds_samples(lds_input, [&](std::int16_t sample) {
@@ -334,8 +464,8 @@ ConversionStats compress_lds_to_native_flac(
         submit_frame(std::move(frame_samples), frame_number);
         ++frame_number;
     }
-    while (!pending_frames.empty()) {
-        flush_next_pending_frame(output, pending_frames, next_frame_to_write, native_stats);
+    while (next_frame_to_write != frame_number) {
+        flush_next_threaded_frame();
     }
     if (next_frame_to_write != frame_number) {
         throw std::runtime_error("internal native FLAC frame count mismatch");
