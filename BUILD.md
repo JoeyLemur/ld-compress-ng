@@ -156,7 +156,7 @@ python3 tools/sweep_real_fixtures.py \
 ```
 
 The default sweep is intentionally focused: frame size `4608`, LPC orders
-`10,12`, LPC coefficient precisions `10,12`, Rice partition order `4`, and one
+`10,12`, LPC coefficient precisions `10,12`, Rice partition order `5`, and one
 thread. Expand the grid explicitly when doing a broader local tuning pass:
 
 ```sh
@@ -165,19 +165,20 @@ python3 tools/sweep_real_fixtures.py \
     --frame-samples 2304,4608 \
     --lpc-order 8,10,12 \
     --lpc-precision 8,10,12,14 \
-    --rice-partition-order 3,4
+    --rice-partition-order 4,5,6
 ```
 
 Use `--dry-run` to print the generated `bench` commands and `--limit N` for a
 quick subset check. The helper depends only on Python 3 stdlib, the built
 `ld-compress-ng` binary, and local ignored fixture files.
 
-The first broad sweep over the six current real fixtures selected frame size
-`4608`, LPC order `12`, LPC coefficient precision `10`, and Rice partition order
-`4` as the best aggregate native-fixed size. That changed the default LPC
-coefficient precision from `12` to `10`. After LPC quantization candidate
-selection, that default native-fixed configuration produces `81,329,035` bytes
-across the current real fixtures, still about `+1.55%` larger than CPU/libFLAC.
+After adding Tukey-windowed LPC analysis candidates and retuning over the six
+current real fixtures, frame size `4608`, LPC order `12`, LPC coefficient
+precision `12`, and Rice partition order `5` are the current default
+native-fixed settings. That configuration produces `79,920,941` bytes across
+the current real fixtures, about `-0.21%` smaller than CPU/libFLAC. Rice
+partition order `6` squeezed the aggregate to `79,914,216` bytes, but the byte
+gain was small enough that `5` remains the default speed/size tradeoff.
 
 ## Legacy Fixture Regeneration
 

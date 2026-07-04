@@ -76,21 +76,21 @@ Current default native tuning values:
 
 - Frame samples: `4608`.
 - Maximum LPC order: `12`.
-- LPC coefficient precision: `10`.
-- Maximum Rice partition order: `4`.
+- LPC coefficient precision: `12`.
+- Maximum Rice partition order: `5`.
 - Thread count: `1`, unless explicitly set with `--threads`.
 
 Real-fixture sweep result:
 
 - Broad sweep artifact paths are under ignored `build/real-fixture-sweeps/`.
-- Current broad sweep winner across the six local real fixtures:
-  `threads=8`, `frame=4608`, `lpc=12`, `prec=10`, `rice=4`.
-- Aggregate native-fixed size after LPC quantization candidate selection:
-  `81,329,035` bytes, still about `+1.55%` larger than CPU/libFLAC for the same
-  fixtures.
-- The broad sweep justified changing the native LPC coefficient precision default
-  from `12` to `10`, but the native scalar encoder still needs algorithmic work
-  rather than only knob tuning.
+- Current default target across the six local real fixtures:
+  `threads=8`, `frame=4608`, `lpc=12`, `prec=12`, `rice=5`.
+- Aggregate native-fixed size after Tukey-windowed LPC analysis and focused
+  retuning: `79,920,941` bytes, about `-0.21%` smaller than CPU/libFLAC for the
+  same fixtures.
+- Rice partition order `6` produced a slightly smaller aggregate
+  (`79,914,216` bytes), but the byte gain was small enough that `5` remains the
+  default speed/size tradeoff.
 
 Immediate engineering focus:
 
@@ -199,6 +199,8 @@ provided.
   zero bits that are inherent in unpacked 10-bit LDS samples. Done.
 - Add scalar LPC/Rice subframes as the first heavier predictor path before
   porting the FlaLDF/OpenCL task scheduler. Done.
+- Add Tukey-windowed LPC analysis candidates alongside rectangle/no-window
+  analysis, using exact residual cost to choose the best predictor. Done.
 - Add native tuning controls for frame sample count, maximum LPC order, LPC
   coefficient precision, and maximum Rice partition order so FlaLDF-style
   settings can be benchmarked before changing defaults. Done.
@@ -232,8 +234,8 @@ provided.
   scoreboard. Done.
 - Use benchmark sweeps across frame sizes, LPC orders, LPC coefficient
   precisions, Rice partition orders, and thread counts before changing native
-  compression defaults. Done for the first default precision change; repeat
-  before future default changes.
+  compression defaults. Done for the first default precision change and the
+  Tukey-windowed LPC retune; repeat before future default changes.
 - Document compatibility with historical `.ldf`, `.raw.oga`, and `.flac.ldf`
   files.
 - Consider CPU-specific optimizations such as SIMD or tuned block processing only

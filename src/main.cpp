@@ -21,6 +21,11 @@
 
 namespace {
 
+constexpr unsigned kDefaultNativeFrameSamples = 4608;
+constexpr unsigned kDefaultNativeMaxLpcOrder = 12;
+constexpr unsigned kDefaultNativeLpcPrecision = 12;
+constexpr unsigned kDefaultNativeMaxRicePartitionOrder = 5;
+
 struct Options {
     bool overwrite = false;
     bool pack = false;
@@ -29,10 +34,10 @@ struct Options {
     bool show_stats = false;
     unsigned level = 11;
     unsigned threads = 1;
-    unsigned native_frame_samples = 4608;
-    unsigned native_max_lpc_order = 12;
-    unsigned native_lpc_precision = 10;
-    unsigned native_max_rice_partition_order = 4;
+    unsigned native_frame_samples = kDefaultNativeFrameSamples;
+    unsigned native_max_lpc_order = kDefaultNativeMaxLpcOrder;
+    unsigned native_lpc_precision = kDefaultNativeLpcPrecision;
+    unsigned native_max_rice_partition_order = kDefaultNativeMaxRicePartitionOrder;
     std::vector<unsigned> bench_threads;
     std::vector<unsigned> bench_frame_samples;
     std::vector<unsigned> bench_lpc_orders;
@@ -349,10 +354,10 @@ Options parse_compress(int argc, char** argv)
         throw std::runtime_error("--stats is currently supported only by native FLAC backends");
     }
     if (options.backend == ldcompress::CompressionBackend::CpuLibFlac &&
-        (options.native_frame_samples != 4608 ||
-            options.native_max_lpc_order != 12 ||
-            options.native_lpc_precision != 10 ||
-            options.native_max_rice_partition_order != 4)) {
+        (options.native_frame_samples != kDefaultNativeFrameSamples ||
+            options.native_max_lpc_order != kDefaultNativeMaxLpcOrder ||
+            options.native_lpc_precision != kDefaultNativeLpcPrecision ||
+            options.native_max_rice_partition_order != kDefaultNativeMaxRicePartitionOrder)) {
         throw std::runtime_error("--frame-samples, --lpc-order, --lpc-precision, and --rice-partition-order are supported only by native FLAC backends");
     }
 
@@ -880,10 +885,10 @@ int run_bench(const Options& options)
             .backend = ldcompress::CompressionBackend::CpuLibFlac,
             .container = ldcompress::FlacContainer::Ogg,
             .threads = 1,
-            .native_frame_samples = 4608,
-            .native_max_lpc_order = 12,
-            .native_lpc_precision = 10,
-            .native_max_rice_partition_order = 4,
+            .native_frame_samples = kDefaultNativeFrameSamples,
+            .native_max_lpc_order = kDefaultNativeMaxLpcOrder,
+            .native_lpc_precision = kDefaultNativeLpcPrecision,
+            .native_max_rice_partition_order = kDefaultNativeMaxRicePartitionOrder,
             .show_frame_samples = false,
             .show_lpc_order = false,
             .show_lpc_precision = false,
@@ -898,8 +903,8 @@ int run_bench(const Options& options)
             .threads = 1,
             .native_frame_samples = frame_samples,
             .native_max_lpc_order = 0,
-            .native_lpc_precision = 10,
-            .native_max_rice_partition_order = 4,
+            .native_lpc_precision = kDefaultNativeLpcPrecision,
+            .native_max_rice_partition_order = kDefaultNativeMaxRicePartitionOrder,
             .show_frame_samples = true,
             .show_lpc_order = false,
             .show_lpc_precision = false,

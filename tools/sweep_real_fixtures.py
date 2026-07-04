@@ -288,7 +288,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=uint_list_arg("LPC order", 0, 12))
     parser.add_argument("--lpc-precision", default="10,12",
         type=uint_list_arg("LPC precision", 1, 15))
-    parser.add_argument("--rice-partition-order", default="4",
+    parser.add_argument("--rice-partition-order", default="5",
         type=uint_list_arg("Rice partition order", 0, 8))
     parser.add_argument("--limit", type=int,
         help="benchmark only the first N fixtures after path sorting")

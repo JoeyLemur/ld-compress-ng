@@ -344,7 +344,6 @@ void test_real_fixtures(const std::filesystem::path& root)
             .thread_count = 8,
             .native_frame_samples = 4608,
             .native_max_lpc_order = 12,
-            .native_max_rice_partition_order = 4,
             .native_stats = &native_stats,
         };
         const auto native_result = compress_fixture(fixture.path, native_output, native_options);
@@ -366,7 +365,6 @@ void test_real_fixtures(const std::filesystem::path& root)
         .thread_count = 1,
         .native_frame_samples = 4608,
         .native_max_lpc_order = 12,
-        .native_max_rice_partition_order = 4,
     };
     const ldcompress::CompressionOptions threaded_options {
         .backend = ldcompress::CompressionBackend::NativeFixedFlac,
@@ -376,7 +374,6 @@ void test_real_fixtures(const std::filesystem::path& root)
         .thread_count = 8,
         .native_frame_samples = 4608,
         .native_max_lpc_order = 12,
-        .native_max_rice_partition_order = 4,
     };
 
     const auto single_output = temp_dir.path() / "thread-parity-single.flac.ldf";

@@ -38,8 +38,8 @@ struct CompressionOptions {
     unsigned thread_count = 1;
     unsigned native_frame_samples = 4608;
     unsigned native_max_lpc_order = 12;
-    unsigned native_lpc_precision = 10;
-    unsigned native_max_rice_partition_order = 4;
+    unsigned native_lpc_precision = 12;
+    unsigned native_max_rice_partition_order = 5;
     NativeCompressionStats* native_stats = nullptr;
 };
 

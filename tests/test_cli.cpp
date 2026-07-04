@@ -223,9 +223,9 @@ void test_cli(const std::filesystem::path& exe)
     require(!std::filesystem::exists(bad_cpu_stats), "CPU --stats rejection wrote output");
     run_fails(shell_quote(exe) + " compress --frame-samples 2048 " + shell_quote(lds) + " " + shell_quote(bad_cpu_frame_samples));
     require(!std::filesystem::exists(bad_cpu_frame_samples), "CPU --frame-samples rejection wrote output");
-    run_fails(shell_quote(exe) + " compress --lpc-precision 12 " + shell_quote(lds) + " " + shell_quote(bad_cpu_lpc_precision));
+    run_fails(shell_quote(exe) + " compress --lpc-precision 10 " + shell_quote(lds) + " " + shell_quote(bad_cpu_lpc_precision));
     require(!std::filesystem::exists(bad_cpu_lpc_precision), "CPU --lpc-precision rejection wrote output");
-    run_fails(shell_quote(exe) + " compress --rice-partition-order 5 " + shell_quote(lds) + " " + shell_quote(bad_cpu_rice_partition_order));
+    run_fails(shell_quote(exe) + " compress --rice-partition-order 4 " + shell_quote(lds) + " " + shell_quote(bad_cpu_rice_partition_order));
     require(!std::filesystem::exists(bad_cpu_rice_partition_order), "CPU --rice-partition-order rejection wrote output");
     run_fails(shell_quote(exe) + " compress --threads 2 " + shell_quote(lds) + " " + shell_quote(bad_cpu_threads));
     require(!std::filesystem::exists(bad_cpu_threads), "CPU --threads rejection wrote output");
