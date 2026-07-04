@@ -106,6 +106,8 @@ provided.
 - Keep the public compression boundary at packed LDS input stream to compressed
   output file plus conversion stats. Do not expose OpenCL buffers, kernel task
   structs, or FlaLDF subframe internals through the public API.
+- Build native FLAC writer primitives before porting the OpenCL encoder,
+  starting with bit writing, CRC helpers, STREAMINFO, and verbatim frame output.
 - Port FlaLDF host-side encoder logic to native C++.
 - Reuse or adapt the existing OpenCL kernel from `FlaLDF/`.
 - Extend the initial OpenCL platform/device enumeration into explicit device

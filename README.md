@@ -38,6 +38,8 @@ The current implementation provides:
 - Decompression from Ogg FLAC and native FLAC to packed `.lds`.
 - MD5-based verification, optionally against an original `.lds`.
 - A backend selection facade for CPU now and OpenCL later.
+- Native FLAC bitstream primitives, including a minimal STREAMINFO/verbatim frame
+  writer used by tests.
 - Optional OpenCL device enumeration.
 
 The OpenCL/FlaLDF-derived GPU compression backend is not implemented yet.
