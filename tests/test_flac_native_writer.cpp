@@ -11,6 +11,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <unistd.h>
@@ -86,7 +87,12 @@ unsigned read_bits(std::string_view bytes, std::size_t bit_offset, unsigned bit_
     return value;
 }
 
-unsigned first_frame_fixed_order(const std::filesystem::path& flac_path)
+struct FirstFrameFixedInfo {
+    unsigned order = 0;
+    unsigned partition_order = 0;
+};
+
+FirstFrameFixedInfo first_frame_fixed_info(const std::filesystem::path& flac_path)
 {
     const auto bytes = read_file(flac_path);
     constexpr std::size_t kStreamInfoBytes = 42;
@@ -97,7 +103,13 @@ unsigned first_frame_fixed_order(const std::filesystem::path& flac_path)
     if (type < 8 || type > 12) {
         throw std::runtime_error("first frame did not use a fixed predictor subframe");
     }
-    return type - 8;
+    const auto order = type - 8;
+    const auto partition_order_bit_offset =
+        subframe_bit_offset + 8U + (static_cast<std::size_t>(order) * 16U) + 2U;
+    return FirstFrameFixedInfo {
+        .order = order,
+        .partition_order = read_bits(bytes, partition_order_bit_offset, 4),
+    };
 }
 
 void write_fixed_rice_file(
@@ -133,11 +145,15 @@ void write_fixed_rice_file(
 void verify_fixed_rice_round_trip(
     const std::filesystem::path& flac_path,
     const std::vector<std::int32_t>& samples,
-    unsigned expected_order)
+    unsigned expected_order,
+    unsigned expected_partition_order)
 {
     write_fixed_rice_file(flac_path, samples);
-    require(first_frame_fixed_order(flac_path) == expected_order,
+    const auto frame_info = first_frame_fixed_info(flac_path);
+    require(frame_info.order == expected_order,
         "native fixed/Rice writer chose an unexpected fixed predictor order");
+    require(frame_info.partition_order == expected_partition_order,
+        "native fixed/Rice writer chose an unexpected Rice partition order");
 
     std::ostringstream decoded;
     const auto stats = ldcompress::decompress_flac_to_lds(flac_path.string(), decoded);
@@ -206,15 +222,15 @@ void test_native_fixed_rice_round_trip()
     std::filesystem::remove_all(temp_dir);
     std::filesystem::create_directory(temp_dir);
 
-    verify_fixed_rice_round_trip(temp_dir / "order0.flac", std::vector<std::int32_t>(16, 0), 0);
+    verify_fixed_rice_round_trip(temp_dir / "order0.flac", std::vector<std::int32_t>(16, 0), 0, 0);
     verify_fixed_rice_round_trip(temp_dir / "order1.flac", {
         -2, -1, -1, -2, 0, -2, -2, -4,
         -6, -8, -6, -8, -7, -8, -7, -9,
-    }, 1);
+    }, 1, 0);
     verify_fixed_rice_round_trip(temp_dir / "order2.flac", {
         0, 64, 128, 192, 256, 320, 384, 448,
         512, 576, 640, 704, 768, 832, 896, 960,
-    }, 2);
+    }, 2, 0);
 
     std::vector<std::int32_t> quadratic;
     std::vector<std::int32_t> cubic;
@@ -222,13 +238,21 @@ void test_native_fixed_rice_round_trip()
         quadratic.push_back(i * i * 8);
         cubic.push_back(i * i * i);
     }
-    verify_fixed_rice_round_trip(temp_dir / "order3.flac", quadratic, 3);
-    verify_fixed_rice_round_trip(temp_dir / "order4.flac", cubic, 4);
-    verify_fixed_rice_round_trip(temp_dir / "tiny.flac", {0, -1, 1, -2}, 0);
+    verify_fixed_rice_round_trip(temp_dir / "order3.flac", quadratic, 3, 0);
+    verify_fixed_rice_round_trip(temp_dir / "order4.flac", cubic, 4, 0);
+    verify_fixed_rice_round_trip(temp_dir / "partitioned.flac", {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
+        32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
+        32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
+        32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
+    }, 0, 1);
+    verify_fixed_rice_round_trip(temp_dir / "tiny.flac", {0, -1, 1, -2}, 0, 0);
     verify_fixed_rice_round_trip(temp_dir / "wide.flac", {
         32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
         32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
-    }, 0);
+    }, 0, 0);
 
     std::filesystem::remove_all(temp_dir);
 }

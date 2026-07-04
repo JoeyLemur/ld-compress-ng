@@ -112,8 +112,8 @@ provided.
 - Add an experimental native-FLAC verbatim backend to exercise the writer through
   the real CLI before introducing compressed subframes or GPU work.
 - Add a scalar fixed-predictor/Rice backend as the first actually compressed
-  native FLAC output path, using partition order 0 before optimized partition
-  search or GPU residual work.
+  native FLAC output path, then extend it with conservative Rice partition
+  search before optimized partition ranges or GPU residual work.
 - Port FlaLDF host-side encoder logic to native C++.
 - Reuse or adapt the existing OpenCL kernel from `FlaLDF/`.
 - Extend the initial OpenCL platform/device enumeration into explicit device
@@ -148,7 +148,8 @@ provided.
 - Verify native FLAC `.flac.ldf` decode parity for the verbatim backend before
   adding compressed native/GPU output.
 - Verify native fixed-predictor/Rice output against the same decode/repack
-  parity checks before adding higher partition orders or GPU acceleration.
+  parity checks, including partitioned residuals, before adding wider partition
+  search or GPU acceleration.
 - For the OpenCL phase, test device enumeration, explicit device selection, CPU
   fallback behavior, and decompressed-output parity with the CPU backend.
 

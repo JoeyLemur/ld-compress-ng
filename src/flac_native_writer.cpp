@@ -12,6 +12,8 @@
 namespace ldcompress {
 namespace {
 
+constexpr unsigned kMaxRicePartitionOrder = 4;
+
 void write_byte(std::ostream& output, std::uint8_t byte)
 {
     output.put(static_cast<char>(byte));
@@ -208,22 +210,30 @@ std::vector<std::int64_t> fixed_residuals(
     return residuals;
 }
 
-std::uint64_t rice_bits(const std::vector<std::int64_t>& residuals, unsigned parameter)
+std::uint64_t rice_bits(
+    const std::vector<std::int64_t>& residuals,
+    std::size_t offset,
+    std::size_t count,
+    unsigned parameter)
 {
     std::uint64_t bits = 0;
-    for (const auto residual : residuals) {
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto residual = residuals.at(offset + i);
         const auto folded = fold_signed_residual(residual);
         bits += (folded >> parameter) + 1U + parameter;
     }
     return bits;
 }
 
-unsigned choose_rice_parameter(const std::vector<std::int64_t>& residuals)
+unsigned choose_rice_parameter(
+    const std::vector<std::int64_t>& residuals,
+    std::size_t offset,
+    std::size_t count)
 {
     unsigned best_parameter = 0;
     auto best_bits = std::numeric_limits<std::uint64_t>::max();
     for (unsigned parameter = 0; parameter <= 14; ++parameter) {
-        const auto bits = rice_bits(residuals, parameter);
+        const auto bits = rice_bits(residuals, offset, count, parameter);
         if (bits < best_bits) {
             best_bits = bits;
             best_parameter = parameter;
@@ -234,14 +244,39 @@ unsigned choose_rice_parameter(const std::vector<std::int64_t>& residuals)
 
 struct FixedRiceSubframe {
     unsigned order = 0;
-    unsigned rice_parameter = 0;
+    unsigned partition_order = 0;
+    std::vector<unsigned> rice_parameters;
     std::vector<std::int64_t> residuals;
 };
 
+bool valid_partition_order(std::size_t block_size, unsigned predictor_order, unsigned partition_order)
+{
+    const auto partition_count = std::size_t {1} << partition_order;
+    if ((block_size % partition_count) != 0) {
+        return false;
+    }
+    const auto partition_samples = block_size / partition_count;
+    return partition_samples > predictor_order;
+}
+
+std::size_t partition_residual_count(
+    std::size_t block_size,
+    unsigned predictor_order,
+    unsigned partition_order,
+    std::size_t partition)
+{
+    const auto partition_samples = block_size >> partition_order;
+    return partition == 0
+        ? partition_samples - predictor_order
+        : partition_samples;
+}
+
 std::uint64_t fixed_rice_subframe_bits(
     unsigned order,
-    unsigned rice_parameter,
+    unsigned partition_order,
+    const std::vector<unsigned>& rice_parameters,
     const std::vector<std::int64_t>& residuals,
+    std::size_t block_size,
     unsigned bits_per_sample)
 {
     constexpr unsigned kSubframeHeaderBits = 8;
@@ -249,9 +284,24 @@ std::uint64_t fixed_rice_subframe_bits(
     constexpr unsigned kPartitionOrderBits = 4;
     constexpr unsigned kRiceParameterBits = 4;
 
-    return kSubframeHeaderBits + (static_cast<std::uint64_t>(order) * bits_per_sample) +
-        kRiceMethodBits + kPartitionOrderBits + kRiceParameterBits +
-        rice_bits(residuals, rice_parameter);
+    std::uint64_t bits =
+        kSubframeHeaderBits + (static_cast<std::uint64_t>(order) * bits_per_sample) +
+        kRiceMethodBits + kPartitionOrderBits;
+
+    std::size_t residual_offset = 0;
+    const auto partition_count = std::size_t {1} << partition_order;
+    for (std::size_t partition = 0; partition < partition_count; ++partition) {
+        const auto residual_count = partition_residual_count(
+            block_size, order, partition_order, partition);
+        bits += kRiceParameterBits;
+        bits += rice_bits(residuals, residual_offset, residual_count,
+            rice_parameters.at(partition));
+        residual_offset += residual_count;
+    }
+    if (residual_offset != residuals.size()) {
+        throw std::runtime_error("internal FLAC residual partition accounting error");
+    }
+    return bits;
 }
 
 FixedRiceSubframe choose_fixed_rice_subframe(
@@ -266,14 +316,36 @@ FixedRiceSubframe choose_fixed_rice_subframe(
     auto best_bits = std::numeric_limits<std::uint64_t>::max();
     for (unsigned order = 0; order <= max_order; ++order) {
         auto residuals = fixed_residuals(samples, order);
-        const auto rice_parameter = choose_rice_parameter(residuals);
-        const auto bits = fixed_rice_subframe_bits(
-            order, rice_parameter, residuals, bits_per_sample);
-        if (bits < best_bits) {
-            best_bits = bits;
-            best.order = order;
-            best.rice_parameter = rice_parameter;
-            best.residuals = std::move(residuals);
+        for (unsigned partition_order = 0; partition_order <= kMaxRicePartitionOrder; ++partition_order) {
+            if (!valid_partition_order(samples.size(), order, partition_order)) {
+                continue;
+            }
+
+            const auto partition_count = std::size_t {1} << partition_order;
+            std::vector<unsigned> rice_parameters;
+            rice_parameters.reserve(partition_count);
+            std::size_t residual_offset = 0;
+            for (std::size_t partition = 0; partition < partition_count; ++partition) {
+                const auto residual_count = partition_residual_count(
+                    samples.size(), order, partition_order, partition);
+                rice_parameters.push_back(choose_rice_parameter(
+                    residuals, residual_offset, residual_count));
+                residual_offset += residual_count;
+            }
+            if (residual_offset != residuals.size()) {
+                throw std::runtime_error("internal FLAC residual partition accounting error");
+            }
+
+            const auto bits = fixed_rice_subframe_bits(
+                order, partition_order, rice_parameters, residuals,
+                samples.size(), bits_per_sample);
+            if (bits < best_bits) {
+                best_bits = bits;
+                best.order = order;
+                best.partition_order = partition_order;
+                best.rice_parameters = std::move(rice_parameters);
+                best.residuals = residuals;
+            }
         }
     }
     return best;
@@ -418,10 +490,23 @@ void write_mono_fixed_rice_frame(
         frame_body.write_signed(samples[i], info.bits_per_sample);
     }
     frame_body.write_bits(0, 2);
-    frame_body.write_bits(0, 4);
-    frame_body.write_bits(subframe.rice_parameter, 4);
-    for (const auto residual : subframe.residuals) {
-        write_rice_signed(frame_body, residual, subframe.rice_parameter);
+    frame_body.write_bits(subframe.partition_order, 4);
+
+    std::size_t residual_offset = 0;
+    const auto partition_count = std::size_t {1} << subframe.partition_order;
+    for (std::size_t partition = 0; partition < partition_count; ++partition) {
+        const auto residual_count = partition_residual_count(
+            samples.size(), subframe.order, subframe.partition_order, partition);
+        const auto rice_parameter = subframe.rice_parameters.at(partition);
+        frame_body.write_bits(rice_parameter, 4);
+        for (std::size_t i = 0; i < residual_count; ++i) {
+            write_rice_signed(frame_body, subframe.residuals.at(residual_offset + i),
+                rice_parameter);
+        }
+        residual_offset += residual_count;
+    }
+    if (residual_offset != subframe.residuals.size()) {
+        throw std::runtime_error("internal FLAC residual partition accounting error");
     }
     write_frame_with_body(output, samples.size(), info, frame_body);
 }

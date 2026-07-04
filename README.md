@@ -64,8 +64,8 @@ Defaults:
   uncompressed verbatim FLAC frames. This is mainly a compatibility stepping
   stone for the future native/GPU encoder, not the final compressed path.
 - `--backend native-fixed` writes native FLAC `.flac.ldf` output using scalar
-  fixed prediction and partition-order-0 Rice residuals. It is a correctness
-  milestone for the native/GPU path, not tuned compression yet.
+  fixed prediction and Rice residuals with partition-order search `0..4`. It is
+  a correctness milestone for the native/GPU path, not tuned compression yet.
 - `--backend opencl` is reserved for the future FlaLDF-derived native FLAC path
   and currently fails before writing output.
 - `--container flac` writes native FLAC, useful for compatibility testing with
