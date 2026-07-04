@@ -72,4 +72,26 @@ if(BUILD_TESTING)
     )
 
     add_test(NAME flac_roundtrip COMMAND test_flac_roundtrip)
+
+    add_executable(test_hash
+        tests/test_hash.cpp
+    )
+
+    target_link_libraries(test_hash
+        PRIVATE
+            ldcompress_core
+    )
+
+    add_test(NAME hash COMMAND test_hash)
+
+    add_executable(test_cli
+        tests/test_cli.cpp
+    )
+
+    target_link_libraries(test_cli
+        PRIVATE
+            ldcompress_core
+    )
+
+    add_test(NAME cli COMMAND test_cli $<TARGET_FILE:ld-compress-ng>)
 endif()

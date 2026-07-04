@@ -1,6 +1,8 @@
 #include "hash.h"
 
+#include <algorithm>
 #include <array>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -9,56 +11,200 @@
 namespace ldcompress {
 namespace {
 
-std::array<std::uint32_t, 256> make_crc32_table()
+constexpr std::array<std::uint32_t, 64> kMd5RoundConstants {
+    0xd76aa478U, 0xe8c7b756U, 0x242070dbU, 0xc1bdceeeU,
+    0xf57c0fafU, 0x4787c62aU, 0xa8304613U, 0xfd469501U,
+    0x698098d8U, 0x8b44f7afU, 0xffff5bb1U, 0x895cd7beU,
+    0x6b901122U, 0xfd987193U, 0xa679438eU, 0x49b40821U,
+    0xf61e2562U, 0xc040b340U, 0x265e5a51U, 0xe9b6c7aaU,
+    0xd62f105dU, 0x02441453U, 0xd8a1e681U, 0xe7d3fbc8U,
+    0x21e1cde6U, 0xc33707d6U, 0xf4d50d87U, 0x455a14edU,
+    0xa9e3e905U, 0xfcefa3f8U, 0x676f02d9U, 0x8d2a4c8aU,
+    0xfffa3942U, 0x8771f681U, 0x6d9d6122U, 0xfde5380cU,
+    0xa4beea44U, 0x4bdecfa9U, 0xf6bb4b60U, 0xbebfbc70U,
+    0x289b7ec6U, 0xeaa127faU, 0xd4ef3085U, 0x04881d05U,
+    0xd9d4d039U, 0xe6db99e5U, 0x1fa27cf8U, 0xc4ac5665U,
+    0xf4292244U, 0x432aff97U, 0xab9423a7U, 0xfc93a039U,
+    0x655b59c3U, 0x8f0ccc92U, 0xffeff47dU, 0x85845dd1U,
+    0x6fa87e4fU, 0xfe2ce6e0U, 0xa3014314U, 0x4e0811a1U,
+    0xf7537e82U, 0xbd3af235U, 0x2ad7d2bbU, 0xeb86d391U,
+};
+
+constexpr std::array<unsigned, 64> kMd5Shifts {
+    7U, 12U, 17U, 22U, 7U, 12U, 17U, 22U,
+    7U, 12U, 17U, 22U, 7U, 12U, 17U, 22U,
+    5U, 9U, 14U, 20U, 5U, 9U, 14U, 20U,
+    5U, 9U, 14U, 20U, 5U, 9U, 14U, 20U,
+    4U, 11U, 16U, 23U, 4U, 11U, 16U, 23U,
+    4U, 11U, 16U, 23U, 4U, 11U, 16U, 23U,
+    6U, 10U, 15U, 21U, 6U, 10U, 15U, 21U,
+    6U, 10U, 15U, 21U, 6U, 10U, 15U, 21U,
+};
+
+std::uint32_t rotate_left(std::uint32_t value, unsigned bits)
 {
-    std::array<std::uint32_t, 256> table {};
-    for (std::uint32_t i = 0; i < table.size(); ++i) {
-        std::uint32_t crc = i;
-        for (int bit = 0; bit < 8; ++bit) {
-            crc = (crc & 1U) != 0U ? (crc >> 1U) ^ 0xedb88320U : crc >> 1U;
-        }
-        table[i] = crc;
-    }
-    return table;
+    return (value << bits) | (value >> (32U - bits));
 }
 
-const std::array<std::uint32_t, 256>& crc32_table()
+std::uint32_t read_le32(const std::uint8_t* data)
 {
-    static const auto table = make_crc32_table();
-    return table;
+    return static_cast<std::uint32_t>(data[0]) |
+        (static_cast<std::uint32_t>(data[1]) << 8U) |
+        (static_cast<std::uint32_t>(data[2]) << 16U) |
+        (static_cast<std::uint32_t>(data[3]) << 24U);
+}
+
+void write_le32(std::uint8_t* data, std::uint32_t value)
+{
+    data[0] = static_cast<std::uint8_t>(value & 0xffU);
+    data[1] = static_cast<std::uint8_t>((value >> 8U) & 0xffU);
+    data[2] = static_cast<std::uint8_t>((value >> 16U) & 0xffU);
+    data[3] = static_cast<std::uint8_t>((value >> 24U) & 0xffU);
+}
+
+void write_le64(std::uint8_t* data, std::uint64_t value)
+{
+    for (unsigned i = 0; i < 8; ++i) {
+        data[i] = static_cast<std::uint8_t>((value >> (i * 8U)) & 0xffU);
+    }
 }
 
 }  // namespace
 
-void Crc32::update(const void* data, std::uint64_t size)
+void Md5::update(const void* data, std::uint64_t size)
 {
-    const auto* bytes = static_cast<const unsigned char*>(data);
-    const auto& table = crc32_table();
-    for (std::uint64_t i = 0; i < size; ++i) {
-        state_ = table[(state_ ^ bytes[i]) & 0xffU] ^ (state_ >> 8U);
+    if (finalized_) {
+        throw std::runtime_error("cannot update finalized MD5 digest");
+    }
+    if (size == 0) {
+        return;
+    }
+
+    const auto* input = static_cast<const std::uint8_t*>(data);
+    bytes_ += size;
+
+    std::uint64_t offset = 0;
+    if (buffer_size_ != 0) {
+        const auto needed = buffer_.size() - buffer_size_;
+        const auto copied = std::min<std::uint64_t>(needed, size);
+        std::memcpy(buffer_.data() + buffer_size_, input, static_cast<std::size_t>(copied));
+        buffer_size_ += static_cast<std::size_t>(copied);
+        offset += copied;
+
+        if (buffer_size_ == buffer_.size()) {
+            transform(buffer_.data());
+            buffer_size_ = 0;
+        }
+    }
+
+    while ((size - offset) >= buffer_.size()) {
+        transform(input + offset);
+        offset += buffer_.size();
+    }
+
+    const auto remaining = static_cast<std::size_t>(size - offset);
+    if (remaining != 0) {
+        std::memcpy(buffer_.data(), input + offset, remaining);
+        buffer_size_ = remaining;
     }
 }
 
-std::uint32_t Crc32::value() const
+std::array<std::uint8_t, 16> Md5::digest() const
 {
-    return state_ ^ 0xffffffffU;
+    Md5 copy(*this);
+    copy.finish();
+
+    std::array<std::uint8_t, 16> result {};
+    for (std::size_t i = 0; i < copy.state_.size(); ++i) {
+        write_le32(result.data() + (i * 4), copy.state_[i]);
+    }
+    return result;
 }
 
-std::string Crc32::hex() const
+std::string Md5::hex() const
 {
+    const auto bytes = digest();
     std::ostringstream out;
-    out << std::hex << std::setfill('0') << std::setw(8) << value();
+    out << std::hex << std::setfill('0');
+    for (const auto byte : bytes) {
+        out << std::setw(2) << static_cast<unsigned>(byte);
+    }
     return out.str();
 }
 
-FileHash crc32_file(const std::string& path)
+void Md5::transform(const std::uint8_t* block)
+{
+    std::array<std::uint32_t, 16> words {};
+    for (std::size_t i = 0; i < words.size(); ++i) {
+        words[i] = read_le32(block + (i * 4));
+    }
+
+    auto a = state_[0];
+    auto b = state_[1];
+    auto c = state_[2];
+    auto d = state_[3];
+
+    for (std::size_t i = 0; i < 64; ++i) {
+        std::uint32_t f = 0;
+        std::size_t g = 0;
+        if (i < 16) {
+            f = (b & c) | (~b & d);
+            g = i;
+        } else if (i < 32) {
+            f = (d & b) | (~d & c);
+            g = ((5 * i) + 1) % 16;
+        } else if (i < 48) {
+            f = b ^ c ^ d;
+            g = ((3 * i) + 5) % 16;
+        } else {
+            f = c ^ (b | ~d);
+            g = (7 * i) % 16;
+        }
+
+        const auto next_d = c;
+        const auto next_c = b;
+        const auto next_b = b + rotate_left(a + f + kMd5RoundConstants[i] + words[g], kMd5Shifts[i]);
+        a = d;
+        b = next_b;
+        c = next_c;
+        d = next_d;
+    }
+
+    state_[0] += a;
+    state_[1] += b;
+    state_[2] += c;
+    state_[3] += d;
+}
+
+void Md5::finish()
+{
+    if (finalized_) {
+        return;
+    }
+
+    const auto original_bits = bytes_ * 8U;
+
+    std::array<std::uint8_t, 64> padding {};
+    padding[0] = 0x80U;
+    const std::uint64_t padding_size =
+        buffer_size_ < 56 ? 56U - buffer_size_ : 120U - buffer_size_;
+    update(padding.data(), padding_size);
+
+    std::array<std::uint8_t, 8> length_bytes {};
+    write_le64(length_bytes.data(), original_bits);
+    update(length_bytes.data(), length_bytes.size());
+
+    finalized_ = true;
+}
+
+FileDigest md5_file(const std::string& path)
 {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
         throw std::runtime_error("could not open input: " + path);
     }
 
-    FileHash hash;
+    FileDigest digest;
     std::array<char, 64 * 1024> buffer {};
     while (input) {
         input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
@@ -66,13 +212,13 @@ FileHash crc32_file(const std::string& path)
         if (got == 0) {
             break;
         }
-        hash.crc.update(buffer.data(), static_cast<std::uint64_t>(got));
-        hash.bytes += static_cast<std::uint64_t>(got);
+        digest.md5.update(buffer.data(), static_cast<std::uint64_t>(got));
+        digest.bytes += static_cast<std::uint64_t>(got);
     }
     if (input.bad()) {
         throw std::runtime_error("failed to read input: " + path);
     }
-    return hash;
+    return digest;
 }
 
 }  // namespace ldcompress

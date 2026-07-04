@@ -8,6 +8,10 @@ and the original `ld-compress` script is intentionally ignored by Git.
 
 See `PROJECT_PLAN.md` for the implementation plan.
 
+The baseline CPU path is intended to stay portable across Linux and macOS on
+both arm64 and amd64/x86_64. CPU-specific optimizations and macOS Metal GPU
+support are later-phase work after compatibility is nailed down.
+
 ## Build
 
 ```sh
@@ -23,7 +27,7 @@ The current implementation provides:
 - Native LDS 10-bit pack/unpack conversion.
 - CPU compression to Ogg FLAC `.ldf` using `libFLAC`/`libogg`.
 - Decompression from Ogg FLAC and native FLAC to packed `.lds`.
-- CRC32-based verification, optionally against an original `.lds`.
+- MD5-based verification, optionally against an original `.lds`.
 
 The OpenCL/FlaLDF-derived GPU backend is not implemented yet.
 

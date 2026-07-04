@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace {
@@ -80,6 +81,31 @@ void ensure_output_allowed(const std::string& path, bool overwrite)
 {
     if (!overwrite && std::filesystem::exists(path)) {
         throw std::runtime_error("output already exists: " + path + " (use --overwrite)");
+    }
+}
+
+std::filesystem::path normalized_absolute(const std::string& path)
+{
+    return std::filesystem::absolute(std::filesystem::path(path)).lexically_normal();
+}
+
+bool same_or_equivalent_path(const std::string& lhs, const std::string& rhs)
+{
+    std::error_code ec;
+    if (std::filesystem::exists(lhs, ec) && std::filesystem::exists(rhs, ec)) {
+        if (std::filesystem::equivalent(lhs, rhs, ec)) {
+            return true;
+        }
+        ec.clear();
+    }
+
+    return normalized_absolute(lhs) == normalized_absolute(rhs);
+}
+
+void ensure_distinct_input_output(const std::string& input, const std::string& output)
+{
+    if (same_or_equivalent_path(input, output)) {
+        throw std::runtime_error("input and output refer to the same file: " + input);
     }
 }
 
@@ -238,12 +264,12 @@ Options parse_convert(int argc, char** argv)
 class HashingStreambuf final : public std::streambuf {
 public:
     std::uint64_t bytes() const { return bytes_; }
-    const ldcompress::Crc32& crc() const { return crc_; }
+    const ldcompress::Md5& md5() const { return md5_; }
 
 protected:
     std::streamsize xsputn(const char* s, std::streamsize count) override
     {
-        crc_.update(s, static_cast<std::uint64_t>(count));
+        md5_.update(s, static_cast<std::uint64_t>(count));
         bytes_ += static_cast<std::uint64_t>(count);
         return count;
     }
@@ -254,24 +280,26 @@ protected:
             return traits_type::not_eof(ch);
         }
         const auto byte = static_cast<unsigned char>(ch);
-        crc_.update(&byte, 1);
+        md5_.update(&byte, 1);
         ++bytes_;
         return ch;
     }
 
 private:
-    ldcompress::Crc32 crc_;
+    ldcompress::Md5 md5_;
     std::uint64_t bytes_ = 0;
 };
 
 int run_compress(const Options& options)
 {
+    ensure_distinct_input_output(options.input, options.output);
+    ensure_output_allowed(options.output, options.overwrite);
+
     std::ifstream input(options.input, std::ios::binary);
     if (!input) {
         throw std::runtime_error("could not open input: " + options.input);
     }
 
-    ensure_output_allowed(options.output, options.overwrite);
     const ldcompress::FlacEncodeOptions encode_options {
         .container = options.container,
         .compression_level = options.level,
@@ -286,6 +314,7 @@ int run_compress(const Options& options)
 
 int run_decompress(const Options& options)
 {
+    ensure_distinct_input_output(options.input, options.output);
     ensure_output_allowed(options.output, options.overwrite);
     std::ofstream output(options.output, std::ios::binary);
     if (!output) {
@@ -301,12 +330,14 @@ int run_decompress(const Options& options)
 
 int run_convert(const Options& options)
 {
+    ensure_distinct_input_output(options.input, options.output);
+    ensure_output_allowed(options.output, options.overwrite);
+
     std::ifstream input(options.input, std::ios::binary);
     if (!input) {
         throw std::runtime_error("could not open input: " + options.input);
     }
 
-    ensure_output_allowed(options.output, options.overwrite);
     std::ofstream output(options.output, std::ios::binary);
     if (!output) {
         throw std::runtime_error("could not open output: " + options.output);
@@ -324,7 +355,7 @@ int run_convert(const Options& options)
 
 int run_verify(const Options& options)
 {
-    const auto compressed = ldcompress::crc32_file(options.input);
+    const auto compressed = ldcompress::md5_file(options.input);
 
     HashingStreambuf decoded_hash_buffer;
     std::ostream decoded_hash_stream(&decoded_hash_buffer);
@@ -334,17 +365,17 @@ int run_verify(const Options& options)
         throw std::runtime_error("failed to hash decoded stream");
     }
 
-    std::cout << "compressed crc32 " << compressed.crc.hex()
+    std::cout << "compressed md5 " << compressed.md5.hex()
               << "  " << compressed.bytes << " bytes  " << options.input << '\n';
-    std::cout << "decoded    crc32 " << decoded_hash_buffer.crc().hex()
+    std::cout << "decoded    md5 " << decoded_hash_buffer.md5().hex()
               << "  " << decoded_hash_buffer.bytes() << " bytes  "
               << default_decompress_output(options.input) << '\n';
 
     if (!options.source.empty()) {
-        const auto source = ldcompress::crc32_file(options.source);
+        const auto source = ldcompress::md5_file(options.source);
         const bool match = source.bytes == decoded_hash_buffer.bytes() &&
-            source.crc.value() == decoded_hash_buffer.crc().value();
-        std::cout << "source     crc32 " << source.crc.hex()
+            source.md5.digest() == decoded_hash_buffer.md5().digest();
+        std::cout << "source     md5 " << source.md5.hex()
                   << "  " << source.bytes << " bytes  " << options.source << '\n';
         std::cout << "source comparison: " << (match ? "match" : "mismatch") << '\n';
         return match ? 0 : 1;

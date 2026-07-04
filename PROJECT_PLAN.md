@@ -8,9 +8,10 @@ focus only on compression, decompression, verification, and the LDS sample-forma
 conversion needed for those operations.
 
 The preferred implementation is a C++20/CMake command-line tool that targets Linux
-and macOS. It should avoid depending at runtime on `ffmpeg`, `.NET`, Mono,
-`flaldf`, `pv`, `openssl`, `xxd`, or an external `ld-lds-converter` command.
-System libraries such as `libFLAC`, `libogg`, and OpenCL are acceptable.
+and macOS on both arm64 and amd64/x86_64 CPUs. It should avoid depending at
+runtime on `ffmpeg`, `.NET`, Mono, `flaldf`, `pv`, `openssl`, `xxd`, or an
+external `ld-lds-converter` command. System libraries such as `libFLAC`,
+`libogg`, and OpenCL are acceptable.
 
 ## Current State
 
@@ -94,6 +95,8 @@ provided.
   output.
 - Implement `compress`, `decompress`, `verify`, and `convert`.
 - Add generated test fixtures so tests do not require real RF captures.
+- Keep the baseline CPU implementation portable and scalar until correctness and
+  compatibility are established on both arm64 and amd64/x86_64.
 
 ### Phase 2: GPU Backend
 
@@ -103,6 +106,8 @@ provided.
 - Add the `devices` subcommand.
 - Preserve current GPU-style native FLAC `.flac.ldf` output unless a deliberate
   format migration is chosen later.
+- Treat Metal support on macOS as a later optional backend after the OpenCL path
+  and CPU compatibility suite are working.
 
 ### Phase 3: Hardening and Packaging
 
@@ -111,6 +116,9 @@ provided.
 - Add performance checks against the old shell pipeline.
 - Document compatibility with historical `.ldf`, `.raw.oga`, and `.flac.ldf`
   files.
+- Consider CPU-specific optimizations such as SIMD or tuned block processing only
+  after the portable CPU path has compatibility coverage on arm64 and
+  amd64/x86_64.
 
 ## Test Plan
 
@@ -134,6 +142,8 @@ provided.
   unless the change is intentional and documented.
 - Preserve original license notices when lifting code or porting implementation
   details.
+- Keep Linux and macOS compatibility as a first-order constraint, including both
+  arm64 and amd64/x86_64 CPU targets.
 - Treat `ld-compress`, `FlaLDF/`, and `ld-decode-tools/` as references until the
   replacement has tests proving compatible behavior.
 - Keep `AGENTS.md` reserved for contributor or agent operating rules, not the
