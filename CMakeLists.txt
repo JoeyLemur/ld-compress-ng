@@ -41,6 +41,7 @@ add_library(ldcompress_core
     src/hash.cpp
     src/lds_codec.cpp
     src/native_flac_encoder.cpp
+    src/opencl_analysis.cpp
     src/opencl_backend.cpp
     src/opencl_devices.cpp
 )
@@ -132,6 +133,17 @@ if(BUILD_TESTING)
     )
 
     add_test(NAME flac_native_writer COMMAND test_flac_native_writer)
+
+    add_executable(test_opencl_analysis
+        tests/test_opencl_analysis.cpp
+    )
+
+    target_link_libraries(test_opencl_analysis
+        PRIVATE
+            ldcompress_core
+    )
+
+    add_test(NAME opencl_analysis COMMAND test_opencl_analysis)
 
     add_executable(test_opencl_devices
         tests/test_opencl_devices.cpp
