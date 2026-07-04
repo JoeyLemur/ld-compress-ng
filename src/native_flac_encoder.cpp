@@ -1,4 +1,4 @@
-#include "native_verbatim_encoder.h"
+#include "native_flac_encoder.h"
 
 #include "flac_native_writer.h"
 #include "hash.h"
@@ -18,6 +18,11 @@ namespace {
 constexpr std::size_t kGroupsPerChunk = 8192;
 constexpr std::size_t kFrameSamples = 4608;
 constexpr unsigned kMinimumStreamInfoBlockSize = 16;
+
+enum class NativeFrameCoding {
+    Verbatim,
+    FixedRice,
+};
 
 void update_md5_s16le(Md5& md5, std::int16_t sample)
 {
@@ -72,7 +77,7 @@ void rewind_to(std::istream& input, std::streampos position)
     input.clear();
     input.seekg(position);
     if (!input) {
-        throw std::runtime_error("failed to rewind LDS input for native verbatim encoding");
+        throw std::runtime_error("failed to rewind LDS input for native FLAC encoding");
     }
 }
 
@@ -108,26 +113,36 @@ void write_frame(
     std::ostream& output,
     const std::vector<std::int32_t>& samples,
     std::uint64_t frame_number,
-    unsigned sample_rate)
+    unsigned sample_rate,
+    NativeFrameCoding coding)
 {
     const FlacFrameInfo frame_info {
         .frame_number = frame_number,
         .sample_rate = sample_rate,
         .bits_per_sample = 16,
     };
-    write_mono_verbatim_frame(output, samples, frame_info);
+    switch (coding) {
+    case NativeFrameCoding::Verbatim:
+        write_mono_verbatim_frame(output, samples, frame_info);
+        return;
+    case NativeFrameCoding::FixedRice:
+        write_mono_fixed_rice_frame(output, samples, frame_info);
+        return;
+    }
+    throw std::runtime_error("unknown native FLAC frame coding");
 }
 
 }  // namespace
 
-ConversionStats compress_lds_to_native_verbatim_flac(
+ConversionStats compress_lds_to_native_flac(
     std::istream& lds_input,
     const std::string& output_path,
-    unsigned sample_rate)
+    unsigned sample_rate,
+    NativeFrameCoding coding)
 {
     const auto start = lds_input.tellg();
     if (start == std::streampos(-1)) {
-        throw std::runtime_error("native-verbatim backend requires a seekable LDS input");
+        throw std::runtime_error("native FLAC backend requires a seekable LDS input");
     }
 
     Md5 pcm_md5;
@@ -151,18 +166,18 @@ ConversionStats compress_lds_to_native_verbatim_flac(
     const auto encoded_stats = process_lds_samples(lds_input, [&](std::int16_t sample) {
         frame_samples.push_back(sample);
         if (frame_samples.size() == kFrameSamples) {
-            write_frame(output, frame_samples, frame_number, sample_rate);
+            write_frame(output, frame_samples, frame_number, sample_rate, coding);
             ++frame_number;
             frame_samples.clear();
         }
     });
     if (!frame_samples.empty()) {
-        write_frame(output, frame_samples, frame_number, sample_rate);
+        write_frame(output, frame_samples, frame_number, sample_rate, coding);
     }
 
     if (encoded_stats.input_bytes != stats.input_bytes ||
         encoded_stats.samples != stats.samples) {
-        throw std::runtime_error("LDS input changed while native-verbatim backend was encoding");
+        throw std::runtime_error("LDS input changed while native FLAC backend was encoding");
     }
 
     output.close();
@@ -176,6 +191,24 @@ ConversionStats compress_lds_to_native_verbatim_flac(
         throw std::runtime_error("could not stat output: " + output_path);
     }
     return stats;
+}
+
+ConversionStats compress_lds_to_native_verbatim_flac(
+    std::istream& lds_input,
+    const std::string& output_path,
+    unsigned sample_rate)
+{
+    return compress_lds_to_native_flac(
+        lds_input, output_path, sample_rate, NativeFrameCoding::Verbatim);
+}
+
+ConversionStats compress_lds_to_native_fixed_flac(
+    std::istream& lds_input,
+    const std::string& output_path,
+    unsigned sample_rate)
+{
+    return compress_lds_to_native_flac(
+        lds_input, output_path, sample_rate, NativeFrameCoding::FixedRice);
 }
 
 }  // namespace ldcompress

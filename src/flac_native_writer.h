@@ -32,4 +32,9 @@ void write_mono_verbatim_frame(
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& info);
 
+void write_mono_fixed_rice_frame(
+    std::ostream& output,
+    const std::vector<std::int32_t>& samples,
+    const FlacFrameInfo& info);
+
 }  // namespace ldcompress

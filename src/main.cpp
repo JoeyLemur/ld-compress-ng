@@ -33,7 +33,7 @@ struct Options {
 {
     std::ostream& out = exit_code == 0 ? std::cout : std::cerr;
     out << "Usage:\n"
-        << "  ld-compress-ng compress [--backend cpu|native-verbatim|opencl] [--level N] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]\n"
+        << "  ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng verify [--source ORIGINAL.lds] INPUT\n"
         << "  ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]\n"
@@ -48,6 +48,20 @@ bool ends_with(std::string_view value, std::string_view suffix)
         value.substr(value.size() - suffix.size()) == suffix;
 }
 
+bool is_native_flac_backend(ldcompress::CompressionBackend backend)
+{
+    return backend == ldcompress::CompressionBackend::NativeVerbatimFlac ||
+        backend == ldcompress::CompressionBackend::NativeFixedFlac ||
+        backend == ldcompress::CompressionBackend::OpenClNativeFlac;
+}
+
+ldcompress::FlacContainer default_container_for_backend(ldcompress::CompressionBackend backend)
+{
+    return is_native_flac_backend(backend)
+        ? ldcompress::FlacContainer::Native
+        : ldcompress::FlacContainer::Ogg;
+}
+
 std::string default_convert_output(const Options& options)
 {
     const std::filesystem::path input_path(options.input);
@@ -60,9 +74,7 @@ std::string default_convert_output(const Options& options)
 std::string default_compress_output(const Options& options)
 {
     const std::filesystem::path input_path(options.input);
-    if (options.backend == ldcompress::CompressionBackend::NativeVerbatimFlac ||
-        options.backend == ldcompress::CompressionBackend::OpenClNativeFlac ||
-        options.container == ldcompress::FlacContainer::Native) {
+    if (is_native_flac_backend(options.backend) || options.container == ldcompress::FlacContainer::Native) {
         return input_path.stem().string() + ".flac.ldf";
     }
     return input_path.stem().string() + ".ldf";
@@ -152,14 +164,10 @@ Options parse_compress(int argc, char** argv)
                 options.backend = ldcompress::CompressionBackend::CpuLibFlac;
             } else if (backend == "native-verbatim" || backend == "verbatim") {
                 options.backend = ldcompress::CompressionBackend::NativeVerbatimFlac;
-                if (!options.container_explicit) {
-                    options.container = ldcompress::FlacContainer::Native;
-                }
+            } else if (backend == "native-fixed" || backend == "fixed-rice") {
+                options.backend = ldcompress::CompressionBackend::NativeFixedFlac;
             } else if (backend == "opencl" || backend == "gpu") {
                 options.backend = ldcompress::CompressionBackend::OpenClNativeFlac;
-                if (!options.container_explicit) {
-                    options.container = ldcompress::FlacContainer::Native;
-                }
             } else {
                 throw std::runtime_error("unknown backend: " + std::string(backend));
             }
@@ -194,9 +202,15 @@ Options parse_compress(int argc, char** argv)
         throw std::runtime_error("compress expects INPUT and optional OUTPUT");
     }
 
-    if (options.backend == ldcompress::CompressionBackend::NativeVerbatimFlac &&
+    if (!options.container_explicit) {
+        options.container = default_container_for_backend(options.backend);
+    }
+
+    if ((options.backend == ldcompress::CompressionBackend::NativeVerbatimFlac ||
+            options.backend == ldcompress::CompressionBackend::NativeFixedFlac) &&
         options.container != ldcompress::FlacContainer::Native) {
-        throw std::runtime_error("native-verbatim backend writes native FLAC only");
+        throw std::runtime_error(std::string(ldcompress::backend_name(options.backend)) +
+            " backend writes native FLAC only");
     }
 
     options.input = positional[0];

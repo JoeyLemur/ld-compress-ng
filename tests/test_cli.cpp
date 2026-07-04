@@ -98,6 +98,8 @@ void test_cli(const std::filesystem::path& exe)
     std::filesystem::create_directory(temp_dir);
 
     const auto lds = temp_dir / "fixture.lds";
+    const auto default_lds = temp_dir / "default-name.lds";
+    const auto alias_lds = temp_dir / "alias-name.lds";
     const auto pcm = temp_dir / "fixture.s16";
     const auto repacked = temp_dir / "fixture.repacked.lds";
     const auto compressed = temp_dir / "fixture.ldf";
@@ -107,13 +109,25 @@ void test_cli(const std::filesystem::path& exe)
     const auto native_verbatim_out = temp_dir / "fixture.native-verbatim.out.lds";
     const auto bad_native_verbatim = temp_dir / "fixture.bad-native-verbatim.ldf";
     const auto bad_native_verbatim_reversed = temp_dir / "fixture.bad-native-verbatim-reversed.ldf";
+    const auto native_fixed = temp_dir / "fixture.native-fixed.flac.ldf";
+    const auto native_fixed_out = temp_dir / "fixture.native-fixed.out.lds";
+    const auto default_native_fixed = temp_dir / "default-name.flac.ldf";
+    const auto alias_native_fixed = temp_dir / "alias-name.flac.ldf";
+    const auto backend_order_cpu = temp_dir / "backend-order-cpu.ldf";
+    const auto backend_order_native = temp_dir / "backend-order-native.flac.ldf";
+    const auto bad_native_fixed = temp_dir / "fixture.bad-native-fixed.ldf";
+    const auto bad_native_fixed_reversed = temp_dir / "fixture.bad-native-fixed-reversed.ldf";
     const auto empty_lds = temp_dir / "empty.lds";
     const auto empty_native_verbatim = temp_dir / "empty.native-verbatim.flac.ldf";
     const auto empty_native_verbatim_out = temp_dir / "empty.native-verbatim.out.lds";
+    const auto empty_native_fixed = temp_dir / "empty.native-fixed.flac.ldf";
+    const auto empty_native_fixed_out = temp_dir / "empty.native-fixed.out.lds";
     const auto opencl_output = temp_dir / "fixture.opencl.flac.ldf";
 
     const std::string fixture = make_lds_fixture();
     write_file(lds, fixture);
+    write_file(default_lds, fixture);
+    write_file(alias_lds, fixture);
     write_file(empty_lds, "");
 
     run_ok(shell_quote(exe) + " convert --unpack " + shell_quote(lds) + " " + shell_quote(pcm));
@@ -141,10 +155,34 @@ void test_cli(const std::filesystem::path& exe)
     require(!std::filesystem::exists(bad_native_verbatim), "native-verbatim Ogg rejection wrote output");
     run_fails(shell_quote(exe) + " compress --container ogg --backend native-verbatim " + shell_quote(lds) + " " + shell_quote(bad_native_verbatim_reversed));
     require(!std::filesystem::exists(bad_native_verbatim_reversed), "reversed native-verbatim Ogg rejection wrote output");
+    run_ok(shell_quote(exe) + " compress --backend native-fixed " + shell_quote(lds) + " " + shell_quote(native_fixed));
+    run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(native_fixed));
+    run_ok(shell_quote(exe) + " decompress " + shell_quote(native_fixed) + " " + shell_quote(native_fixed_out));
+    require(read_file(native_fixed_out) == fixture, "native-fixed FLAC round trip changed LDS bytes");
+    require(std::filesystem::file_size(native_fixed) < std::filesystem::file_size(native_verbatim),
+        "native-fixed fixture was not smaller than native-verbatim fixture");
+    run_ok("cd " + shell_quote(temp_dir) + " && " + shell_quote(exe) + " compress --backend native-fixed default-name.lds");
+    require(std::filesystem::exists(default_native_fixed), "native-fixed default output name was not .flac.ldf");
+    run_ok("cd " + shell_quote(temp_dir) + " && " + shell_quote(exe) + " compress --backend fixed-rice alias-name.lds");
+    require(std::filesystem::exists(alias_native_fixed), "fixed-rice alias default output name was not .flac.ldf");
+    run_ok(shell_quote(exe) + " compress --backend native-fixed --backend cpu " + shell_quote(lds) + " " + shell_quote(backend_order_cpu));
+    require(read_file(backend_order_cpu).substr(0, 4) == "OggS",
+        "final cpu backend did not restore implicit Ogg container");
+    run_ok(shell_quote(exe) + " compress --backend cpu --backend native-fixed " + shell_quote(lds) + " " + shell_quote(backend_order_native));
+    require(read_file(backend_order_native).substr(0, 4) == "fLaC",
+        "final native-fixed backend did not select implicit native FLAC container");
+    run_fails(shell_quote(exe) + " compress --backend native-fixed --container ogg " + shell_quote(lds) + " " + shell_quote(bad_native_fixed));
+    require(!std::filesystem::exists(bad_native_fixed), "native-fixed Ogg rejection wrote output");
+    run_fails(shell_quote(exe) + " compress --container ogg --backend native-fixed " + shell_quote(lds) + " " + shell_quote(bad_native_fixed_reversed));
+    require(!std::filesystem::exists(bad_native_fixed_reversed), "reversed native-fixed Ogg rejection wrote output");
     run_ok(shell_quote(exe) + " compress --backend native-verbatim " + shell_quote(empty_lds) + " " + shell_quote(empty_native_verbatim));
     run_ok(shell_quote(exe) + " verify --source " + shell_quote(empty_lds) + " " + shell_quote(empty_native_verbatim));
     run_ok(shell_quote(exe) + " decompress " + shell_quote(empty_native_verbatim) + " " + shell_quote(empty_native_verbatim_out));
     require(read_file(empty_native_verbatim_out).empty(), "empty native-verbatim FLAC produced decoded LDS bytes");
+    run_ok(shell_quote(exe) + " compress --backend native-fixed " + shell_quote(empty_lds) + " " + shell_quote(empty_native_fixed));
+    run_ok(shell_quote(exe) + " verify --source " + shell_quote(empty_lds) + " " + shell_quote(empty_native_fixed));
+    run_ok(shell_quote(exe) + " decompress " + shell_quote(empty_native_fixed) + " " + shell_quote(empty_native_fixed_out));
+    require(read_file(empty_native_fixed_out).empty(), "empty native-fixed FLAC produced decoded LDS bytes");
     run_fails(shell_quote(exe) + " compress --backend opencl " + shell_quote(lds) + " " + shell_quote(opencl_output));
     require(!std::filesystem::exists(opencl_output), "unimplemented OpenCL backend wrote output");
     run_ok(shell_quote(exe) + " devices");

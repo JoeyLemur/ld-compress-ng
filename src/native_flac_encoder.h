@@ -12,4 +12,9 @@ ConversionStats compress_lds_to_native_verbatim_flac(
     const std::string& output_path,
     unsigned sample_rate);
 
+ConversionStats compress_lds_to_native_fixed_flac(
+    std::istream& lds_input,
+    const std::string& output_path,
+    unsigned sample_rate);
+
 }  // namespace ldcompress

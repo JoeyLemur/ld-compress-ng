@@ -35,7 +35,7 @@ add_library(ldcompress_core
     src/flac_primitives.cpp
     src/hash.cpp
     src/lds_codec.cpp
-    src/native_verbatim_encoder.cpp
+    src/native_flac_encoder.cpp
     src/opencl_devices.cpp
 )
 

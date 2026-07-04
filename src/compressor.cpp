@@ -1,6 +1,6 @@
 #include "compressor.h"
 
-#include "native_verbatim_encoder.h"
+#include "native_flac_encoder.h"
 
 #include <stdexcept>
 
@@ -13,6 +13,8 @@ const char* backend_name(CompressionBackend backend)
         return "cpu";
     case CompressionBackend::NativeVerbatimFlac:
         return "native-verbatim";
+    case CompressionBackend::NativeFixedFlac:
+        return "native-fixed";
     case CompressionBackend::OpenClNativeFlac:
         return "opencl";
     }
@@ -38,6 +40,11 @@ ConversionStats compress_lds(
             throw std::runtime_error("native-verbatim backend writes native FLAC only");
         }
         return compress_lds_to_native_verbatim_flac(lds_input, output_path, options.sample_rate);
+    case CompressionBackend::NativeFixedFlac:
+        if (options.container != FlacContainer::Native) {
+            throw std::runtime_error("native-fixed backend writes native FLAC only");
+        }
+        return compress_lds_to_native_fixed_flac(lds_input, output_path, options.sample_rate);
     case CompressionBackend::OpenClNativeFlac:
         throw std::runtime_error("OpenCL compression backend is not implemented yet");
     }

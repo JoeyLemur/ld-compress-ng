@@ -64,10 +64,10 @@ ld-compress-ng devices
 Initial behavior:
 
 - `compress` defaults to CPU compression using Ogg FLAC-compatible `.ldf` output.
-- `compress --backend cpu|native-verbatim|opencl` should select between the
-  implemented CPU path, an experimental native FLAC verbatim-frame path, and the
-  later OpenCL-native FLAC encoder. Until the GPU encoder exists, `opencl` is a
-  reserved backend name that must fail before writing output.
+- `compress --backend cpu|native-verbatim|native-fixed|opencl` should select
+  between the implemented CPU path, experimental native FLAC writer paths, and
+  the later OpenCL-native FLAC encoder. Until the GPU encoder exists, `opencl`
+  is a reserved backend name that must fail before writing output.
 - `decompress` accepts existing `.ldf`, `.raw.oga`, and `.flac.ldf` inputs where
   supported by the implemented decoder path.
 - `verify` reports hashes for the compressed input and the decompressed/repacked
@@ -111,6 +111,9 @@ provided.
   starting with bit writing, CRC helpers, STREAMINFO, and verbatim frame output.
 - Add an experimental native-FLAC verbatim backend to exercise the writer through
   the real CLI before introducing compressed subframes or GPU work.
+- Add a scalar fixed-predictor/Rice backend as the first actually compressed
+  native FLAC output path, using partition order 0 before optimized partition
+  search or GPU residual work.
 - Port FlaLDF host-side encoder logic to native C++.
 - Reuse or adapt the existing OpenCL kernel from `FlaLDF/`.
 - Extend the initial OpenCL platform/device enumeration into explicit device
@@ -144,6 +147,8 @@ provided.
 - Verify Ogg FLAC `.ldf` decode parity for CPU output.
 - Verify native FLAC `.flac.ldf` decode parity for the verbatim backend before
   adding compressed native/GPU output.
+- Verify native fixed-predictor/Rice output against the same decode/repack
+  parity checks before adding higher partition orders or GPU acceleration.
 - For the OpenCL phase, test device enumeration, explicit device selection, CPU
   fallback behavior, and decompressed-output parity with the CPU backend.
 

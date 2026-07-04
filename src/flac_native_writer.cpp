@@ -2,8 +2,12 @@
 
 #include "flac_primitives.h"
 
+#include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <ostream>
 #include <stdexcept>
+#include <utility>
 
 namespace ldcompress {
 namespace {
@@ -158,6 +162,187 @@ void validate_sample(std::int32_t sample, unsigned bits_per_sample)
     }
 }
 
+std::int64_t fixed_prediction_residual(
+    const std::vector<std::int32_t>& samples,
+    std::size_t index,
+    unsigned order)
+{
+    switch (order) {
+    case 0:
+        return samples[index];
+    case 1:
+        return static_cast<std::int64_t>(samples[index]) - samples[index - 1];
+    case 2:
+        return static_cast<std::int64_t>(samples[index]) -
+            (2LL * samples[index - 1]) + samples[index - 2];
+    case 3:
+        return static_cast<std::int64_t>(samples[index]) -
+            (3LL * samples[index - 1]) + (3LL * samples[index - 2]) -
+            samples[index - 3];
+    case 4:
+        return static_cast<std::int64_t>(samples[index]) -
+            (4LL * samples[index - 1]) + (6LL * samples[index - 2]) -
+            (4LL * samples[index - 3]) + samples[index - 4];
+    default:
+        throw std::runtime_error("unsupported FLAC fixed predictor order");
+    }
+}
+
+std::uint64_t fold_signed_residual(std::int64_t residual)
+{
+    if (residual >= 0) {
+        return static_cast<std::uint64_t>(residual) << 1U;
+    }
+    return (static_cast<std::uint64_t>(-(residual + 1)) << 1U) + 1U;
+}
+
+std::vector<std::int64_t> fixed_residuals(
+    const std::vector<std::int32_t>& samples,
+    unsigned order)
+{
+    std::vector<std::int64_t> residuals;
+    residuals.reserve(samples.size() - order);
+    for (std::size_t i = order; i < samples.size(); ++i) {
+        residuals.push_back(fixed_prediction_residual(samples, i, order));
+    }
+    return residuals;
+}
+
+std::uint64_t rice_bits(const std::vector<std::int64_t>& residuals, unsigned parameter)
+{
+    std::uint64_t bits = 0;
+    for (const auto residual : residuals) {
+        const auto folded = fold_signed_residual(residual);
+        bits += (folded >> parameter) + 1U + parameter;
+    }
+    return bits;
+}
+
+unsigned choose_rice_parameter(const std::vector<std::int64_t>& residuals)
+{
+    unsigned best_parameter = 0;
+    auto best_bits = std::numeric_limits<std::uint64_t>::max();
+    for (unsigned parameter = 0; parameter <= 14; ++parameter) {
+        const auto bits = rice_bits(residuals, parameter);
+        if (bits < best_bits) {
+            best_bits = bits;
+            best_parameter = parameter;
+        }
+    }
+    return best_parameter;
+}
+
+struct FixedRiceSubframe {
+    unsigned order = 0;
+    unsigned rice_parameter = 0;
+    std::vector<std::int64_t> residuals;
+};
+
+std::uint64_t fixed_rice_subframe_bits(
+    unsigned order,
+    unsigned rice_parameter,
+    const std::vector<std::int64_t>& residuals,
+    unsigned bits_per_sample)
+{
+    constexpr unsigned kSubframeHeaderBits = 8;
+    constexpr unsigned kRiceMethodBits = 2;
+    constexpr unsigned kPartitionOrderBits = 4;
+    constexpr unsigned kRiceParameterBits = 4;
+
+    return kSubframeHeaderBits + (static_cast<std::uint64_t>(order) * bits_per_sample) +
+        kRiceMethodBits + kPartitionOrderBits + kRiceParameterBits +
+        rice_bits(residuals, rice_parameter);
+}
+
+FixedRiceSubframe choose_fixed_rice_subframe(
+    const std::vector<std::int32_t>& samples,
+    unsigned bits_per_sample)
+{
+    const auto max_order = samples.size() > 1
+        ? std::min<std::size_t>(4, samples.size() - 1)
+        : 0;
+
+    FixedRiceSubframe best;
+    auto best_bits = std::numeric_limits<std::uint64_t>::max();
+    for (unsigned order = 0; order <= max_order; ++order) {
+        auto residuals = fixed_residuals(samples, order);
+        const auto rice_parameter = choose_rice_parameter(residuals);
+        const auto bits = fixed_rice_subframe_bits(
+            order, rice_parameter, residuals, bits_per_sample);
+        if (bits < best_bits) {
+            best_bits = bits;
+            best.order = order;
+            best.rice_parameter = rice_parameter;
+            best.residuals = std::move(residuals);
+        }
+    }
+    return best;
+}
+
+void write_rice_signed(BitWriter& output, std::int64_t residual, unsigned parameter)
+{
+    const auto folded = fold_signed_residual(residual);
+    const auto quotient = folded >> parameter;
+    if (quotient > std::numeric_limits<unsigned>::max()) {
+        throw std::runtime_error("Rice-coded residual quotient is too large");
+    }
+    output.write_unary(static_cast<unsigned>(quotient));
+    if (parameter != 0) {
+        output.write_bits(folded, parameter);
+    }
+}
+
+void write_frame_with_body(
+    std::ostream& output,
+    std::size_t block_size,
+    const FlacFrameInfo& info,
+    BitWriter& frame_body)
+{
+    if (block_size == 0) {
+        throw std::runtime_error("cannot write an empty FLAC frame");
+    }
+    if (info.sample_rate > 0xfffff) {
+        throw std::runtime_error("invalid FLAC frame sample rate");
+    }
+    const auto bps_code = bits_per_sample_code(info.bits_per_sample);
+    const auto block_code = block_size_code(block_size);
+
+    std::vector<std::uint8_t> header;
+    BitWriter header_bits;
+    header_bits.write_bits(0x3ffe, 14);
+    header_bits.write_bits(0, 1);
+    header_bits.write_bits(0, 1);
+    header_bits.write_bits(block_code, 4);
+    // Use the STREAMINFO sample rate; this keeps 40 kHz files out of the
+    // sample-rate extension path while the native writer is still minimal.
+    header_bits.write_bits(0, 4);
+    header_bits.write_bits(0, 4);
+    header_bits.write_bits(bps_code, 3);
+    header_bits.write_bits(0, 1);
+    header_bits.align_zero();
+    header = header_bits.bytes();
+    write_utf8_uint(header, info.frame_number);
+    if (block_code == 6) {
+        header.push_back(static_cast<std::uint8_t>(block_size - 1U));
+    } else {
+        const auto coded_size = static_cast<unsigned>(block_size - 1U);
+        header.push_back(static_cast<std::uint8_t>((coded_size >> 8U) & 0xffU));
+        header.push_back(static_cast<std::uint8_t>(coded_size & 0xffU));
+    }
+    header.push_back(flac_crc8(header.data(), header.size()));
+    write_bytes(output, header);
+
+    frame_body.align_zero();
+    write_bytes(output, frame_body.bytes());
+
+    std::vector<std::uint8_t> frame_without_footer;
+    frame_without_footer.reserve(header.size() + frame_body.bytes().size());
+    frame_without_footer.insert(frame_without_footer.end(), header.begin(), header.end());
+    frame_without_footer.insert(frame_without_footer.end(), frame_body.bytes().begin(), frame_body.bytes().end());
+    const auto crc = flac_crc16(frame_without_footer.data(), frame_without_footer.size());
+    write_u16be(output, crc);
+}
+
 }  // namespace
 
 void write_native_flac_streaminfo(std::ostream& output, const FlacStreamInfo& info)
@@ -199,36 +384,6 @@ void write_mono_verbatim_frame(
     if (samples.empty()) {
         throw std::runtime_error("cannot write an empty FLAC frame");
     }
-    if (info.sample_rate > 0xfffff) {
-        throw std::runtime_error("invalid FLAC frame sample rate");
-    }
-    const auto bps_code = bits_per_sample_code(info.bits_per_sample);
-    const auto block_code = block_size_code(samples.size());
-
-    std::vector<std::uint8_t> header;
-    BitWriter header_bits;
-    header_bits.write_bits(0x3ffe, 14);
-    header_bits.write_bits(0, 1);
-    header_bits.write_bits(0, 1);
-    header_bits.write_bits(block_code, 4);
-    // Use the STREAMINFO sample rate; this keeps 40 kHz files out of the
-    // sample-rate extension path while the native writer is still minimal.
-    header_bits.write_bits(0, 4);
-    header_bits.write_bits(0, 4);
-    header_bits.write_bits(bps_code, 3);
-    header_bits.write_bits(0, 1);
-    header_bits.align_zero();
-    header = header_bits.bytes();
-    write_utf8_uint(header, info.frame_number);
-    if (block_code == 6) {
-        header.push_back(static_cast<std::uint8_t>(samples.size() - 1U));
-    } else {
-        const auto coded_size = static_cast<unsigned>(samples.size() - 1U);
-        header.push_back(static_cast<std::uint8_t>((coded_size >> 8U) & 0xffU));
-        header.push_back(static_cast<std::uint8_t>(coded_size & 0xffU));
-    }
-    header.push_back(flac_crc8(header.data(), header.size()));
-    write_bytes(output, header);
 
     BitWriter frame_body;
     frame_body.write_bits(0, 1);
@@ -238,16 +393,37 @@ void write_mono_verbatim_frame(
         validate_sample(sample, info.bits_per_sample);
         frame_body.write_signed(sample, info.bits_per_sample);
     }
-    frame_body.align_zero();
+    write_frame_with_body(output, samples.size(), info, frame_body);
+}
 
-    write_bytes(output, frame_body.bytes());
+void write_mono_fixed_rice_frame(
+    std::ostream& output,
+    const std::vector<std::int32_t>& samples,
+    const FlacFrameInfo& info)
+{
+    if (samples.empty()) {
+        throw std::runtime_error("cannot write an empty FLAC frame");
+    }
+    for (const auto sample : samples) {
+        validate_sample(sample, info.bits_per_sample);
+    }
 
-    std::vector<std::uint8_t> frame_without_footer;
-    frame_without_footer.reserve(header.size() + frame_body.bytes().size());
-    frame_without_footer.insert(frame_without_footer.end(), header.begin(), header.end());
-    frame_without_footer.insert(frame_without_footer.end(), frame_body.bytes().begin(), frame_body.bytes().end());
-    const auto crc = flac_crc16(frame_without_footer.data(), frame_without_footer.size());
-    write_u16be(output, crc);
+    const auto subframe = choose_fixed_rice_subframe(samples, info.bits_per_sample);
+
+    BitWriter frame_body;
+    frame_body.write_bits(0, 1);
+    frame_body.write_bits(0x08U + subframe.order, 6);
+    frame_body.write_bits(0, 1);
+    for (unsigned i = 0; i < subframe.order; ++i) {
+        frame_body.write_signed(samples[i], info.bits_per_sample);
+    }
+    frame_body.write_bits(0, 2);
+    frame_body.write_bits(0, 4);
+    frame_body.write_bits(subframe.rice_parameter, 4);
+    for (const auto residual : subframe.residuals) {
+        write_rice_signed(frame_body, residual, subframe.rice_parameter);
+    }
+    write_frame_with_body(output, samples.size(), info, frame_body);
 }
 
 }  // namespace ldcompress
