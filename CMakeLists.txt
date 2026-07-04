@@ -100,6 +100,17 @@ if(BUILD_TESTING)
 
     add_test(NAME flac_roundtrip COMMAND test_flac_roundtrip)
 
+    add_executable(test_reference_ogg
+        tests/test_reference_ogg.cpp
+    )
+
+    target_link_libraries(test_reference_ogg
+        PRIVATE
+            ldcompress_core
+    )
+
+    add_test(NAME reference_ogg COMMAND test_reference_ogg)
+
     add_executable(test_hash
         tests/test_hash.cpp
     )
