@@ -1784,6 +1784,51 @@ OpenClMonoAnalysisTaskPlan build_mono_analysis_task_plan(
     return plan;
 }
 
+FlacSubframeDecision flaccl_task_to_subframe_decision(
+    const FlacClSubframeTask& task)
+{
+    if (task.data.size < 0 || task.data.wbits < 0 || task.data.residualOrder < 0) {
+        throw std::runtime_error("OpenCL FLACCL task contains negative decision fields");
+    }
+
+    FlacSubframeDecision decision;
+    decision.wasted_bits = static_cast<unsigned>(task.data.wbits);
+    decision.estimated_bits = static_cast<std::uint64_t>(task.data.size);
+
+    switch (task.data.type) {
+    case kFlacClSubframeConstant:
+        decision.kind = FlacSubframeKind::Constant;
+        break;
+    case kFlacClSubframeFixed:
+        if (task.data.porder < 0) {
+            throw std::runtime_error("OpenCL FLACCL fixed task has invalid partition order");
+        }
+        if (task.data.residualOrder > 4) {
+            throw std::runtime_error("OpenCL FLACCL fixed task has invalid order");
+        }
+        decision.kind = FlacSubframeKind::FixedRice;
+        decision.fixed_order = static_cast<unsigned>(task.data.residualOrder);
+        decision.rice_partition_order = static_cast<unsigned>(task.data.porder);
+        break;
+    case kFlacClSubframeLpc:
+        if (task.data.porder < 0) {
+            throw std::runtime_error("OpenCL FLACCL LPC task has invalid partition order");
+        }
+        if (task.data.residualOrder == 0 ||
+            task.data.residualOrder > static_cast<std::int32_t>(kFlacClMaxOrder)) {
+            throw std::runtime_error("OpenCL FLACCL LPC task has invalid order");
+        }
+        decision.kind = FlacSubframeKind::LpcRice;
+        decision.lpc_order = static_cast<unsigned>(task.data.residualOrder);
+        decision.rice_partition_order = static_cast<unsigned>(task.data.porder);
+        break;
+    default:
+        throw std::runtime_error("OpenCL FLACCL task type cannot be mapped to a native decision");
+    }
+
+    return decision;
+}
+
 OpenClMonoFixedConstantAnalysisResult analyze_mono_fixed_constant_exact(
     const std::vector<std::int32_t>& samples,
     const OpenClMonoAnalysisTaskPlan& plan,
@@ -2527,6 +2572,53 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis(
     (void)max_rice_partition_order;
     throw std::runtime_error("OpenCL support was not built");
 #endif
+}
+
+OpenClMonoGeneratedFrameAnalysisResult analyze_opencl_mono_generated_frames(
+    const std::vector<std::int32_t>& samples,
+    const FlacFrameInfo& frame_info,
+    unsigned frame_samples,
+    std::optional<std::size_t> requested_device_index)
+{
+    if (frame_samples == 0) {
+        throw std::runtime_error("OpenCL generated frame analysis frame_samples must be positive");
+    }
+    if (samples.empty()) {
+        throw std::runtime_error("OpenCL generated frame analysis requires at least one frame");
+    }
+    if ((samples.size() % frame_samples) != 0) {
+        throw std::runtime_error("OpenCL generated frame analysis samples are not frame-aligned");
+    }
+
+    OpenClMonoAnalysisTaskOptions options;
+    options.frame_samples = frame_samples;
+    options.bits_per_sample = frame_info.bits_per_sample;
+    options.max_lpc_order = frame_info.max_lpc_order;
+    options.min_fixed_order = 0;
+    options.max_fixed_order = 4;
+    options.include_constant = true;
+
+    const auto frame_count = samples.size() / frame_samples;
+    const auto plan = build_mono_analysis_task_plan(frame_count, options);
+    auto analysis = run_opencl_mono_generated_analysis(
+        samples,
+        plan,
+        requested_device_index,
+        frame_info.lpc_coefficient_precision,
+        frame_info.max_rice_partition_order);
+
+    std::vector<FlacSubframeDecision> decisions;
+    decisions.reserve(analysis.best_tasks.size());
+    for (const auto& task : analysis.best_tasks) {
+        decisions.push_back(flaccl_task_to_subframe_decision(task));
+    }
+
+    return OpenClMonoGeneratedFrameAnalysisResult {
+        .analyzed_tasks = std::move(analysis.analyzed_tasks),
+        .best_tasks = std::move(analysis.best_tasks),
+        .decisions = std::move(decisions),
+        .device_name = std::move(analysis.device_name),
+    };
 }
 
 }  // namespace ldcompress::opencl_detail

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "flac_native_writer.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -74,6 +76,13 @@ struct OpenClMonoFixedConstantAnalysisResult {
     std::string device_name;
 };
 
+struct OpenClMonoGeneratedFrameAnalysisResult {
+    std::vector<FlacClSubframeTask> analyzed_tasks;
+    std::vector<FlacClSubframeTask> best_tasks;
+    std::vector<ldcompress::FlacSubframeDecision> decisions;
+    std::string device_name;
+};
+
 std::size_t mono_analysis_tasks_per_frame(const OpenClMonoAnalysisTaskOptions& options);
 
 OpenClMonoAnalysisTaskPlan build_mono_analysis_task_plan(
@@ -109,6 +118,15 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis(
     std::optional<std::size_t> requested_device_index = std::nullopt,
     unsigned lpc_coefficient_precision = 12,
     unsigned max_rice_partition_order = 5);
+
+ldcompress::FlacSubframeDecision flaccl_task_to_subframe_decision(
+    const FlacClSubframeTask& task);
+
+OpenClMonoGeneratedFrameAnalysisResult analyze_opencl_mono_generated_frames(
+    const std::vector<std::int32_t>& samples,
+    const ldcompress::FlacFrameInfo& frame_info,
+    unsigned frame_samples,
+    std::optional<std::size_t> requested_device_index = std::nullopt);
 
 OpenClMonoFixedConstantAnalysisResult analyze_mono_fixed_constant_exact(
     const std::vector<std::int32_t>& samples,

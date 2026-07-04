@@ -174,6 +174,21 @@ void require_task_matches_decision(
     require(task.data.size == static_cast<int>(decision.estimated_bits), label);
 }
 
+void require_decision_matches_task(
+    const ldcompress::FlacSubframeDecision& actual,
+    const ldcompress::opencl_detail::FlacClSubframeTask& task,
+    const char* label)
+{
+    const auto expected =
+        ldcompress::opencl_detail::flaccl_task_to_subframe_decision(task);
+    require(actual.kind == expected.kind, label);
+    require(actual.fixed_order == expected.fixed_order, label);
+    require(actual.lpc_order == expected.lpc_order, label);
+    require(actual.rice_partition_order == expected.rice_partition_order, label);
+    require(actual.wasted_bits == expected.wasted_bits, label);
+    require(actual.estimated_bits == expected.estimated_bits, label);
+}
+
 void require_task_matches_task(
     const ldcompress::opencl_detail::FlacClSubframeTask& actual,
     const ldcompress::opencl_detail::FlacClSubframeTask& expected,
@@ -708,6 +723,79 @@ void test_invalid_options()
         options.max_fixed_order = 5;
         (void)build_mono_analysis_task_plan(1, options);
     }, "invalid fixed order accepted");
+}
+
+void test_flaccl_task_decision_mapping()
+{
+    using namespace ldcompress::opencl_detail;
+
+    FlacClSubframeTask constant;
+    constant.data.type = kFlacClSubframeConstant;
+    constant.data.size = 42;
+    constant.data.wbits = 6;
+    constant.data.porder = 7;
+    const auto constant_decision = flaccl_task_to_subframe_decision(constant);
+    require(constant_decision.kind == ldcompress::FlacSubframeKind::Constant,
+        "FLACCL constant task mapped to wrong decision kind");
+    require(constant_decision.wasted_bits == 6,
+        "FLACCL constant task decision wasted bits mismatch");
+    require(constant_decision.estimated_bits == 42,
+        "FLACCL constant task decision size mismatch");
+    require(constant_decision.rice_partition_order == 0,
+        "FLACCL constant task inherited a stale partition order");
+
+    FlacClSubframeTask fixed;
+    fixed.data.type = kFlacClSubframeFixed;
+    fixed.data.residualOrder = 2;
+    fixed.data.porder = 1;
+    fixed.data.wbits = 4;
+    fixed.data.size = 123;
+    const auto fixed_decision = flaccl_task_to_subframe_decision(fixed);
+    require(fixed_decision.kind == ldcompress::FlacSubframeKind::FixedRice,
+        "FLACCL fixed task mapped to wrong decision kind");
+    require(fixed_decision.fixed_order == 2,
+        "FLACCL fixed task decision order mismatch");
+    require(fixed_decision.rice_partition_order == 1,
+        "FLACCL fixed task decision partition mismatch");
+    require(fixed_decision.wasted_bits == 4,
+        "FLACCL fixed task decision wasted bits mismatch");
+    require(fixed_decision.estimated_bits == 123,
+        "FLACCL fixed task decision size mismatch");
+
+    FlacClSubframeTask lpc;
+    lpc.data.type = kFlacClSubframeLpc;
+    lpc.data.residualOrder = 9;
+    lpc.data.porder = 3;
+    lpc.data.wbits = 2;
+    lpc.data.size = 456;
+    const auto lpc_decision = flaccl_task_to_subframe_decision(lpc);
+    require(lpc_decision.kind == ldcompress::FlacSubframeKind::LpcRice,
+        "FLACCL LPC task mapped to wrong decision kind");
+    require(lpc_decision.lpc_order == 9,
+        "FLACCL LPC task decision order mismatch");
+    require(lpc_decision.rice_partition_order == 3,
+        "FLACCL LPC task decision partition mismatch");
+    require(lpc_decision.wasted_bits == 2,
+        "FLACCL LPC task decision wasted bits mismatch");
+    require(lpc_decision.estimated_bits == 456,
+        "FLACCL LPC task decision size mismatch");
+
+    require_throws_containing([&] {
+        FlacClSubframeTask bad;
+        bad.data.type = kFlacClSubframeVerbatim;
+        bad.data.size = 1;
+        (void)flaccl_task_to_subframe_decision(bad);
+    }, "cannot be mapped",
+        "FLACCL verbatim task mapped to a generated-analysis decision");
+
+    require_throws_containing([&] {
+        (void)analyze_opencl_mono_generated_frames(
+            std::vector<std::int32_t> { 0, 0, 0 },
+            make_lpc_frame_info(12, 12, 5),
+            2,
+            std::nullopt);
+    }, "not frame-aligned",
+        "OpenCL frame analysis accepted non-frame-aligned samples");
 }
 
 void test_scalar_exact_fixed_constant_analysis()
@@ -1258,6 +1346,64 @@ void test_opencl_mixed_generated_analysis_smoke()
         "OpenCL mixed generated LPC frame did not choose LPC");
 }
 
+void test_opencl_generated_frame_analysis_wrapper_smoke()
+{
+    using namespace ldcompress::opencl_detail;
+
+    if (!ldcompress::opencl_support_built()) {
+        std::cout << "OpenCL generated frame analysis wrapper skipped: OpenCL support was not built\n";
+        return;
+    }
+
+    const auto device_index = first_available_opencl_device_index();
+    if (!device_index.has_value()) {
+        std::cout << "OpenCL generated frame analysis wrapper skipped: no available OpenCL device\n";
+        return;
+    }
+
+    std::vector<std::int32_t> samples;
+    samples.reserve(1536);
+    for (int i = 0; i < 512; ++i) {
+        samples.push_back(2048);
+    }
+    for (int i = 0; i < 512; ++i) {
+        samples.push_back(i * 64);
+    }
+    const auto lpc_samples = make_lpc_friendly_samples();
+    samples.insert(samples.end(), lpc_samples.begin(), lpc_samples.end());
+
+    const auto result = analyze_opencl_mono_generated_frames(
+        samples,
+        make_lpc_frame_info(12, 12, 5),
+        512,
+        device_index);
+
+    require(!result.device_name.empty(),
+        "OpenCL generated frame wrapper did not report a device");
+    require(result.analyzed_tasks.size() == 54,
+        "OpenCL generated frame wrapper analyzed task count mismatch");
+    require(result.best_tasks.size() == 3,
+        "OpenCL generated frame wrapper best task count mismatch");
+    require(result.decisions.size() == result.best_tasks.size(),
+        "OpenCL generated frame wrapper decision count mismatch");
+
+    for (std::size_t i = 0; i < result.decisions.size(); ++i) {
+        require_decision_matches_task(result.decisions[i], result.best_tasks[i],
+            "OpenCL generated frame wrapper decision did not match best task");
+    }
+
+    require(result.decisions[0].kind == ldcompress::FlacSubframeKind::Constant,
+        "OpenCL generated frame wrapper constant frame decision mismatch");
+    require(result.decisions[1].kind == ldcompress::FlacSubframeKind::FixedRice,
+        "OpenCL generated frame wrapper fixed frame decision mismatch");
+    require(result.decisions[1].fixed_order == 2,
+        "OpenCL generated frame wrapper fixed frame order mismatch");
+    require(result.decisions[2].kind == ldcompress::FlacSubframeKind::LpcRice,
+        "OpenCL generated frame wrapper LPC frame decision mismatch");
+    require(result.decisions[2].lpc_order >= 1 && result.decisions[2].lpc_order <= 12,
+        "OpenCL generated frame wrapper LPC frame order out of range");
+}
+
 void test_opencl_lpc_analysis_smoke()
 {
     using namespace ldcompress::opencl_detail;
@@ -1467,6 +1613,7 @@ int main()
         test_default_mono_task_plan();
         test_small_custom_task_plan();
         test_invalid_options();
+        test_flaccl_task_decision_mapping();
         test_scalar_exact_fixed_constant_analysis();
         test_scalar_exact_rice_partition_search();
         test_scalar_exact_lpc_task_analysis();
@@ -1476,6 +1623,7 @@ int main()
         test_opencl_best_method_smoke();
         test_opencl_fixed_constant_analysis_smoke();
         test_opencl_mixed_generated_analysis_smoke();
+        test_opencl_generated_frame_analysis_wrapper_smoke();
         test_opencl_lpc_analysis_smoke();
         test_opencl_lpc_multi_order_analysis_smoke();
         test_opencl_lpc_generated_analysis_smoke();
