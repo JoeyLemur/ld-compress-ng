@@ -1829,6 +1829,40 @@ FlacSubframeDecision flaccl_task_to_subframe_decision(
     return decision;
 }
 
+FlacSelectedSubframe flaccl_task_to_selected_subframe(
+    const FlacClSubframeTask& task)
+{
+    const auto decision = flaccl_task_to_subframe_decision(task);
+
+    FlacSelectedSubframe selected;
+    selected.kind = decision.kind;
+    selected.fixed_order = decision.fixed_order;
+    selected.lpc_order = decision.lpc_order;
+    selected.rice_partition_order = decision.rice_partition_order;
+    selected.wasted_bits = decision.wasted_bits;
+
+    if (decision.kind == FlacSubframeKind::LpcRice) {
+        if (task.data.cbits <= 0 || task.data.cbits > 15) {
+            throw std::runtime_error("OpenCL FLACCL LPC task has invalid coefficient precision");
+        }
+        if (task.data.shift < 0 || task.data.shift > 15) {
+            throw std::runtime_error("OpenCL FLACCL LPC task has invalid quantization shift");
+        }
+        selected.coefficient_precision = static_cast<unsigned>(task.data.cbits);
+        selected.quantization_shift = task.data.shift;
+        selected.coefficients.reserve(static_cast<std::size_t>(task.data.residualOrder));
+        for (int i = task.data.residualOrder - 1; i >= 0; --i) {
+            const auto coefficient = task.coefs[static_cast<std::size_t>(i)];
+            if (!signed_value_fits_bits(coefficient, selected.coefficient_precision)) {
+                throw std::runtime_error("OpenCL FLACCL LPC coefficient does not fit precision");
+            }
+            selected.coefficients.push_back(coefficient);
+        }
+    }
+
+    return selected;
+}
+
 OpenClMonoFixedConstantAnalysisResult analyze_mono_fixed_constant_exact(
     const std::vector<std::int32_t>& samples,
     const OpenClMonoAnalysisTaskPlan& plan,
@@ -2608,15 +2642,19 @@ OpenClMonoGeneratedFrameAnalysisResult analyze_opencl_mono_generated_frames(
         frame_info.max_rice_partition_order);
 
     std::vector<FlacSubframeDecision> decisions;
+    std::vector<FlacSelectedSubframe> selected_subframes;
     decisions.reserve(analysis.best_tasks.size());
+    selected_subframes.reserve(analysis.best_tasks.size());
     for (const auto& task : analysis.best_tasks) {
         decisions.push_back(flaccl_task_to_subframe_decision(task));
+        selected_subframes.push_back(flaccl_task_to_selected_subframe(task));
     }
 
     return OpenClMonoGeneratedFrameAnalysisResult {
         .analyzed_tasks = std::move(analysis.analyzed_tasks),
         .best_tasks = std::move(analysis.best_tasks),
         .decisions = std::move(decisions),
+        .selected_subframes = std::move(selected_subframes),
         .device_name = std::move(analysis.device_name),
     };
 }

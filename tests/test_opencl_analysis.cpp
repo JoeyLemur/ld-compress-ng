@@ -1,4 +1,7 @@
+#include "flac_codec.h"
 #include "flac_native_writer.h"
+#include "hash.h"
+#include "lds_codec.h"
 #include "opencl_analysis.h"
 #include "opencl_devices.h"
 
@@ -8,13 +11,18 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <sstream>
 #include <type_traits>
 #include <vector>
+
+#include <unistd.h>
 
 namespace {
 
@@ -81,6 +89,51 @@ std::vector<std::int32_t> make_lpc_friendly_alternate_samples()
         samples.push_back(quantized);
     }
     return samples;
+}
+
+std::vector<std::int32_t> make_mixed_opencl_smoke_samples()
+{
+    std::vector<std::int32_t> samples;
+    samples.reserve(1536);
+    for (int i = 0; i < 512; ++i) {
+        samples.push_back(2048);
+    }
+    for (int i = 0; i < 512; ++i) {
+        samples.push_back(i * 64);
+    }
+    const auto lpc_samples = make_lpc_friendly_samples();
+    samples.insert(samples.end(), lpc_samples.begin(), lpc_samples.end());
+    return samples;
+}
+
+std::string pack_expected_lds(const std::vector<std::int32_t>& samples)
+{
+    std::string packed;
+    for (std::size_t i = 0; i < samples.size(); i += 4) {
+        const ldcompress::SampleGroup group {
+            static_cast<std::int16_t>(samples[i + 0]),
+            static_cast<std::int16_t>(samples[i + 1]),
+            static_cast<std::int16_t>(samples[i + 2]),
+            static_cast<std::int16_t>(samples[i + 3]),
+        };
+        const auto packed_group = ldcompress::pack_group(group);
+        packed.append(reinterpret_cast<const char*>(packed_group.data()), packed_group.size());
+    }
+    return packed;
+}
+
+std::array<std::uint8_t, 16> md5_samples_s16le(const std::vector<std::int32_t>& samples)
+{
+    ldcompress::Md5 md5;
+    for (const auto sample : samples) {
+        const auto s16 = static_cast<std::int16_t>(sample);
+        const std::array<std::uint8_t, 2> bytes {
+            static_cast<std::uint8_t>(s16 & 0xff),
+            static_cast<std::uint8_t>((s16 >> 8) & 0xff),
+        };
+        md5.update(bytes.data(), bytes.size());
+    }
+    return md5.digest();
 }
 
 std::optional<std::size_t> first_available_opencl_device_index()
@@ -187,6 +240,36 @@ void require_decision_matches_task(
     require(actual.rice_partition_order == expected.rice_partition_order, label);
     require(actual.wasted_bits == expected.wasted_bits, label);
     require(actual.estimated_bits == expected.estimated_bits, label);
+}
+
+void require_same_decision(
+    const ldcompress::FlacSubframeDecision& actual,
+    const ldcompress::FlacSubframeDecision& expected,
+    const char* label)
+{
+    require(actual.kind == expected.kind, label);
+    require(actual.fixed_order == expected.fixed_order, label);
+    require(actual.lpc_order == expected.lpc_order, label);
+    require(actual.rice_partition_order == expected.rice_partition_order, label);
+    require(actual.wasted_bits == expected.wasted_bits, label);
+    require(actual.estimated_bits == expected.estimated_bits, label);
+}
+
+void require_selected_subframe_matches_task(
+    const ldcompress::FlacSelectedSubframe& actual,
+    const ldcompress::opencl_detail::FlacClSubframeTask& task,
+    const char* label)
+{
+    const auto expected =
+        ldcompress::opencl_detail::flaccl_task_to_selected_subframe(task);
+    require(actual.kind == expected.kind, label);
+    require(actual.fixed_order == expected.fixed_order, label);
+    require(actual.lpc_order == expected.lpc_order, label);
+    require(actual.rice_partition_order == expected.rice_partition_order, label);
+    require(actual.wasted_bits == expected.wasted_bits, label);
+    require(actual.coefficient_precision == expected.coefficient_precision, label);
+    require(actual.quantization_shift == expected.quantization_shift, label);
+    require(actual.coefficients == expected.coefficients, label);
 }
 
 void require_task_matches_task(
@@ -779,6 +862,34 @@ void test_flaccl_task_decision_mapping()
         "FLACCL LPC task decision wasted bits mismatch");
     require(lpc_decision.estimated_bits == 456,
         "FLACCL LPC task decision size mismatch");
+
+    lpc.data.cbits = 12;
+    lpc.data.shift = 5;
+    lpc.coefs[0] = 111;
+    lpc.coefs[1] = -222;
+    lpc.coefs[2] = 333;
+    lpc.coefs[3] = -444;
+    lpc.coefs[4] = 555;
+    lpc.coefs[5] = -666;
+    lpc.coefs[6] = 777;
+    lpc.coefs[7] = -888;
+    lpc.coefs[8] = 999;
+    const auto lpc_selected = flaccl_task_to_selected_subframe(lpc);
+    require(lpc_selected.kind == ldcompress::FlacSubframeKind::LpcRice,
+        "FLACCL LPC task selected subframe kind mismatch");
+    require(lpc_selected.lpc_order == 9,
+        "FLACCL LPC task selected subframe order mismatch");
+    require(lpc_selected.rice_partition_order == 3,
+        "FLACCL LPC task selected subframe partition mismatch");
+    require(lpc_selected.coefficient_precision == 12,
+        "FLACCL LPC task selected subframe precision mismatch");
+    require(lpc_selected.quantization_shift == 5,
+        "FLACCL LPC task selected subframe shift mismatch");
+    const std::vector<std::int32_t> expected_lpc_coefficients {
+        999, -888, 777, -666, 555, -444, 333, -222, 111,
+    };
+    require(lpc_selected.coefficients == expected_lpc_coefficients,
+        "FLACCL LPC task selected subframe did not reverse coefficients");
 
     require_throws_containing([&] {
         FlacClSubframeTask bad;
@@ -1386,10 +1497,14 @@ void test_opencl_generated_frame_analysis_wrapper_smoke()
         "OpenCL generated frame wrapper best task count mismatch");
     require(result.decisions.size() == result.best_tasks.size(),
         "OpenCL generated frame wrapper decision count mismatch");
+    require(result.selected_subframes.size() == result.best_tasks.size(),
+        "OpenCL generated frame wrapper selected-subframe count mismatch");
 
     for (std::size_t i = 0; i < result.decisions.size(); ++i) {
         require_decision_matches_task(result.decisions[i], result.best_tasks[i],
             "OpenCL generated frame wrapper decision did not match best task");
+        require_selected_subframe_matches_task(result.selected_subframes[i], result.best_tasks[i],
+            "OpenCL generated frame wrapper selected subframe did not match best task");
     }
 
     require(result.decisions[0].kind == ldcompress::FlacSubframeKind::Constant,
@@ -1402,6 +1517,87 @@ void test_opencl_generated_frame_analysis_wrapper_smoke()
         "OpenCL generated frame wrapper LPC frame decision mismatch");
     require(result.decisions[2].lpc_order >= 1 && result.decisions[2].lpc_order <= 12,
         "OpenCL generated frame wrapper LPC frame order out of range");
+}
+
+void test_opencl_generated_selected_writer_round_trip_smoke()
+{
+    using namespace ldcompress::opencl_detail;
+
+    if (!ldcompress::opencl_support_built()) {
+        std::cout << "OpenCL generated selected writer round-trip skipped: OpenCL support was not built\n";
+        return;
+    }
+
+    const auto device_index = first_available_opencl_device_index();
+    if (!device_index.has_value()) {
+        std::cout << "OpenCL generated selected writer round-trip skipped: no available OpenCL device\n";
+        return;
+    }
+
+    constexpr unsigned kFrameSamples = 512;
+    const auto samples = make_mixed_opencl_smoke_samples();
+    const auto base_frame_info = make_lpc_frame_info(12, 12, 5);
+    const auto result = analyze_opencl_mono_generated_frames(
+        samples,
+        base_frame_info,
+        kFrameSamples,
+        device_index);
+
+    require(result.selected_subframes.size() == 3,
+        "OpenCL selected writer test selected-subframe count mismatch");
+    require(result.decisions.size() == result.selected_subframes.size(),
+        "OpenCL selected writer test decision count mismatch");
+
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+        ("ld-compress-ng-opencl-selected-writer-test-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directory(temp_dir);
+    const auto flac_path = temp_dir / "opencl-selected.flac";
+
+    {
+        std::ofstream output(flac_path, std::ios::binary);
+        if (!output) {
+            throw std::runtime_error("could not create OpenCL selected writer test FLAC file");
+        }
+
+        const ldcompress::FlacStreamInfo stream_info {
+            .min_block_size = kFrameSamples,
+            .max_block_size = kFrameSamples,
+            .min_frame_size = 0,
+            .max_frame_size = 0,
+            .sample_rate = 40000,
+            .channels = 1,
+            .bits_per_sample = 16,
+            .total_samples = samples.size(),
+            .md5 = md5_samples_s16le(samples),
+        };
+        ldcompress::write_native_flac_streaminfo(output, stream_info);
+
+        for (std::size_t frame = 0; frame < result.selected_subframes.size(); ++frame) {
+            const auto offset = frame * static_cast<std::size_t>(kFrameSamples);
+            const std::vector<std::int32_t> frame_samples(
+                samples.begin() + static_cast<std::ptrdiff_t>(offset),
+                samples.begin() + static_cast<std::ptrdiff_t>(offset + kFrameSamples));
+            auto frame_info = base_frame_info;
+            frame_info.frame_number = frame;
+            const auto written = ldcompress::write_mono_selected_frame(
+                output, frame_samples, frame_info, result.selected_subframes[frame]);
+            require_same_decision(written, result.decisions[frame],
+                "OpenCL selected writer decision diverged from selected task");
+        }
+    }
+
+    std::ostringstream decoded;
+    const auto stats = ldcompress::decompress_flac_to_lds(flac_path.string(), decoded);
+    const auto expected = pack_expected_lds(samples);
+    require(stats.samples == samples.size(),
+        "OpenCL selected writer decoded sample count mismatch");
+    require(stats.output_bytes == expected.size(),
+        "OpenCL selected writer decoded LDS byte count mismatch");
+    require(decoded.str() == expected,
+        "OpenCL selected writer native FLAC did not round-trip to expected LDS");
+
+    std::filesystem::remove_all(temp_dir);
 }
 
 void test_opencl_lpc_analysis_smoke()
@@ -1624,6 +1820,7 @@ int main()
         test_opencl_fixed_constant_analysis_smoke();
         test_opencl_mixed_generated_analysis_smoke();
         test_opencl_generated_frame_analysis_wrapper_smoke();
+        test_opencl_generated_selected_writer_round_trip_smoke();
         test_opencl_lpc_analysis_smoke();
         test_opencl_lpc_multi_order_analysis_smoke();
         test_opencl_lpc_generated_analysis_smoke();

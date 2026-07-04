@@ -55,6 +55,17 @@ struct FlacLpcSubframeAnalysis {
     std::uint64_t estimated_bits = 0;
 };
 
+struct FlacSelectedSubframe {
+    FlacSubframeKind kind = FlacSubframeKind::Verbatim;
+    unsigned fixed_order = 0;
+    unsigned lpc_order = 0;
+    unsigned rice_partition_order = 0;
+    unsigned wasted_bits = 0;
+    unsigned coefficient_precision = 0;
+    int quantization_shift = 0;
+    std::vector<std::int32_t> coefficients;
+};
+
 void write_native_flac_streaminfo(std::ostream& output, const FlacStreamInfo& info);
 
 FlacSubframeDecision analyze_mono_best_frame(
@@ -84,6 +95,12 @@ FlacSubframeDecision write_mono_fixed_rice_frame(
     std::ostream& output,
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& info);
+
+FlacSubframeDecision write_mono_selected_frame(
+    std::ostream& output,
+    const std::vector<std::int32_t>& samples,
+    const FlacFrameInfo& info,
+    const FlacSelectedSubframe& selected);
 
 FlacSubframeDecision write_mono_best_frame(
     std::ostream& output,

@@ -80,6 +80,7 @@ struct OpenClMonoGeneratedFrameAnalysisResult {
     std::vector<FlacClSubframeTask> analyzed_tasks;
     std::vector<FlacClSubframeTask> best_tasks;
     std::vector<ldcompress::FlacSubframeDecision> decisions;
+    std::vector<ldcompress::FlacSelectedSubframe> selected_subframes;
     std::string device_name;
 };
 
@@ -120,6 +121,9 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis(
     unsigned max_rice_partition_order = 5);
 
 ldcompress::FlacSubframeDecision flaccl_task_to_subframe_decision(
+    const FlacClSubframeTask& task);
+
+ldcompress::FlacSelectedSubframe flaccl_task_to_selected_subframe(
     const FlacClSubframeTask& task);
 
 OpenClMonoGeneratedFrameAnalysisResult analyze_opencl_mono_generated_frames(

@@ -107,6 +107,10 @@ Implemented:
 - Encoder-facing OpenCL generated frame analysis wrapper that builds mixed
   mono task plans from frame samples and maps best FLACCL tasks to native
   `FlacSubframeDecision` records for future writer integration.
+- Native selected-subframe writer bridge that can write exact OpenCL-selected
+  constant, fixed/Rice, and LPC/Rice subframes without exposing private writer
+  residual/Rice structures, including hardware-optional OpenCL-selected native
+  FLAC round-trip coverage.
 - Linux OpenCL validation on `smaug`, Debian 13-era amd64 kernel
   `6.12.94+deb13-amd64`, NVIDIA OpenCL 3.0 CUDA runtime. The OpenCL analysis
   smoke tests compiled and ran on an RTX 4070 SUPER / RTX 5070 Ti host, and the

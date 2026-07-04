@@ -466,6 +466,16 @@ unsigned checked_max_rice_partition_order(unsigned max_rice_partition_order)
     return max_rice_partition_order;
 }
 
+bool signed_value_fits_bits(std::int32_t value, unsigned bits)
+{
+    if (bits == 0 || bits > 31) {
+        return false;
+    }
+    const auto min_value = -(std::int64_t {1} << (bits - 1U));
+    const auto max_value = (std::int64_t {1} << (bits - 1U)) - 1;
+    return value >= min_value && value <= max_value;
+}
+
 std::size_t partition_residual_count(
     std::size_t block_size,
     unsigned predictor_order,
@@ -476,6 +486,33 @@ std::size_t partition_residual_count(
     return partition == 0
         ? partition_samples - predictor_order
         : partition_samples;
+}
+
+std::vector<unsigned> rice_parameters_for_partition_order(
+    const std::vector<std::int64_t>& residuals,
+    std::size_t block_size,
+    unsigned predictor_order,
+    unsigned partition_order)
+{
+    if (!valid_partition_order(block_size, predictor_order, partition_order)) {
+        throw std::runtime_error("selected FLAC subframe has invalid Rice partition order");
+    }
+
+    const auto partition_count = std::size_t {1} << partition_order;
+    std::vector<unsigned> rice_parameters;
+    rice_parameters.reserve(partition_count);
+    std::size_t residual_offset = 0;
+    for (std::size_t partition = 0; partition < partition_count; ++partition) {
+        const auto residual_count = partition_residual_count(
+            block_size, predictor_order, partition_order, partition);
+        rice_parameters.push_back(choose_rice_parameter(
+            residuals, residual_offset, residual_count));
+        residual_offset += residual_count;
+    }
+    if (residual_offset != residuals.size()) {
+        throw std::runtime_error("selected FLAC subframe residual partition accounting error");
+    }
+    return rice_parameters;
 }
 
 std::uint64_t fixed_rice_subframe_bits(
@@ -975,6 +1012,130 @@ LpcRiceSubframe choose_lpc_rice_subframe(
     return best;
 }
 
+unsigned checked_selected_wasted_bits(
+    const std::vector<std::int32_t>& samples,
+    unsigned bits_per_sample,
+    unsigned selected_wasted_bits)
+{
+    const auto actual_wasted_bits = common_wasted_bits(samples, bits_per_sample);
+    if (selected_wasted_bits != actual_wasted_bits) {
+        throw std::runtime_error("selected FLAC subframe wasted-bits count does not match samples");
+    }
+    return actual_wasted_bits;
+}
+
+FixedRiceSubframe make_selected_fixed_rice_subframe(
+    const std::vector<std::int32_t>& samples,
+    const FlacFrameInfo& info,
+    const FlacSelectedSubframe& selected)
+{
+    checked_max_rice_partition_order(info.max_rice_partition_order);
+    if (selected.fixed_order > 4 || selected.fixed_order >= samples.size()) {
+        throw std::runtime_error("selected fixed/Rice subframe has invalid predictor order");
+    }
+    if (selected.rice_partition_order > info.max_rice_partition_order) {
+        throw std::runtime_error("selected fixed/Rice subframe exceeds max Rice partition order");
+    }
+
+    const auto wasted_bits =
+        checked_selected_wasted_bits(samples, info.bits_per_sample, selected.wasted_bits);
+    auto shifted_samples = shift_samples(samples, wasted_bits);
+    const auto effective_bits_per_sample = info.bits_per_sample - wasted_bits;
+    auto residuals = fixed_residuals(shifted_samples, selected.fixed_order);
+    auto rice_parameters = rice_parameters_for_partition_order(
+        residuals,
+        shifted_samples.size(),
+        selected.fixed_order,
+        selected.rice_partition_order);
+    const auto bits = fixed_rice_subframe_bits(
+        selected.fixed_order,
+        selected.rice_partition_order,
+        wasted_bits,
+        rice_parameters,
+        residuals,
+        shifted_samples.size(),
+        effective_bits_per_sample);
+
+    return FixedRiceSubframe {
+        .order = selected.fixed_order,
+        .partition_order = selected.rice_partition_order,
+        .wasted_bits = wasted_bits,
+        .effective_bits_per_sample = effective_bits_per_sample,
+        .shifted_samples = std::move(shifted_samples),
+        .rice_parameters = std::move(rice_parameters),
+        .residuals = std::move(residuals),
+        .bits = bits,
+    };
+}
+
+LpcRiceSubframe make_selected_lpc_rice_subframe(
+    const std::vector<std::int32_t>& samples,
+    const FlacFrameInfo& info,
+    const FlacSelectedSubframe& selected)
+{
+    checked_max_rice_partition_order(info.max_rice_partition_order);
+    if (selected.lpc_order == 0 || selected.lpc_order > 32 ||
+        selected.lpc_order > info.max_lpc_order ||
+        selected.lpc_order >= samples.size()) {
+        throw std::runtime_error("selected LPC/Rice subframe has invalid predictor order");
+    }
+    if (selected.coefficient_precision == 0 || selected.coefficient_precision > 15) {
+        throw std::runtime_error("selected LPC/Rice subframe has invalid coefficient precision");
+    }
+    if (selected.quantization_shift < 0 || selected.quantization_shift > 15) {
+        throw std::runtime_error("selected LPC/Rice subframe has invalid quantization shift");
+    }
+    if (selected.rice_partition_order > info.max_rice_partition_order) {
+        throw std::runtime_error("selected LPC/Rice subframe exceeds max Rice partition order");
+    }
+    if (selected.coefficients.size() != selected.lpc_order) {
+        throw std::runtime_error("selected LPC/Rice subframe coefficient count mismatch");
+    }
+    for (const auto coefficient : selected.coefficients) {
+        if (!signed_value_fits_bits(coefficient, selected.coefficient_precision)) {
+            throw std::runtime_error("selected LPC/Rice subframe coefficient does not fit precision");
+        }
+    }
+
+    const auto wasted_bits =
+        checked_selected_wasted_bits(samples, info.bits_per_sample, selected.wasted_bits);
+    auto shifted_samples = shift_samples(samples, wasted_bits);
+    const auto effective_bits_per_sample = info.bits_per_sample - wasted_bits;
+    auto residuals = lpc_residuals(
+        shifted_samples,
+        selected.coefficients,
+        selected.lpc_order,
+        selected.quantization_shift);
+    auto rice_parameters = rice_parameters_for_partition_order(
+        residuals,
+        shifted_samples.size(),
+        selected.lpc_order,
+        selected.rice_partition_order);
+    const auto bits = lpc_rice_subframe_bits(
+        selected.lpc_order,
+        selected.rice_partition_order,
+        wasted_bits,
+        selected.coefficient_precision,
+        rice_parameters,
+        residuals,
+        shifted_samples.size(),
+        effective_bits_per_sample);
+
+    return LpcRiceSubframe {
+        .order = selected.lpc_order,
+        .partition_order = selected.rice_partition_order,
+        .wasted_bits = wasted_bits,
+        .effective_bits_per_sample = effective_bits_per_sample,
+        .coefficient_precision = selected.coefficient_precision,
+        .quantization_shift = selected.quantization_shift,
+        .shifted_samples = std::move(shifted_samples),
+        .coefficients = selected.coefficients,
+        .rice_parameters = std::move(rice_parameters),
+        .residuals = std::move(residuals),
+        .bits = bits,
+    };
+}
+
 void write_subframe_header(BitWriter& output, unsigned type, unsigned wasted_bits)
 {
     output.write_bits(0, 1);
@@ -1098,7 +1259,7 @@ FlacSubframeDecision write_lpc_rice_frame(
     if (subframe.coefficient_precision == 0 || subframe.coefficient_precision > 15) {
         throw std::runtime_error("invalid FLAC LPC coefficient precision");
     }
-    if (subframe.quantization_shift < -16 || subframe.quantization_shift > 15) {
+    if (subframe.quantization_shift < 0 || subframe.quantization_shift > 15) {
         throw std::runtime_error("invalid FLAC LPC quantization shift");
     }
 
@@ -1343,6 +1504,40 @@ FlacSubframeDecision write_mono_fixed_rice_frame(
     const auto subframe = choose_fixed_rice_subframe(
         samples, info.bits_per_sample, info.max_rice_partition_order);
     return write_fixed_rice_frame(output, info, subframe);
+}
+
+FlacSubframeDecision write_mono_selected_frame(
+    std::ostream& output,
+    const std::vector<std::int32_t>& samples,
+    const FlacFrameInfo& info,
+    const FlacSelectedSubframe& selected)
+{
+    if (samples.empty()) {
+        throw std::runtime_error("cannot write an empty selected FLAC frame");
+    }
+    for (const auto sample : samples) {
+        validate_sample(sample, info.bits_per_sample);
+    }
+
+    switch (selected.kind) {
+    case FlacSubframeKind::Constant:
+        (void)checked_selected_wasted_bits(
+            samples, info.bits_per_sample, selected.wasted_bits);
+        return write_mono_constant_frame(output, samples, info);
+    case FlacSubframeKind::Verbatim:
+        (void)checked_selected_wasted_bits(
+            samples, info.bits_per_sample, selected.wasted_bits);
+        return write_mono_verbatim_frame(output, samples, info);
+    case FlacSubframeKind::FixedRice: {
+        const auto subframe = make_selected_fixed_rice_subframe(samples, info, selected);
+        return write_fixed_rice_frame(output, info, subframe);
+    }
+    case FlacSubframeKind::LpcRice: {
+        const auto subframe = make_selected_lpc_rice_subframe(samples, info, selected);
+        return write_lpc_rice_frame(output, info, subframe);
+    }
+    }
+    throw std::runtime_error("unknown selected FLAC subframe kind");
 }
 
 FlacSubframeDecision write_mono_best_frame(

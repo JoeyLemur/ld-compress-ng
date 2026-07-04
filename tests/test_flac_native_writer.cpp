@@ -378,6 +378,37 @@ ldcompress::FlacSubframeDecision write_fixed_rice_file(
     return writer(output, samples, frame_info);
 }
 
+ldcompress::FlacSubframeDecision write_selected_file(
+    const std::filesystem::path& flac_path,
+    const std::vector<std::int32_t>& samples,
+    const ldcompress::FlacSelectedSubframe& selected,
+    unsigned max_lpc_order = 12,
+    unsigned lpc_coefficient_precision = 12,
+    unsigned max_rice_partition_order = 5)
+{
+    std::ofstream output(flac_path, std::ios::binary);
+    if (!output) {
+        throw std::runtime_error("could not create test FLAC file");
+    }
+
+    const ldcompress::FlacStreamInfo stream_info {
+        .min_block_size = static_cast<unsigned>(samples.size()),
+        .max_block_size = static_cast<unsigned>(samples.size()),
+        .min_frame_size = 0,
+        .max_frame_size = 0,
+        .sample_rate = 40000,
+        .channels = 1,
+        .bits_per_sample = 16,
+        .total_samples = samples.size(),
+        .md5 = md5_samples_s16le(samples),
+    };
+    ldcompress::write_native_flac_streaminfo(output, stream_info);
+
+    const auto frame_info = make_frame_info(
+        max_lpc_order, lpc_coefficient_precision, max_rice_partition_order);
+    return ldcompress::write_mono_selected_frame(output, samples, frame_info, selected);
+}
+
 void verify_best_analysis_matches_writer(
     const std::filesystem::path& flac_path,
     const std::vector<std::int32_t>& samples,
@@ -596,6 +627,104 @@ void test_native_rice_partition_order_limit()
         threw = true;
     }
     require(threw, "native writer accepted an out-of-range Rice partition order");
+
+    std::filesystem::remove_all(temp_dir);
+}
+
+void test_native_selected_subframe_writer()
+{
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+        ("ld-compress-ng-native-selected-test-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directory(temp_dir);
+
+    const std::vector<std::int32_t> constant_samples(32, 2048);
+    const ldcompress::FlacSelectedSubframe constant {
+        .kind = ldcompress::FlacSubframeKind::Constant,
+        .wasted_bits = 11,
+    };
+    const auto constant_decision =
+        write_selected_file(temp_dir / "constant.flac", constant_samples, constant);
+    require(constant_decision.kind == ldcompress::FlacSubframeKind::Constant,
+        "selected constant writer returned the wrong decision kind");
+    require(first_frame_subframe_type(temp_dir / "constant.flac") == 0,
+        "selected constant writer wrote the wrong subframe type");
+
+    const std::vector<std::int32_t> fixed_samples {
+        0, 64, 128, 192, 256, 320, 384, 448,
+        512, 576, 640, 704, 768, 832, 896, 960,
+    };
+    const ldcompress::FlacSelectedSubframe fixed {
+        .kind = ldcompress::FlacSubframeKind::FixedRice,
+        .fixed_order = 2,
+        .rice_partition_order = 0,
+        .wasted_bits = 6,
+    };
+    const auto fixed_decision =
+        write_selected_file(temp_dir / "fixed.flac", fixed_samples, fixed);
+    require(fixed_decision.kind == ldcompress::FlacSubframeKind::FixedRice,
+        "selected fixed writer returned the wrong decision kind");
+    require(fixed_decision.fixed_order == 2,
+        "selected fixed writer returned the wrong predictor order");
+    require(first_frame_subframe_type(temp_dir / "fixed.flac") == 10,
+        "selected fixed writer wrote the wrong subframe type");
+
+    const auto lpc_samples = make_lpc_friendly_samples();
+    const auto frame_info = make_frame_info(12, 12, 5);
+    const auto lpc = ldcompress::analyze_mono_lpc_frame(lpc_samples, frame_info);
+    require(lpc.has_value(), "native selected writer test could not prepare LPC selection");
+    const ldcompress::FlacSelectedSubframe lpc_selected {
+        .kind = ldcompress::FlacSubframeKind::LpcRice,
+        .lpc_order = lpc->order,
+        .rice_partition_order = lpc->rice_partition_order,
+        .wasted_bits = lpc->wasted_bits,
+        .coefficient_precision = lpc->coefficient_precision,
+        .quantization_shift = lpc->quantization_shift,
+        .coefficients = lpc->coefficients,
+    };
+    const auto lpc_decision =
+        write_selected_file(temp_dir / "lpc.flac", lpc_samples, lpc_selected);
+    require(lpc_decision.kind == ldcompress::FlacSubframeKind::LpcRice,
+        "selected LPC writer returned the wrong decision kind");
+    require(lpc_decision.lpc_order == lpc->order,
+        "selected LPC writer returned the wrong predictor order");
+    require(first_frame_subframe_type(temp_dir / "lpc.flac") == 0x20 + lpc->order - 1U,
+        "selected LPC writer wrote the wrong subframe type");
+
+    for (const auto& item : {
+             std::pair { temp_dir / "constant.flac", constant_samples },
+             std::pair { temp_dir / "fixed.flac", fixed_samples },
+             std::pair { temp_dir / "lpc.flac", lpc_samples },
+         }) {
+        std::ostringstream decoded;
+        const auto stats = ldcompress::decompress_flac_to_lds(item.first.string(), decoded);
+        const auto expected = pack_expected_lds(item.second);
+        require(stats.samples == item.second.size(),
+            "selected writer decoded sample count mismatch");
+        require(decoded.str() == expected,
+            "selected writer FLAC did not round-trip to expected LDS");
+    }
+
+    auto bad_wasted_bits = fixed;
+    bad_wasted_bits.wasted_bits = 0;
+    bool threw = false;
+    try {
+        (void)write_selected_file(temp_dir / "bad-wbits.flac", fixed_samples, bad_wasted_bits);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    require(threw, "selected writer accepted a mismatched wasted-bits count");
+
+    auto bad_quantization_shift = lpc_selected;
+    bad_quantization_shift.quantization_shift = -1;
+    threw = false;
+    try {
+        (void)write_selected_file(
+            temp_dir / "bad-quantization-shift.flac", lpc_samples, bad_quantization_shift);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    require(threw, "selected writer accepted a negative LPC quantization shift");
 
     std::filesystem::remove_all(temp_dir);
 }
@@ -877,6 +1006,7 @@ int main()
         test_native_verbatim_round_trip();
         test_native_fixed_rice_round_trip();
         test_native_rice_partition_order_limit();
+        test_native_selected_subframe_writer();
         test_native_lpc_precision_limit();
         test_native_best_subframe_selection();
         test_native_subframe_analysis_matches_writer();
