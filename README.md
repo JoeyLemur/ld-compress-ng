@@ -38,8 +38,8 @@ The current implementation provides:
 - Decompression from Ogg FLAC and native FLAC to packed `.lds`.
 - MD5-based verification, optionally against an original `.lds`.
 - A backend selection facade for CPU now and OpenCL later.
-- Native FLAC bitstream primitives, including a minimal STREAMINFO/verbatim frame
-  writer used by tests.
+- Native FLAC bitstream primitives and an experimental `native-verbatim` backend
+  that writes `.flac.ldf` streams with verbatim frames.
 - Optional OpenCL device enumeration.
 
 The OpenCL/FlaLDF-derived GPU compression backend is not implemented yet.
@@ -47,7 +47,7 @@ The OpenCL/FlaLDF-derived GPU compression backend is not implemented yet.
 ## Usage
 
 ```sh
-ld-compress-ng compress [--backend cpu|opencl] [--level N] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]
+ld-compress-ng compress [--backend cpu|native-verbatim|opencl] [--level N] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]
 ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]
 ld-compress-ng verify [--source ORIGINAL.lds] INPUT
 ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]
@@ -57,8 +57,10 @@ ld-compress-ng devices
 Defaults:
 
 - `compress` writes Ogg FLAC `.ldf` output.
-- `--backend cpu` is the current default and only implemented compression
-  backend.
+- `--backend cpu` is the current default production compression backend.
+- `--backend native-verbatim` writes native FLAC `.flac.ldf` output using
+  uncompressed verbatim FLAC frames. This is mainly a compatibility stepping
+  stone for the future native/GPU encoder, not the final compressed path.
 - `--backend opencl` is reserved for the future FlaLDF-derived native FLAC path
   and currently fails before writing output.
 - `--container flac` writes native FLAC, useful for compatibility testing with

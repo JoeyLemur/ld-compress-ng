@@ -10,6 +10,7 @@ namespace ldcompress {
 
 enum class CompressionBackend {
     CpuLibFlac,
+    NativeVerbatimFlac,
     OpenClNativeFlac,
 };
 

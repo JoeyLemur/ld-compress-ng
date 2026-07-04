@@ -77,7 +77,7 @@ void write_file(const std::filesystem::path& path, std::string_view data)
 std::string make_lds_fixture()
 {
     std::string data;
-    for (int group = 0; group < 64; ++group) {
+    for (int group = 0; group < 2305; ++group) {
         const ldcompress::SampleGroup samples {
             static_cast<std::int16_t>((((group * 7) + 0) % 1024 - 512) * 64),
             static_cast<std::int16_t>((((group * 7) + 1) % 1024 - 512) * 64),
@@ -103,10 +103,18 @@ void test_cli(const std::filesystem::path& exe)
     const auto compressed = temp_dir / "fixture.ldf";
     const auto decompressed = temp_dir / "fixture.out.lds";
     const auto native = temp_dir / "fixture.flac.ldf";
+    const auto native_verbatim = temp_dir / "fixture.native-verbatim.flac.ldf";
+    const auto native_verbatim_out = temp_dir / "fixture.native-verbatim.out.lds";
+    const auto bad_native_verbatim = temp_dir / "fixture.bad-native-verbatim.ldf";
+    const auto bad_native_verbatim_reversed = temp_dir / "fixture.bad-native-verbatim-reversed.ldf";
+    const auto empty_lds = temp_dir / "empty.lds";
+    const auto empty_native_verbatim = temp_dir / "empty.native-verbatim.flac.ldf";
+    const auto empty_native_verbatim_out = temp_dir / "empty.native-verbatim.out.lds";
     const auto opencl_output = temp_dir / "fixture.opencl.flac.ldf";
 
     const std::string fixture = make_lds_fixture();
     write_file(lds, fixture);
+    write_file(empty_lds, "");
 
     run_ok(shell_quote(exe) + " convert --unpack " + shell_quote(lds) + " " + shell_quote(pcm));
     run_ok(shell_quote(exe) + " convert --pack " + shell_quote(pcm) + " " + shell_quote(repacked));
@@ -125,6 +133,18 @@ void test_cli(const std::filesystem::path& exe)
 
     run_ok(shell_quote(exe) + " compress --backend cpu --container flac --overwrite " + shell_quote(lds) + " " + shell_quote(native));
     run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(native));
+    run_ok(shell_quote(exe) + " compress --backend native-verbatim " + shell_quote(lds) + " " + shell_quote(native_verbatim));
+    run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(native_verbatim));
+    run_ok(shell_quote(exe) + " decompress " + shell_quote(native_verbatim) + " " + shell_quote(native_verbatim_out));
+    require(read_file(native_verbatim_out) == fixture, "native-verbatim FLAC round trip changed LDS bytes");
+    run_fails(shell_quote(exe) + " compress --backend native-verbatim --container ogg " + shell_quote(lds) + " " + shell_quote(bad_native_verbatim));
+    require(!std::filesystem::exists(bad_native_verbatim), "native-verbatim Ogg rejection wrote output");
+    run_fails(shell_quote(exe) + " compress --container ogg --backend native-verbatim " + shell_quote(lds) + " " + shell_quote(bad_native_verbatim_reversed));
+    require(!std::filesystem::exists(bad_native_verbatim_reversed), "reversed native-verbatim Ogg rejection wrote output");
+    run_ok(shell_quote(exe) + " compress --backend native-verbatim " + shell_quote(empty_lds) + " " + shell_quote(empty_native_verbatim));
+    run_ok(shell_quote(exe) + " verify --source " + shell_quote(empty_lds) + " " + shell_quote(empty_native_verbatim));
+    run_ok(shell_quote(exe) + " decompress " + shell_quote(empty_native_verbatim) + " " + shell_quote(empty_native_verbatim_out));
+    require(read_file(empty_native_verbatim_out).empty(), "empty native-verbatim FLAC produced decoded LDS bytes");
     run_fails(shell_quote(exe) + " compress --backend opencl " + shell_quote(lds) + " " + shell_quote(opencl_output));
     require(!std::filesystem::exists(opencl_output), "unimplemented OpenCL backend wrote output");
     run_ok(shell_quote(exe) + " devices");

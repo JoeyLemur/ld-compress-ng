@@ -64,9 +64,10 @@ ld-compress-ng devices
 Initial behavior:
 
 - `compress` defaults to CPU compression using Ogg FLAC-compatible `.ldf` output.
-- `compress --backend cpu|opencl` should select between the implemented CPU path
-  and the later OpenCL-native FLAC encoder. Until the GPU encoder exists,
-  `opencl` is a reserved backend name that must fail before writing output.
+- `compress --backend cpu|native-verbatim|opencl` should select between the
+  implemented CPU path, an experimental native FLAC verbatim-frame path, and the
+  later OpenCL-native FLAC encoder. Until the GPU encoder exists, `opencl` is a
+  reserved backend name that must fail before writing output.
 - `decompress` accepts existing `.ldf`, `.raw.oga`, and `.flac.ldf` inputs where
   supported by the implemented decoder path.
 - `verify` reports hashes for the compressed input and the decompressed/repacked
@@ -80,7 +81,7 @@ Default output naming should preserve existing conventions unless explicitly
 overridden:
 
 - CPU compressed output: `INPUT_BASENAME.ldf`
-- GPU compressed output, later phase: `INPUT_BASENAME.flac.ldf`
+- Native FLAC output, including GPU compressed output later: `INPUT_BASENAME.flac.ldf`
 - Decompressed output: `INPUT_BASENAME.lds`
 
 The tool should refuse to overwrite existing outputs unless `--overwrite` is
@@ -108,6 +109,8 @@ provided.
   structs, or FlaLDF subframe internals through the public API.
 - Build native FLAC writer primitives before porting the OpenCL encoder,
   starting with bit writing, CRC helpers, STREAMINFO, and verbatim frame output.
+- Add an experimental native-FLAC verbatim backend to exercise the writer through
+  the real CLI before introducing compressed subframes or GPU work.
 - Port FlaLDF host-side encoder logic to native C++.
 - Reuse or adapt the existing OpenCL kernel from `FlaLDF/`.
 - Extend the initial OpenCL platform/device enumeration into explicit device
@@ -139,8 +142,8 @@ provided.
 - Generate synthetic LDS data, compress it, decompress it, and verify the
   repacked LDS bytes match the original.
 - Verify Ogg FLAC `.ldf` decode parity for CPU output.
-- Verify native FLAC `.flac.ldf` decode parity once GPU/native-FLAC support is
-  implemented.
+- Verify native FLAC `.flac.ldf` decode parity for the verbatim backend before
+  adding compressed native/GPU output.
 - For the OpenCL phase, test device enumeration, explicit device selection, CPU
   fallback behavior, and decompressed-output parity with the CPU backend.
 
