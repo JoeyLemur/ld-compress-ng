@@ -37,7 +37,7 @@ struct CompressionOptions {
     unsigned sample_rate = 40000;
     unsigned thread_count = 1;
     unsigned native_frame_samples = 4608;
-    unsigned native_max_lpc_order = 8;
+    unsigned native_max_lpc_order = 12;
     NativeCompressionStats* native_stats = nullptr;
 };
 

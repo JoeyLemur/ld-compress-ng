@@ -30,7 +30,7 @@ struct Options {
     unsigned level = 11;
     unsigned threads = 1;
     unsigned native_frame_samples = 4608;
-    unsigned native_max_lpc_order = 8;
+    unsigned native_max_lpc_order = 12;
     std::vector<unsigned> bench_threads;
     std::vector<unsigned> bench_frame_samples;
     std::vector<unsigned> bench_lpc_orders;
@@ -333,7 +333,7 @@ Options parse_compress(int argc, char** argv)
         throw std::runtime_error("--stats is currently supported only by native FLAC backends");
     }
     if (options.backend == ldcompress::CompressionBackend::CpuLibFlac &&
-        (options.native_frame_samples != 4608 || options.native_max_lpc_order != 8)) {
+        (options.native_frame_samples != 4608 || options.native_max_lpc_order != 12)) {
         throw std::runtime_error("--frame-samples and --lpc-order are supported only by native FLAC backends");
     }
 
@@ -768,7 +768,7 @@ int run_bench(const Options& options)
             .container = ldcompress::FlacContainer::Ogg,
             .threads = 1,
             .native_frame_samples = 4608,
-            .native_max_lpc_order = 8,
+            .native_max_lpc_order = 12,
             .show_frame_samples = false,
             .show_lpc_order = false,
         },

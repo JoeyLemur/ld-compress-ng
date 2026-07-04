@@ -23,7 +23,7 @@ struct FlacFrameInfo {
     std::uint64_t frame_number = 0;
     unsigned sample_rate = 0;
     unsigned bits_per_sample = 16;
-    unsigned max_lpc_order = 8;
+    unsigned max_lpc_order = 12;
 };
 
 enum class FlacSubframeKind {

@@ -278,8 +278,10 @@ void verify_lpc_round_trip(
         flac_path, samples, ldcompress::write_mono_best_frame);
     require(decision.kind == ldcompress::FlacSubframeKind::LpcRice,
         "native best-frame writer did not choose LPC for LPC-friendly samples");
+    require(decision.lpc_order >= 1 && decision.lpc_order <= 12,
+        "native best-frame writer chose an unexpected LPC order");
     const auto type = first_frame_subframe_type(flac_path);
-    require(type >= 0x20 && type <= 0x27,
+    require(type >= 0x20 && type <= 0x2b,
         "native best-frame writer did not write an expected LPC subframe type");
 
     std::ostringstream decoded;

@@ -67,7 +67,7 @@ Defaults:
   stone for the future native/GPU encoder, not the final compressed path.
 - `--backend native-fixed` writes native FLAC `.flac.ldf` output using scalar
   subframe selection: constant for flat frames, fixed prediction/Rice residuals,
-  LPC/Rice residuals up to order 8, partition-order search `0..4` when useful,
+  LPC/Rice residuals up to order 12, partition-order search `0..4` when useful,
   wasted-bits handling for the low zero bits in LDS-derived PCM, and verbatim
   fallback when predictive coding would be larger. It is a correctness milestone
   for the native/GPU path, not tuned compression yet.
@@ -77,8 +77,8 @@ Defaults:
   the FLAC block size used by the native encoder. It defaults to `4608` and is
   constrained to `16..4608` for 40 kHz subset compatibility.
 - `--lpc-order N` is currently supported for native FLAC backends and sets the
-  maximum scalar LPC order considered by `native-fixed`. It defaults to `8`;
-  `0` disables LPC and `12` matches the 40 kHz FLAC subset cap.
+  maximum scalar LPC order considered by `native-fixed`. It defaults to `12`,
+  matching the 40 kHz FLAC subset cap; `0` disables LPC.
 - `--stats` is currently supported for native FLAC backends and prints per-frame
   subframe counts, fixed/LPC predictor order counts, Rice partition order
   counts, and wasted-bits counts.
