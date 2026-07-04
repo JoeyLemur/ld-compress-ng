@@ -1,0 +1,39 @@
+#include "compressor.h"
+
+#include <stdexcept>
+
+namespace ldcompress {
+
+const char* backend_name(CompressionBackend backend)
+{
+    switch (backend) {
+    case CompressionBackend::CpuLibFlac:
+        return "cpu";
+    case CompressionBackend::OpenClNativeFlac:
+        return "opencl";
+    }
+    return "unknown";
+}
+
+ConversionStats compress_lds(
+    std::istream& lds_input,
+    const std::string& output_path,
+    const CompressionOptions& options)
+{
+    switch (options.backend) {
+    case CompressionBackend::CpuLibFlac: {
+        const FlacEncodeOptions flac_options {
+            .container = options.container,
+            .compression_level = options.compression_level,
+            .sample_rate = options.sample_rate,
+        };
+        return compress_lds_to_flac(lds_input, output_path, flac_options);
+    }
+    case CompressionBackend::OpenClNativeFlac:
+        throw std::runtime_error("OpenCL compression backend is not implemented yet");
+    }
+
+    throw std::runtime_error("unknown compression backend");
+}
+
+}  // namespace ldcompress

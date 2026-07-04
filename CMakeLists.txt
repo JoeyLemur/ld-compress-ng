@@ -29,6 +29,7 @@ if(LDCOMPRESS_ENABLE_OPENCL)
 endif()
 
 add_library(ldcompress_core
+    src/compressor.cpp
     src/flac_codec.cpp
     src/hash.cpp
     src/lds_codec.cpp

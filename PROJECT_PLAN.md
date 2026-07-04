@@ -64,6 +64,9 @@ ld-compress-ng devices
 Initial behavior:
 
 - `compress` defaults to CPU compression using Ogg FLAC-compatible `.ldf` output.
+- `compress --backend cpu|opencl` should select between the implemented CPU path
+  and the later OpenCL-native FLAC encoder. Until the GPU encoder exists,
+  `opencl` is a reserved backend name that must fail before writing output.
 - `decompress` accepts existing `.ldf`, `.raw.oga`, and `.flac.ldf` inputs where
   supported by the implemented decoder path.
 - `verify` reports hashes for the compressed input and the decompressed/repacked
@@ -100,6 +103,9 @@ provided.
 
 ### Phase 2: GPU Backend
 
+- Keep the public compression boundary at packed LDS input stream to compressed
+  output file plus conversion stats. Do not expose OpenCL buffers, kernel task
+  structs, or FlaLDF subframe internals through the public API.
 - Port FlaLDF host-side encoder logic to native C++.
 - Reuse or adapt the existing OpenCL kernel from `FlaLDF/`.
 - Extend the initial OpenCL platform/device enumeration into explicit device

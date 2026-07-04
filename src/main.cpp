@@ -1,3 +1,4 @@
+#include "compressor.h"
 #include "flac_codec.h"
 #include "hash.h"
 #include "lds_codec.h"
@@ -20,6 +21,7 @@ struct Options {
     bool pack = false;
     bool unpack = false;
     unsigned level = 11;
+    ldcompress::CompressionBackend backend = ldcompress::CompressionBackend::CpuLibFlac;
     ldcompress::FlacContainer container = ldcompress::FlacContainer::Ogg;
     std::string input;
     std::string output;
@@ -30,7 +32,7 @@ struct Options {
 {
     std::ostream& out = exit_code == 0 ? std::cout : std::cerr;
     out << "Usage:\n"
-        << "  ld-compress-ng compress [--level N] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]\n"
+        << "  ld-compress-ng compress [--backend cpu|opencl] [--level N] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng verify [--source ORIGINAL.lds] INPUT\n"
         << "  ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]\n"
@@ -57,7 +59,8 @@ std::string default_convert_output(const Options& options)
 std::string default_compress_output(const Options& options)
 {
     const std::filesystem::path input_path(options.input);
-    if (options.container == ldcompress::FlacContainer::Native) {
+    if (options.backend == ldcompress::CompressionBackend::OpenClNativeFlac ||
+        options.container == ldcompress::FlacContainer::Native) {
         return input_path.stem().string() + ".flac.ldf";
     }
     return input_path.stem().string() + ".ldf";
@@ -138,6 +141,19 @@ Options parse_compress(int argc, char** argv)
         const std::string_view arg(argv[i]);
         if (arg == "--overwrite") {
             options.overwrite = true;
+        } else if (arg == "--backend") {
+            if (++i >= argc) {
+                throw std::runtime_error("--backend requires a value");
+            }
+            const std::string_view backend(argv[i]);
+            if (backend == "cpu" || backend == "libflac") {
+                options.backend = ldcompress::CompressionBackend::CpuLibFlac;
+            } else if (backend == "opencl" || backend == "gpu") {
+                options.backend = ldcompress::CompressionBackend::OpenClNativeFlac;
+                options.container = ldcompress::FlacContainer::Native;
+            } else {
+                throw std::runtime_error("unknown backend: " + std::string(backend));
+            }
         } else if (arg == "--level") {
             if (++i >= argc) {
                 throw std::runtime_error("--level requires a value");
@@ -302,15 +318,16 @@ int run_compress(const Options& options)
         throw std::runtime_error("could not open input: " + options.input);
     }
 
-    const ldcompress::FlacEncodeOptions encode_options {
+    const ldcompress::CompressionOptions compress_options {
+        .backend = options.backend,
         .container = options.container,
         .compression_level = options.level,
         .sample_rate = 40000,
     };
-    const auto stats = ldcompress::compress_lds_to_flac(input, options.output, encode_options);
+    const auto stats = ldcompress::compress_lds(input, options.output, compress_options);
     std::cerr << "compressed " << stats.input_bytes << " bytes to "
               << stats.output_bytes << " bytes (" << stats.samples
-              << " samples)\n";
+              << " samples, " << ldcompress::backend_name(options.backend) << " backend)\n";
     return 0;
 }
 

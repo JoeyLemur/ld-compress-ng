@@ -103,6 +103,7 @@ void test_cli(const std::filesystem::path& exe)
     const auto compressed = temp_dir / "fixture.ldf";
     const auto decompressed = temp_dir / "fixture.out.lds";
     const auto native = temp_dir / "fixture.flac.ldf";
+    const auto opencl_output = temp_dir / "fixture.opencl.flac.ldf";
 
     const std::string fixture = make_lds_fixture();
     write_file(lds, fixture);
@@ -122,8 +123,10 @@ void test_cli(const std::filesystem::path& exe)
     run_fails(shell_quote(exe) + " decompress --overwrite " + shell_quote(compressed) + " " + shell_quote(compressed));
     require(read_file(decompressed) == fixture, "Ogg FLAC round trip changed LDS bytes");
 
-    run_ok(shell_quote(exe) + " compress --container flac --overwrite " + shell_quote(lds) + " " + shell_quote(native));
+    run_ok(shell_quote(exe) + " compress --backend cpu --container flac --overwrite " + shell_quote(lds) + " " + shell_quote(native));
     run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(native));
+    run_fails(shell_quote(exe) + " compress --backend opencl " + shell_quote(lds) + " " + shell_quote(opencl_output));
+    require(!std::filesystem::exists(opencl_output), "unimplemented OpenCL backend wrote output");
     run_ok(shell_quote(exe) + " devices");
 
     std::filesystem::remove_all(temp_dir);

@@ -32,6 +32,7 @@ The current implementation provides:
 - CPU compression to Ogg FLAC `.ldf` using `libFLAC`/`libogg`.
 - Decompression from Ogg FLAC and native FLAC to packed `.lds`.
 - MD5-based verification, optionally against an original `.lds`.
+- A backend selection facade for CPU now and OpenCL later.
 - Optional OpenCL device enumeration.
 
 The OpenCL/FlaLDF-derived GPU compression backend is not implemented yet.
@@ -39,7 +40,7 @@ The OpenCL/FlaLDF-derived GPU compression backend is not implemented yet.
 ## Usage
 
 ```sh
-ld-compress-ng compress [--level N] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]
+ld-compress-ng compress [--backend cpu|opencl] [--level N] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]
 ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]
 ld-compress-ng verify [--source ORIGINAL.lds] INPUT
 ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]
@@ -49,6 +50,10 @@ ld-compress-ng devices
 Defaults:
 
 - `compress` writes Ogg FLAC `.ldf` output.
+- `--backend cpu` is the current default and only implemented compression
+  backend.
+- `--backend opencl` is reserved for the future FlaLDF-derived native FLAC path
+  and currently fails before writing output.
 - `--container flac` writes native FLAC, useful for compatibility testing with
   the future `.flac.ldf` GPU lane.
 - Compression levels accept the legacy CPU range `1..12`; values above libFLAC's
