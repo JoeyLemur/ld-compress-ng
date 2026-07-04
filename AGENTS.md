@@ -10,3 +10,4 @@
 - Preserve license notices when lifting or porting implementation details.
 - The user is an experienced Linux/UNIX system administrator; keep explanations
   technically direct and avoid over-explaining basics.
+- Commit coherent checkpoints when it makes sense, after appropriate validation.

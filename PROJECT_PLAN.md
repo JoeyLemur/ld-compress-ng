@@ -81,6 +81,18 @@ Implemented:
 - Hardware-optional OpenCL fixed/constant analysis smoke using FLACCL-derived
   wasted-bits and residual-size estimation kernels, with LGPL notices preserved
   in the local kernel source.
+- Device-free scalar exact fixed/constant OpenCL task analysis that fills the
+  FLACCL task ABI with exact wasted-bits, Rice partition, and bit-size choices
+  for parity tests against the native scalar selector.
+- Hardware-optional OpenCL fixed/constant exact analysis parity against the
+  scalar task oracle, including Rice partition search and partition-order
+  limit enforcement.
+- Public scalar LPC analysis records for best-LPC and per-order LPC candidates,
+  exposing coefficient precision, quantization shift, coefficients, wasted
+  bits, Rice partition order, and exact bit count without exposing residual
+  vectors.
+- Device-free FLACCL LPC task oracle that maps scalar per-order LPC analysis
+  into task ABI fields with FLACCL coefficient ordering.
 - Linux OpenCL validation on `smaug`, Debian 13-era amd64 kernel
   `6.12.94+deb13-amd64`, NVIDIA OpenCL 3.0 CUDA runtime. The OpenCL analysis
   smoke tests compiled and ran on an RTX 4070 SUPER / RTX 5070 Ti host, and the
@@ -254,13 +266,20 @@ provided.
   until parity with the scalar exact-cost selector is characterized. Done for
   the host-side task ABI, selected-task plan builder, and best-method execution
   smoke. Done for the first fixed/constant wasted-bits and residual-size
-  estimation path using the FLACCL CPU-style OpenCL kernels. LPC analysis,
-  exact Rice partition search, and parity characterization against the scalar
-  exact-cost selector still need to be ported. Kernel code copied or adapted
-  from FLACCL must keep the original LGPL-2.1-or-later notices and local
-  modification notes. The current fixed/constant OpenCL smoke has been validated
-  on Linux/NVIDIA hardware; macOS currently has no local OpenCL device for
-  runtime kernel validation.
+  estimation path using the FLACCL CPU-style OpenCL kernels. Done for a
+  device-free scalar exact fixed/constant task analyzer with Rice partition
+  search, so later kernels have a task-ABI parity oracle on hosts without
+  OpenCL devices. Done for exact fixed/constant OpenCL kernel analysis parity
+  against that scalar oracle, including Rice partition search and partition
+  order limits. Done for scalar best/per-order LPC analysis records and a
+  device-free FLACCL LPC task oracle with coefficient-order conversion. OpenCL
+  LPC autocorrelation, coefficient generation, residual analysis, and parity
+  characterization against the scalar exact-cost selector still need to be
+  ported. Kernel code copied or adapted from FLACCL must keep the original
+  LGPL-2.1-or-later notices and local modification notes. The current
+  fixed/constant OpenCL exact parity test has been validated on Linux/NVIDIA
+  hardware; macOS currently has no local OpenCL device for runtime kernel
+  validation.
 - Extend the initial OpenCL platform/device enumeration into explicit device
   selection for GPU compression. Done for CLI plumbing and metadata selection;
   real compression still awaits the FlaLDF-derived encoder port.

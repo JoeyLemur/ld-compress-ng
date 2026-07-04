@@ -87,6 +87,20 @@ OpenClMonoBestMethodResult run_opencl_mono_best_method(
 OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
     const std::vector<std::int32_t>& samples,
     const OpenClMonoAnalysisTaskPlan& plan,
-    std::optional<std::size_t> requested_device_index = std::nullopt);
+    std::optional<std::size_t> requested_device_index = std::nullopt,
+    unsigned max_rice_partition_order = 5);
+
+OpenClMonoFixedConstantAnalysisResult analyze_mono_fixed_constant_exact(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    unsigned max_rice_partition_order = 5);
+
+std::optional<FlacClSubframeTask> analyze_mono_lpc_exact_task(
+    const std::vector<std::int32_t>& samples,
+    std::size_t frame_index,
+    const OpenClMonoAnalysisTaskOptions& options,
+    unsigned lpc_order,
+    unsigned lpc_coefficient_precision = 12,
+    unsigned max_rice_partition_order = 5);
 
 }  // namespace ldcompress::opencl_detail

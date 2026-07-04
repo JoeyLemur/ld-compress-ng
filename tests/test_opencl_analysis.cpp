@@ -1,6 +1,9 @@
+#include "flac_native_writer.h"
 #include "opencl_analysis.h"
 #include "opencl_devices.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <exception>
 #include <iostream>
@@ -27,6 +30,22 @@ void require_throws(Fn&& fn, const char* message)
         return;
     }
     throw std::runtime_error(message);
+}
+
+std::vector<std::int32_t> make_lpc_friendly_samples()
+{
+    constexpr double kPi = 3.14159265358979323846;
+    std::vector<std::int32_t> samples;
+    samples.reserve(512);
+    for (int i = 0; i < 512; ++i) {
+        const double sample =
+            (std::sin((2.0 * kPi * i) / 31.0) * 11000.0) +
+            (std::sin((2.0 * kPi * i) / 11.0) * 3500.0);
+        auto quantized = static_cast<int>(std::lround(sample / 64.0)) * 64;
+        quantized = std::clamp(quantized, -32768, 32704);
+        samples.push_back(quantized);
+    }
+    return samples;
 }
 
 std::optional<std::size_t> first_available_opencl_device_index()
@@ -66,6 +85,73 @@ void require_common_task_fields(
     require(task.data.porder == 0, "unexpected initial porder");
     require(task.data.headerLen == 0, "unexpected headerLen");
     require(task.data.encodingOffset == 0, "unexpected encodingOffset");
+}
+
+ldcompress::FlacFrameInfo make_fixed_only_frame_info(unsigned max_rice_partition_order)
+{
+    return ldcompress::FlacFrameInfo {
+        .frame_number = 0,
+        .sample_rate = 40000,
+        .bits_per_sample = 16,
+        .max_lpc_order = 0,
+        .lpc_coefficient_precision = 12,
+        .max_rice_partition_order = max_rice_partition_order,
+    };
+}
+
+void require_task_matches_decision(
+    const ldcompress::opencl_detail::FlacClSubframeTask& task,
+    const ldcompress::FlacSubframeDecision& decision,
+    const char* label)
+{
+    using namespace ldcompress::opencl_detail;
+
+    switch (decision.kind) {
+    case ldcompress::FlacSubframeKind::Constant:
+        require(task.data.type == kFlacClSubframeConstant, label);
+        break;
+    case ldcompress::FlacSubframeKind::FixedRice:
+        require(task.data.type == kFlacClSubframeFixed, label);
+        require(task.data.residualOrder == static_cast<int>(decision.fixed_order), label);
+        require(task.data.porder == static_cast<int>(decision.rice_partition_order), label);
+        break;
+    case ldcompress::FlacSubframeKind::Verbatim:
+    case ldcompress::FlacSubframeKind::LpcRice:
+        throw std::runtime_error("test expected a constant or fixed/Rice scalar decision");
+    }
+
+    require(task.data.wbits == static_cast<int>(decision.wasted_bits), label);
+    require(task.data.size == static_cast<int>(decision.estimated_bits), label);
+}
+
+void require_task_matches_task(
+    const ldcompress::opencl_detail::FlacClSubframeTask& actual,
+    const ldcompress::opencl_detail::FlacClSubframeTask& expected,
+    const char* label)
+{
+    require(actual.data.type == expected.data.type, label);
+    require(actual.data.residualOrder == expected.data.residualOrder, label);
+    require(actual.data.samplesOffs == expected.data.samplesOffs, label);
+    require(actual.data.wbits == expected.data.wbits, label);
+    require(actual.data.abits == expected.data.abits, label);
+    require(actual.data.porder == expected.data.porder, label);
+    require(actual.data.size == expected.data.size, label);
+}
+
+void require_analysis_matches(
+    const ldcompress::opencl_detail::OpenClMonoFixedConstantAnalysisResult& actual,
+    const ldcompress::opencl_detail::OpenClMonoFixedConstantAnalysisResult& expected,
+    const char* label)
+{
+    require(actual.analyzed_tasks.size() == expected.analyzed_tasks.size(), label);
+    require(actual.best_tasks.size() == expected.best_tasks.size(), label);
+
+    for (std::size_t i = 0; i < expected.analyzed_tasks.size(); ++i) {
+        require_task_matches_task(actual.analyzed_tasks[i], expected.analyzed_tasks[i], label);
+    }
+    for (std::size_t i = 0; i < expected.best_tasks.size(); ++i) {
+        require_task_matches_task(actual.best_tasks[i], expected.best_tasks[i], label);
+    }
 }
 
 void test_flaccl_abi_layout()
@@ -203,6 +289,177 @@ void test_invalid_options()
     }, "invalid fixed order accepted");
 }
 
+void test_scalar_exact_fixed_constant_analysis()
+{
+    using namespace ldcompress::opencl_detail;
+
+    OpenClMonoAnalysisTaskOptions options;
+    options.frame_samples = 64;
+    options.max_lpc_order = 0;
+    options.include_constant = true;
+    options.min_fixed_order = 0;
+    options.max_fixed_order = 4;
+
+    const auto tasks_per_frame = mono_analysis_tasks_per_frame(options);
+    require(tasks_per_frame == 6, "unexpected fixed/constant exact task count");
+    const auto plan = build_mono_analysis_task_plan(2, options);
+
+    std::vector<std::int32_t> samples;
+    samples.reserve(128);
+    for (int i = 0; i < 64; ++i) {
+        samples.push_back(1024);
+    }
+    for (int i = 0; i < 64; ++i) {
+        samples.push_back(i * 64);
+    }
+
+    const auto result = analyze_mono_fixed_constant_exact(samples, plan, 4);
+    require(result.device_name == "scalar-exact", "scalar exact analyzer did not identify itself");
+    require(result.analyzed_tasks.size() == 12, "scalar exact analyzed task count mismatch");
+    require(result.best_tasks.size() == 2, "scalar exact best task count mismatch");
+
+    for (std::size_t i = 0; i < tasks_per_frame; ++i) {
+        require(result.analyzed_tasks[i].data.wbits == 10,
+            "scalar exact constant frame wasted-bits mismatch");
+    }
+    for (std::size_t i = tasks_per_frame; i < tasks_per_frame * 2; ++i) {
+        require(result.analyzed_tasks[i].data.wbits == 6,
+            "scalar exact linear frame wasted-bits mismatch");
+    }
+
+    const std::vector<std::int32_t> constant_frame(samples.begin(), samples.begin() + 64);
+    const auto constant_decision = ldcompress::analyze_mono_best_frame(
+        constant_frame, make_fixed_only_frame_info(4));
+    require(constant_decision.kind == ldcompress::FlacSubframeKind::Constant,
+        "scalar native analyzer did not choose constant");
+    require_task_matches_decision(result.best_tasks[0], constant_decision,
+        "scalar exact constant task did not match native analyzer");
+
+    const std::vector<std::int32_t> linear_frame(samples.begin() + 64, samples.end());
+    const auto linear_decision = ldcompress::analyze_mono_best_frame(
+        linear_frame, make_fixed_only_frame_info(4));
+    require(linear_decision.kind == ldcompress::FlacSubframeKind::FixedRice,
+        "scalar native analyzer did not choose fixed/Rice");
+    require(linear_decision.fixed_order == 2, "scalar native analyzer did not choose fixed order 2");
+    require_task_matches_decision(result.best_tasks[1], linear_decision,
+        "scalar exact fixed task did not match native analyzer");
+}
+
+void test_scalar_exact_rice_partition_search()
+{
+    using namespace ldcompress::opencl_detail;
+
+    OpenClMonoAnalysisTaskOptions options;
+    options.frame_samples = 64;
+    options.max_lpc_order = 0;
+    options.include_constant = true;
+    options.min_fixed_order = 0;
+    options.max_fixed_order = 4;
+
+    const std::vector<std::int32_t> samples {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
+        32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
+        32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
+        32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
+    };
+    const auto plan = build_mono_analysis_task_plan(1, options);
+
+    const auto partitioned = analyze_mono_fixed_constant_exact(samples, plan, 4);
+    const auto partitioned_decision = ldcompress::analyze_mono_best_frame(
+        samples, make_fixed_only_frame_info(4));
+    require(partitioned_decision.kind == ldcompress::FlacSubframeKind::FixedRice,
+        "scalar native analyzer did not choose fixed/Rice for partitioned samples");
+    require(partitioned_decision.fixed_order == 0,
+        "scalar native analyzer chose unexpected fixed order for partitioned samples");
+    require(partitioned_decision.rice_partition_order == 1,
+        "scalar native analyzer did not choose Rice partition order 1");
+    require_task_matches_decision(partitioned.best_tasks[0], partitioned_decision,
+        "scalar exact partitioned task did not match native analyzer");
+
+    const auto unpartitioned = analyze_mono_fixed_constant_exact(samples, plan, 0);
+    require(unpartitioned.best_tasks[0].data.type == kFlacClSubframeFixed,
+        "scalar exact unpartitioned task did not choose a fixed candidate");
+    require(unpartitioned.best_tasks[0].data.porder == 0,
+        "scalar exact unpartitioned task did not honor Rice partition order limit");
+    require(unpartitioned.best_tasks[0].data.size > partitioned.best_tasks[0].data.size,
+        "scalar exact partition search did not improve the fixed task size");
+}
+
+void test_scalar_exact_lpc_task_analysis()
+{
+    using namespace ldcompress::opencl_detail;
+
+    OpenClMonoAnalysisTaskOptions options;
+    options.frame_samples = 512;
+    options.max_lpc_order = 12;
+    options.include_constant = false;
+    options.min_fixed_order = 0;
+    options.max_fixed_order = 4;
+
+    const auto samples = make_lpc_friendly_samples();
+    const ldcompress::FlacFrameInfo frame_info {
+        .frame_number = 0,
+        .sample_rate = 40000,
+        .bits_per_sample = 16,
+        .max_lpc_order = 12,
+        .lpc_coefficient_precision = 12,
+        .max_rice_partition_order = 5,
+    };
+    const auto best_lpc = ldcompress::analyze_mono_lpc_frame(samples, frame_info);
+    require(best_lpc.has_value(), "native LPC analysis did not return a candidate");
+
+    const auto lpc_task = analyze_mono_lpc_exact_task(
+        samples, 0, options, best_lpc->order, 12, 5);
+    require(lpc_task.has_value(), "scalar exact LPC task analysis did not return a task");
+    require(lpc_task->data.type == kFlacClSubframeLpc,
+        "scalar exact LPC task type mismatch");
+    require(lpc_task->data.residualOrder == static_cast<int>(best_lpc->order),
+        "scalar exact LPC task order mismatch");
+    require(lpc_task->data.samplesOffs == 0,
+        "scalar exact LPC task sample offset mismatch");
+    require(lpc_task->data.blocksize == 512,
+        "scalar exact LPC task block size mismatch");
+    require(lpc_task->data.shift == best_lpc->quantization_shift,
+        "scalar exact LPC task quantization shift mismatch");
+    require(lpc_task->data.cbits == static_cast<int>(best_lpc->coefficient_precision),
+        "scalar exact LPC task coefficient precision mismatch");
+    require(lpc_task->data.size == static_cast<int>(best_lpc->estimated_bits),
+        "scalar exact LPC task size mismatch");
+    require(lpc_task->data.wbits == static_cast<int>(best_lpc->wasted_bits),
+        "scalar exact LPC task wasted-bits mismatch");
+    require(lpc_task->data.porder == static_cast<int>(best_lpc->rice_partition_order),
+        "scalar exact LPC task partition order mismatch");
+    for (std::size_t i = 0; i < best_lpc->coefficients.size(); ++i) {
+        const auto reversed_index = best_lpc->coefficients.size() - i - 1U;
+        require(lpc_task->coefs[i] == best_lpc->coefficients[reversed_index],
+            "scalar exact LPC task coefficient mismatch");
+    }
+
+    std::vector<std::int32_t> two_frames = samples;
+    two_frames.insert(two_frames.end(), samples.begin(), samples.end());
+    const auto second_task = analyze_mono_lpc_exact_task(
+        two_frames, 1, options, best_lpc->order, 12, 5);
+    require(second_task.has_value(), "scalar exact LPC task analysis did not return a second-frame task");
+    require(second_task->data.samplesOffs == 512,
+        "scalar exact LPC second-frame sample offset mismatch");
+    require(second_task->data.size == lpc_task->data.size,
+        "scalar exact LPC second-frame size mismatch");
+
+    auto disabled_options = options;
+    disabled_options.max_lpc_order = 0;
+    require(!analyze_mono_lpc_exact_task(samples, 0, disabled_options, 1, 12, 5).has_value(),
+        "scalar exact LPC task analysis returned a task with LPC disabled");
+
+    auto tiny_options = options;
+    tiny_options.frame_samples = 64;
+    tiny_options.max_lpc_order = 12;
+    const std::vector<std::int32_t> tiny_samples(samples.begin(), samples.begin() + 64);
+    require(!analyze_mono_lpc_exact_task(tiny_samples, 0, tiny_options, 1, 12, 5).has_value(),
+        "scalar exact LPC task analysis returned a task for a too-small frame");
+}
+
 void test_opencl_best_method_smoke()
 {
     using namespace ldcompress::opencl_detail;
@@ -272,21 +529,32 @@ void test_opencl_fixed_constant_analysis_smoke()
 
     const auto tasks_per_frame = mono_analysis_tasks_per_frame(options);
     require(tasks_per_frame == 6, "unexpected fixed/constant task count");
-    const auto plan = build_mono_analysis_task_plan(2, options);
+    const auto plan = build_mono_analysis_task_plan(3, options);
 
     std::vector<std::int32_t> samples;
-    samples.reserve(128);
+    samples.reserve(192);
     for (int i = 0; i < 64; ++i) {
         samples.push_back(1024);
     }
     for (int i = 0; i < 64; ++i) {
         samples.push_back(i * 64);
     }
+    const std::vector<std::int32_t> partitioned {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
+        32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
+        32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
+        32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
+    };
+    samples.insert(samples.end(), partitioned.begin(), partitioned.end());
 
-    const auto result = run_opencl_mono_fixed_constant_analysis(samples, plan, device_index);
+    const auto expected = analyze_mono_fixed_constant_exact(samples, plan, 4);
+    const auto result = run_opencl_mono_fixed_constant_analysis(samples, plan, device_index, 4);
     require(!result.device_name.empty(), "OpenCL fixed/constant result did not report a device");
-    require(result.analyzed_tasks.size() == 12, "OpenCL analyzed task count mismatch");
-    require(result.best_tasks.size() == 2, "OpenCL fixed/constant best task count mismatch");
+    require(result.analyzed_tasks.size() == 18, "OpenCL analyzed task count mismatch");
+    require(result.best_tasks.size() == 3, "OpenCL fixed/constant best task count mismatch");
+    require_analysis_matches(result, expected, "OpenCL exact fixed/constant analysis diverged from scalar oracle");
 
     for (std::size_t i = 0; i < tasks_per_frame; ++i) {
         require(result.analyzed_tasks[i].data.wbits == 10,
@@ -299,7 +567,7 @@ void test_opencl_fixed_constant_analysis_smoke()
 
     require(result.best_tasks[0].data.type == kFlacClSubframeConstant,
         "constant frame did not select constant task");
-    require(result.best_tasks[0].data.size == 6,
+    require(result.best_tasks[0].data.size == 24,
         "constant frame selected size mismatch");
 
     require(result.best_tasks[1].data.type == kFlacClSubframeFixed,
@@ -308,6 +576,23 @@ void test_opencl_fixed_constant_analysis_smoke()
         "linear frame did not select fixed order 2");
     require(result.best_tasks[1].data.size < 16 * 64,
         "linear frame fixed task did not beat verbatim baseline");
+
+    require(result.best_tasks[2].data.type == kFlacClSubframeFixed,
+        "partitioned frame did not select fixed task");
+    require(result.best_tasks[2].data.residualOrder == 0,
+        "partitioned frame did not select fixed order 0");
+    require(result.best_tasks[2].data.porder == 1,
+        "partitioned frame did not select Rice partition order 1");
+
+    const auto expected_unpartitioned = analyze_mono_fixed_constant_exact(samples, plan, 0);
+    const auto result_unpartitioned =
+        run_opencl_mono_fixed_constant_analysis(samples, plan, device_index, 0);
+    require_analysis_matches(result_unpartitioned, expected_unpartitioned,
+        "OpenCL exact fixed/constant analysis did not honor max partition order 0");
+    require(result_unpartitioned.best_tasks[2].data.porder == 0,
+        "partitioned frame did not honor max partition order 0");
+    require(result_unpartitioned.best_tasks[2].data.size > result.best_tasks[2].data.size,
+        "OpenCL exact partition search did not improve fixed task size");
 }
 
 }  // namespace
@@ -319,6 +604,9 @@ int main()
         test_default_mono_task_plan();
         test_small_custom_task_plan();
         test_invalid_options();
+        test_scalar_exact_fixed_constant_analysis();
+        test_scalar_exact_rice_partition_search();
+        test_scalar_exact_lpc_task_analysis();
         test_opencl_best_method_smoke();
         test_opencl_fixed_constant_analysis_smoke();
     } catch (const std::exception& ex) {

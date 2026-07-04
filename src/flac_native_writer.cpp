@@ -828,6 +828,113 @@ FixedRiceSubframe choose_fixed_rice_subframe(
     return best;
 }
 
+void consider_lpc_rice_order(
+    const std::vector<std::int32_t>& shifted_samples,
+    const std::vector<std::vector<double>>& autocorrelation_candidates,
+    unsigned order,
+    unsigned wasted_bits,
+    unsigned effective_bits_per_sample,
+    unsigned lpc_coefficient_precision,
+    unsigned max_rice_partition_order,
+    LpcRiceSubframe& best)
+{
+    for (const auto& autoc : autocorrelation_candidates) {
+        auto coefficients = levinson_durbin_coefficients(autoc, order);
+        if (coefficients.size() != order) {
+            continue;
+        }
+
+        auto quantized_candidates = quantize_lpc_coefficients(
+            coefficients, lpc_coefficient_precision);
+        if (quantized_candidates.empty()) {
+            continue;
+        }
+
+        for (const auto& quantized : quantized_candidates) {
+            if (quantized.coefficients.size() != order ||
+                quantized.quantization_shift < 0 ||
+                quantized.quantization_shift > 15) {
+                continue;
+            }
+
+            auto residuals = lpc_residuals(
+                shifted_samples, quantized.coefficients, order,
+                quantized.quantization_shift);
+            for (unsigned partition_order = 0; partition_order <= max_rice_partition_order; ++partition_order) {
+                if (!valid_partition_order(shifted_samples.size(), order, partition_order)) {
+                    continue;
+                }
+
+                const auto partition_count = std::size_t {1} << partition_order;
+                std::vector<unsigned> rice_parameters;
+                rice_parameters.reserve(partition_count);
+                std::size_t residual_offset = 0;
+                for (std::size_t partition = 0; partition < partition_count; ++partition) {
+                    const auto residual_count = partition_residual_count(
+                        shifted_samples.size(), order, partition_order, partition);
+                    rice_parameters.push_back(choose_rice_parameter(
+                        residuals, residual_offset, residual_count));
+                    residual_offset += residual_count;
+                }
+                if (residual_offset != residuals.size()) {
+                    throw std::runtime_error("internal FLAC LPC residual partition accounting error");
+                }
+
+                const auto bits = lpc_rice_subframe_bits(
+                    order, partition_order, wasted_bits, lpc_coefficient_precision,
+                    rice_parameters, residuals, shifted_samples.size(),
+                    effective_bits_per_sample);
+                if (bits < best.bits) {
+                    best.order = order;
+                    best.partition_order = partition_order;
+                    best.wasted_bits = wasted_bits;
+                    best.effective_bits_per_sample = effective_bits_per_sample;
+                    best.coefficient_precision = lpc_coefficient_precision;
+                    best.quantization_shift = quantized.quantization_shift;
+                    best.shifted_samples = shifted_samples;
+                    best.coefficients = quantized.coefficients;
+                    best.rice_parameters = std::move(rice_parameters);
+                    best.residuals = residuals;
+                    best.bits = bits;
+                }
+            }
+        }
+    }
+}
+
+LpcRiceSubframe choose_lpc_rice_subframe_for_order(
+    const std::vector<std::int32_t>& samples,
+    unsigned bits_per_sample,
+    unsigned lpc_order,
+    unsigned lpc_coefficient_precision,
+    unsigned max_rice_partition_order)
+{
+    max_rice_partition_order = checked_max_rice_partition_order(max_rice_partition_order);
+    if (lpc_coefficient_precision == 0 || lpc_coefficient_precision > 15) {
+        throw std::runtime_error("native FLAC LPC coefficient precision must be 1..15");
+    }
+
+    LpcRiceSubframe best;
+    best.bits = std::numeric_limits<std::uint64_t>::max();
+    if (samples.size() < kMinLpcBlockSize || lpc_order == 0 ||
+        lpc_order > kMaxLpcOrder || lpc_order >= samples.size()) {
+        return best;
+    }
+
+    const auto wasted_bits = common_wasted_bits(samples, bits_per_sample);
+    auto shifted_samples = shift_samples(samples, wasted_bits);
+    const auto effective_bits_per_sample = bits_per_sample - wasted_bits;
+    std::vector<std::vector<double>> autocorrelation_candidates;
+    autocorrelation_candidates.reserve(2);
+    autocorrelation_candidates.push_back(autocorrelation(shifted_samples, lpc_order));
+    autocorrelation_candidates.push_back(
+        autocorrelation(tukey_windowed_samples(shifted_samples, 0.5), lpc_order));
+    consider_lpc_rice_order(shifted_samples, autocorrelation_candidates, lpc_order,
+        wasted_bits, effective_bits_per_sample, lpc_coefficient_precision,
+        max_rice_partition_order, best);
+    return best;
+}
+
 LpcRiceSubframe choose_lpc_rice_subframe(
     const std::vector<std::int32_t>& samples,
     unsigned bits_per_sample,
@@ -859,69 +966,10 @@ LpcRiceSubframe choose_lpc_rice_subframe(
         autocorrelation(tukey_windowed_samples(shifted_samples, 0.5),
             static_cast<unsigned>(max_order)));
 
-    for (const auto& autoc : autocorrelation_candidates) {
-        for (unsigned order = 1; order <= max_order; ++order) {
-            auto coefficients = levinson_durbin_coefficients(autoc, order);
-            if (coefficients.size() != order) {
-                continue;
-            }
-
-            auto quantized_candidates = quantize_lpc_coefficients(
-                coefficients, lpc_coefficient_precision);
-            if (quantized_candidates.empty()) {
-                continue;
-            }
-
-            for (const auto& quantized : quantized_candidates) {
-                if (quantized.coefficients.size() != order ||
-                    quantized.quantization_shift < 0 ||
-                    quantized.quantization_shift > 15) {
-                    continue;
-                }
-
-                auto residuals = lpc_residuals(
-                    shifted_samples, quantized.coefficients, order,
-                    quantized.quantization_shift);
-                for (unsigned partition_order = 0; partition_order <= max_rice_partition_order; ++partition_order) {
-                    if (!valid_partition_order(shifted_samples.size(), order, partition_order)) {
-                        continue;
-                    }
-
-                    const auto partition_count = std::size_t {1} << partition_order;
-                    std::vector<unsigned> rice_parameters;
-                    rice_parameters.reserve(partition_count);
-                    std::size_t residual_offset = 0;
-                    for (std::size_t partition = 0; partition < partition_count; ++partition) {
-                        const auto residual_count = partition_residual_count(
-                            shifted_samples.size(), order, partition_order, partition);
-                        rice_parameters.push_back(choose_rice_parameter(
-                            residuals, residual_offset, residual_count));
-                        residual_offset += residual_count;
-                    }
-                    if (residual_offset != residuals.size()) {
-                        throw std::runtime_error("internal FLAC LPC residual partition accounting error");
-                    }
-
-                    const auto bits = lpc_rice_subframe_bits(
-                        order, partition_order, wasted_bits, lpc_coefficient_precision,
-                        rice_parameters, residuals, shifted_samples.size(),
-                        effective_bits_per_sample);
-                    if (bits < best.bits) {
-                        best.order = order;
-                        best.partition_order = partition_order;
-                        best.wasted_bits = wasted_bits;
-                        best.effective_bits_per_sample = effective_bits_per_sample;
-                        best.coefficient_precision = lpc_coefficient_precision;
-                        best.quantization_shift = quantized.quantization_shift;
-                        best.shifted_samples = shifted_samples;
-                        best.coefficients = quantized.coefficients;
-                        best.rice_parameters = std::move(rice_parameters);
-                        best.residuals = residuals;
-                        best.bits = bits;
-                    }
-                }
-            }
-        }
+    for (unsigned order = 1; order <= max_order; ++order) {
+        consider_lpc_rice_order(shifted_samples, autocorrelation_candidates, order,
+            wasted_bits, effective_bits_per_sample, lpc_coefficient_precision,
+            max_rice_partition_order, best);
     }
 
     return best;
@@ -1153,6 +1201,68 @@ FlacSubframeDecision analyze_mono_best_frame(
         return fixed_rice_decision(fixed);
     }
     return verbatim_decision(samples.size(), info.bits_per_sample, wasted_bits);
+}
+
+std::optional<FlacLpcSubframeAnalysis> analyze_mono_lpc_frame(
+    const std::vector<std::int32_t>& samples,
+    const FlacFrameInfo& info)
+{
+    if (samples.empty()) {
+        throw std::runtime_error("cannot analyze an empty FLAC frame");
+    }
+    for (const auto sample : samples) {
+        validate_sample(sample, info.bits_per_sample);
+    }
+
+    const auto lpc = choose_lpc_rice_subframe(
+        samples, info.bits_per_sample, info.max_lpc_order,
+        info.lpc_coefficient_precision, info.max_rice_partition_order);
+    if (lpc.bits == std::numeric_limits<std::uint64_t>::max()) {
+        return std::nullopt;
+    }
+
+    return FlacLpcSubframeAnalysis {
+        .order = lpc.order,
+        .rice_partition_order = lpc.partition_order,
+        .wasted_bits = lpc.wasted_bits,
+        .coefficient_precision = lpc.coefficient_precision,
+        .quantization_shift = lpc.quantization_shift,
+        .coefficients = lpc.coefficients,
+        .estimated_bits = lpc.bits,
+    };
+}
+
+std::optional<FlacLpcSubframeAnalysis> analyze_mono_lpc_order(
+    const std::vector<std::int32_t>& samples,
+    const FlacFrameInfo& info,
+    unsigned lpc_order)
+{
+    if (samples.empty()) {
+        throw std::runtime_error("cannot analyze an empty FLAC frame");
+    }
+    for (const auto sample : samples) {
+        validate_sample(sample, info.bits_per_sample);
+    }
+    if (lpc_order > info.max_lpc_order) {
+        return std::nullopt;
+    }
+
+    const auto lpc = choose_lpc_rice_subframe_for_order(
+        samples, info.bits_per_sample, lpc_order,
+        info.lpc_coefficient_precision, info.max_rice_partition_order);
+    if (lpc.bits == std::numeric_limits<std::uint64_t>::max()) {
+        return std::nullopt;
+    }
+
+    return FlacLpcSubframeAnalysis {
+        .order = lpc.order,
+        .rice_partition_order = lpc.partition_order,
+        .wasted_bits = lpc.wasted_bits,
+        .coefficient_precision = lpc.coefficient_precision,
+        .quantization_shift = lpc.quantization_shift,
+        .coefficients = lpc.coefficients,
+        .estimated_bits = lpc.bits,
+    };
 }
 
 FlacSubframeDecision write_mono_verbatim_frame(

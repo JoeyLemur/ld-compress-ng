@@ -679,6 +679,61 @@ void test_native_subframe_analysis_matches_writer()
     std::filesystem::remove_all(temp_dir);
 }
 
+void test_native_lpc_analysis_surface()
+{
+    const auto samples = make_lpc_friendly_samples();
+    const auto frame_info = make_frame_info(12, 12, 5);
+    const auto lpc = ldcompress::analyze_mono_lpc_frame(samples, frame_info);
+    require(lpc.has_value(), "native LPC analysis did not return an LPC candidate");
+
+    const auto decision = ldcompress::analyze_mono_best_frame(samples, frame_info);
+    require(decision.kind == ldcompress::FlacSubframeKind::LpcRice,
+        "native best analysis did not choose LPC for LPC-friendly samples");
+    require(lpc->order == decision.lpc_order,
+        "native LPC analysis order did not match best-frame decision");
+    require(lpc->rice_partition_order == decision.rice_partition_order,
+        "native LPC analysis partition order did not match best-frame decision");
+    require(lpc->wasted_bits == decision.wasted_bits,
+        "native LPC analysis wasted bits did not match best-frame decision");
+    require(lpc->estimated_bits == decision.estimated_bits,
+        "native LPC analysis bit count did not match best-frame decision");
+    require(lpc->coefficient_precision == frame_info.lpc_coefficient_precision,
+        "native LPC analysis coefficient precision mismatch");
+    require(lpc->quantization_shift >= 0 && lpc->quantization_shift <= 15,
+        "native LPC analysis quantization shift out of range");
+    require(lpc->coefficients.size() == lpc->order,
+        "native LPC analysis coefficient count mismatch");
+    require(std::any_of(lpc->coefficients.begin(), lpc->coefficients.end(), [](std::int32_t value) {
+        return value != 0;
+    }), "native LPC analysis returned all-zero coefficients");
+
+    const auto per_order = ldcompress::analyze_mono_lpc_order(samples, frame_info, lpc->order);
+    require(per_order.has_value(), "native per-order LPC analysis did not return the winning order");
+    require(per_order->order == lpc->order,
+        "native per-order LPC analysis returned an unexpected order");
+    require(per_order->rice_partition_order == lpc->rice_partition_order,
+        "native per-order LPC analysis partition order mismatch");
+    require(per_order->wasted_bits == lpc->wasted_bits,
+        "native per-order LPC analysis wasted-bits mismatch");
+    require(per_order->coefficient_precision == lpc->coefficient_precision,
+        "native per-order LPC analysis coefficient precision mismatch");
+    require(per_order->quantization_shift == lpc->quantization_shift,
+        "native per-order LPC analysis quantization shift mismatch");
+    require(per_order->coefficients == lpc->coefficients,
+        "native per-order LPC analysis coefficient vector mismatch");
+    require(per_order->estimated_bits == lpc->estimated_bits,
+        "native per-order LPC analysis bit count mismatch");
+
+    auto disabled_info = frame_info;
+    disabled_info.max_lpc_order = 0;
+    require(!ldcompress::analyze_mono_lpc_frame(samples, disabled_info).has_value(),
+        "native LPC analysis returned a candidate when LPC order was disabled");
+    require(!ldcompress::analyze_mono_lpc_order(samples, disabled_info, 1).has_value(),
+        "native per-order LPC analysis returned a candidate when LPC order was disabled");
+    require(!ldcompress::analyze_mono_lpc_frame(make_samples(), frame_info).has_value(),
+        "native LPC analysis returned a candidate for a too-small block");
+}
+
 void test_native_streaminfo_and_frame_header_contract()
 {
     const auto temp_dir = std::filesystem::temp_directory_path() /
@@ -825,6 +880,7 @@ int main()
         test_native_lpc_precision_limit();
         test_native_best_subframe_selection();
         test_native_subframe_analysis_matches_writer();
+        test_native_lpc_analysis_surface();
         test_native_streaminfo_and_frame_header_contract();
         test_native_streaminfo_md5_mismatch_is_rejected();
         test_native_streaminfo_total_samples_mismatch_is_rejected();

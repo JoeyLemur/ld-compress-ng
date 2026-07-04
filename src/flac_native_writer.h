@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <iosfwd>
+#include <optional>
 #include <vector>
 
 namespace ldcompress {
@@ -44,11 +45,30 @@ struct FlacSubframeDecision {
     std::uint64_t estimated_bits = 0;
 };
 
+struct FlacLpcSubframeAnalysis {
+    unsigned order = 0;
+    unsigned rice_partition_order = 0;
+    unsigned wasted_bits = 0;
+    unsigned coefficient_precision = 0;
+    int quantization_shift = 0;
+    std::vector<std::int32_t> coefficients;
+    std::uint64_t estimated_bits = 0;
+};
+
 void write_native_flac_streaminfo(std::ostream& output, const FlacStreamInfo& info);
 
 FlacSubframeDecision analyze_mono_best_frame(
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& info);
+
+std::optional<FlacLpcSubframeAnalysis> analyze_mono_lpc_frame(
+    const std::vector<std::int32_t>& samples,
+    const FlacFrameInfo& info);
+
+std::optional<FlacLpcSubframeAnalysis> analyze_mono_lpc_order(
+    const std::vector<std::int32_t>& samples,
+    const FlacFrameInfo& info,
+    unsigned lpc_order);
 
 FlacSubframeDecision write_mono_verbatim_frame(
     std::ostream& output,
