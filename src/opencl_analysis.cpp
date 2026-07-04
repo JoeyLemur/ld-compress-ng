@@ -357,6 +357,91 @@ void validate_lpc_generation_inputs(
     }
 }
 
+std::size_t validate_generated_analysis_inputs(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    unsigned lpc_coefficient_precision)
+{
+    const auto frame_count = mono_plan_frame_count(plan);
+    if (frame_count == 0) {
+        throw std::runtime_error("OpenCL mono generated analysis has no frames");
+    }
+    if (lpc_coefficient_precision == 0 || lpc_coefficient_precision > 15) {
+        throw std::runtime_error("OpenCL mono generated analysis coefficient precision must be 1..15");
+    }
+
+    std::optional<std::size_t> lpc_tasks_per_frame;
+    std::optional<std::int32_t> blocksize;
+    for (std::size_t frame = 0; frame < frame_count; ++frame) {
+        const auto task_base = frame * plan.residual_tasks_per_frame;
+        std::size_t frame_lpc_tasks = 0;
+        while (frame_lpc_tasks < plan.residual_tasks_per_frame &&
+            plan.residual_tasks[task_base + frame_lpc_tasks].data.type == kFlacClSubframeLpc) {
+            ++frame_lpc_tasks;
+        }
+
+        if (frame_lpc_tasks == 0) {
+            throw std::runtime_error("OpenCL mono generated analysis requires an LPC task prefix");
+        }
+        if (frame_lpc_tasks > kFlacClMaxOrder) {
+            throw std::runtime_error("OpenCL mono generated analysis has too many LPC tasks per frame");
+        }
+        if (!lpc_tasks_per_frame.has_value()) {
+            lpc_tasks_per_frame = frame_lpc_tasks;
+        } else if (*lpc_tasks_per_frame != frame_lpc_tasks) {
+            throw std::runtime_error("OpenCL mono generated analysis LPC prefix differs by frame");
+        }
+
+        for (std::size_t i = 0; i < plan.residual_tasks_per_frame; ++i) {
+            const auto& task = plan.residual_tasks[task_base + i];
+            if (task.data.obits != static_cast<std::int32_t>(kOpenClAnalysisBitsPerSample)) {
+                throw std::runtime_error("OpenCL mono generated analysis currently supports 16-bit tasks only");
+            }
+            if (task.data.blocksize <= 0 ||
+                static_cast<std::size_t>(task.data.blocksize) > kOpenClAnalysisMaxBlockSize) {
+                throw std::runtime_error("OpenCL mono generated analysis block size is unsupported");
+            }
+            if (task.data.samplesOffs < 0 ||
+                static_cast<std::size_t>(task.data.samplesOffs) > samples.size() ||
+                static_cast<std::size_t>(task.data.blocksize) >
+                    samples.size() - static_cast<std::size_t>(task.data.samplesOffs)) {
+                throw std::runtime_error("OpenCL mono generated analysis task samples are out of range");
+            }
+            if (!blocksize.has_value()) {
+                blocksize = task.data.blocksize;
+            } else if (*blocksize != task.data.blocksize) {
+                throw std::runtime_error("OpenCL mono generated analysis requires one block size per launch");
+            }
+
+            if (i < frame_lpc_tasks) {
+                if (task.data.type != kFlacClSubframeLpc ||
+                    task.data.residualOrder != static_cast<std::int32_t>(i + 1U)) {
+                    throw std::runtime_error("OpenCL mono generated analysis LPC prefix is not sequential");
+                }
+                if (task.data.residualOrder >= task.data.blocksize) {
+                    throw std::runtime_error("OpenCL mono generated analysis LPC order exceeds block size");
+                }
+            } else if (task.data.type == kFlacClSubframeLpc) {
+                throw std::runtime_error("OpenCL mono generated analysis received non-prefix LPC task");
+            } else if (task.data.type == kFlacClSubframeFixed) {
+                if (task.data.residualOrder < 0 || task.data.residualOrder > 4) {
+                    throw std::runtime_error("OpenCL mono generated analysis received invalid fixed order");
+                }
+                if (task.data.residualOrder >= task.data.blocksize) {
+                    throw std::runtime_error("OpenCL mono generated analysis fixed order exceeds block size");
+                }
+                if (task.data.shift < 0 || task.data.shift > 30) {
+                    throw std::runtime_error("OpenCL mono generated analysis fixed task shift is unsupported");
+                }
+            } else if (task.data.type != kFlacClSubframeConstant) {
+                throw std::runtime_error("OpenCL mono generated analysis received unsupported task type");
+            }
+        }
+    }
+
+    return *lpc_tasks_per_frame;
+}
+
 void validate_sample_range(std::int32_t sample, unsigned bits_per_sample)
 {
     const auto min_value = -(std::int64_t {1} << (bits_per_sample - 1U));
@@ -2154,17 +2239,21 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_analysis(
 #endif
 }
 
-OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_generated_analysis(
+#if LDCOMPRESS_HAVE_OPENCL
+OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_impl(
     const std::vector<std::int32_t>& samples,
     const OpenClMonoAnalysisTaskPlan& plan,
     std::optional<std::size_t> requested_device_index,
     unsigned lpc_coefficient_precision,
-    unsigned max_rice_partition_order)
+    unsigned max_rice_partition_order,
+    std::size_t lpc_tasks_per_frame)
 {
-#if LDCOMPRESS_HAVE_OPENCL
-    validate_lpc_generation_inputs(samples, plan, lpc_coefficient_precision);
+    if (lpc_tasks_per_frame == 0 || lpc_tasks_per_frame > kFlacClMaxOrder ||
+        lpc_tasks_per_frame > plan.residual_tasks_per_frame) {
+        throw std::runtime_error("OpenCL generated analysis LPC task count is invalid");
+    }
     if (max_rice_partition_order > kExactMaxRicePartitionOrder) {
-        throw std::runtime_error("OpenCL generated LPC analysis max Rice partition order must be 0..8");
+        throw std::runtime_error("OpenCL generated analysis max Rice partition order must be 0..8");
     }
 
     const auto selected_device = choose_opencl_device(requested_device_index);
@@ -2318,7 +2407,7 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_generated_analysis(
         "clEnqueueNDRangeKernel(ldcompressComputeLpc)");
 
     const auto lpc_tasks_per_window =
-        static_cast<std::int32_t>(plan.residual_tasks_per_frame);
+        static_cast<std::int32_t>(lpc_tasks_per_frame);
     const auto lpc_coefficient_precision_arg =
         static_cast<std::int32_t>(lpc_coefficient_precision);
     require_cl(clSetKernelArg(quantize_kernel.get(), 0, sizeof(tasks_mem), &tasks_mem),
@@ -2384,6 +2473,52 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_generated_analysis(
         .best_tasks = std::move(best_tasks),
         .device_name = selected_device.name,
     };
+}
+#endif
+
+OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_generated_analysis(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    std::optional<std::size_t> requested_device_index,
+    unsigned lpc_coefficient_precision,
+    unsigned max_rice_partition_order)
+{
+#if LDCOMPRESS_HAVE_OPENCL
+    validate_lpc_generation_inputs(samples, plan, lpc_coefficient_precision);
+    return run_opencl_mono_generated_analysis_impl(
+        samples,
+        plan,
+        requested_device_index,
+        lpc_coefficient_precision,
+        max_rice_partition_order,
+        plan.residual_tasks_per_frame);
+#else
+    (void)samples;
+    (void)plan;
+    (void)requested_device_index;
+    (void)lpc_coefficient_precision;
+    (void)max_rice_partition_order;
+    throw std::runtime_error("OpenCL support was not built");
+#endif
+}
+
+OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    std::optional<std::size_t> requested_device_index,
+    unsigned lpc_coefficient_precision,
+    unsigned max_rice_partition_order)
+{
+#if LDCOMPRESS_HAVE_OPENCL
+    const auto lpc_tasks_per_frame =
+        validate_generated_analysis_inputs(samples, plan, lpc_coefficient_precision);
+    return run_opencl_mono_generated_analysis_impl(
+        samples,
+        plan,
+        requested_device_index,
+        lpc_coefficient_precision,
+        max_rice_partition_order,
+        lpc_tasks_per_frame);
 #else
     (void)samples;
     (void)plan;

@@ -351,6 +351,33 @@ generated_lpc_coefficients(
     return lpcs;
 }
 
+std::size_t generated_lpc_prefix_task_count(
+    const ldcompress::opencl_detail::OpenClMonoAnalysisTaskPlan& plan,
+    std::size_t frame)
+{
+    using namespace ldcompress::opencl_detail;
+
+    require(plan.residual_tasks_per_frame > 0,
+        "generated LPC oracle requires residual tasks");
+    require(plan.residual_tasks.size() % plan.residual_tasks_per_frame == 0,
+        "generated LPC oracle task count is not frame-aligned");
+
+    const auto frame_base = frame * plan.residual_tasks_per_frame;
+    require(frame_base < plan.residual_tasks.size(),
+        "generated LPC oracle frame is out of range");
+
+    std::size_t count = 0;
+    while (count < plan.residual_tasks_per_frame &&
+        plan.residual_tasks[frame_base + count].data.type == kFlacClSubframeLpc) {
+        ++count;
+    }
+    require(count > 0,
+        "generated LPC oracle requires an LPC task prefix");
+    require(count <= kFlacClMaxOrder,
+        "generated LPC oracle task group exceeds FLACCL max order");
+    return count;
+}
+
 std::vector<ldcompress::opencl_detail::FlacClSubframeTask> make_generated_lpc_oracle_tasks(
     const std::vector<std::int32_t>& samples,
     const ldcompress::opencl_detail::OpenClMonoAnalysisTaskPlan& plan,
@@ -360,8 +387,6 @@ std::vector<ldcompress::opencl_detail::FlacClSubframeTask> make_generated_lpc_or
 
     require(plan.residual_tasks_per_frame > 0,
         "generated LPC oracle requires residual tasks");
-    require(plan.residual_tasks_per_frame <= kFlacClMaxOrder,
-        "generated LPC oracle task group exceeds FLACCL max order");
     require(plan.residual_tasks.size() % plan.residual_tasks_per_frame == 0,
         "generated LPC oracle task count is not frame-aligned");
 
@@ -372,10 +397,11 @@ std::vector<ldcompress::opencl_detail::FlacClSubframeTask> make_generated_lpc_or
 
     for (std::size_t frame = 0; frame < frame_count; ++frame) {
         const auto frame_base = frame * plan.residual_tasks_per_frame;
+        const auto lpc_tasks_per_frame = generated_lpc_prefix_task_count(plan, frame);
         const auto autocor = generated_lpc_autocorrelation(samples, tasks[frame_base]);
         const auto lpcs = generated_lpc_coefficients(autocor);
 
-        for (std::size_t slot = 0; slot < plan.residual_tasks_per_frame; ++slot) {
+        for (std::size_t slot = 0; slot < lpc_tasks_per_frame; ++slot) {
             const auto order = slot + 1U;
             auto& task = tasks[frame_base + slot];
 
@@ -459,6 +485,21 @@ void require_generated_lpc_fields_match(
         if (absolute_difference > max_difference) {
             fail("coefs[" + std::to_string(i) + "]", actual.coefs[i], expected.coefs[i]);
         }
+    }
+}
+
+void require_static_task_fields_match(
+    const ldcompress::opencl_detail::FlacClSubframeTask& actual,
+    const ldcompress::opencl_detail::FlacClSubframeTask& expected,
+    const char* label)
+{
+    require(actual.data.type == expected.data.type, label);
+    require(actual.data.residualOrder == expected.data.residualOrder, label);
+    require(actual.data.samplesOffs == expected.data.samplesOffs, label);
+    require(actual.data.shift == expected.data.shift, label);
+    require(actual.data.cbits == expected.data.cbits, label);
+    for (std::size_t i = 0; i < ldcompress::opencl_detail::kFlacClMaxOrder; ++i) {
+        require(actual.coefs[i] == expected.coefs[i], label);
     }
 }
 
@@ -1130,6 +1171,93 @@ void test_opencl_fixed_constant_analysis_smoke()
         "OpenCL exact partition search did not improve fixed task size");
 }
 
+void test_opencl_mixed_generated_analysis_smoke()
+{
+    using namespace ldcompress::opencl_detail;
+
+    if (!ldcompress::opencl_support_built()) {
+        std::cout << "OpenCL mixed generated analysis smoke skipped: OpenCL support was not built\n";
+        return;
+    }
+
+    const auto device_index = first_available_opencl_device_index();
+    if (!device_index.has_value()) {
+        std::cout << "OpenCL mixed generated analysis smoke skipped: no available OpenCL device\n";
+        return;
+    }
+
+    OpenClMonoAnalysisTaskOptions options;
+    options.frame_samples = 512;
+    options.max_lpc_order = 12;
+    options.include_constant = true;
+    options.min_fixed_order = 0;
+    options.max_fixed_order = 4;
+
+    std::vector<std::int32_t> samples;
+    samples.reserve(1536);
+    for (int i = 0; i < 512; ++i) {
+        samples.push_back(2048);
+    }
+    for (int i = 0; i < 512; ++i) {
+        samples.push_back(i * 64);
+    }
+    const auto lpc_samples = make_lpc_friendly_samples();
+    samples.insert(samples.end(), lpc_samples.begin(), lpc_samples.end());
+
+    const auto tasks_per_frame = mono_analysis_tasks_per_frame(options);
+    require(tasks_per_frame == 18,
+        "unexpected mixed generated task count");
+    const auto plan = build_mono_analysis_task_plan(3, options);
+    const auto generated_tasks = make_generated_lpc_oracle_tasks(samples, plan, 12);
+
+    const auto result =
+        run_opencl_mono_generated_analysis(samples, plan, device_index, 12, 5);
+    require(!result.device_name.empty(),
+        "OpenCL mixed generated result did not report a device");
+    require(result.analyzed_tasks.size() == plan.residual_tasks.size(),
+        "OpenCL mixed generated analyzed task count mismatch");
+    require(result.best_tasks.size() == 3,
+        "OpenCL mixed generated best task count mismatch");
+
+    for (std::size_t frame = 0; frame < 3; ++frame) {
+        const auto frame_base = frame * tasks_per_frame;
+        for (std::size_t slot = 0; slot < tasks_per_frame; ++slot) {
+            const auto task_index = frame_base + slot;
+            const auto& task = result.analyzed_tasks[task_index];
+            require(task.data.size > 0,
+                "OpenCL mixed generated exact size was not populated");
+            require(task.data.porder >= 0 && task.data.porder <= 5,
+                "OpenCL mixed generated partition order out of range");
+            if (slot < options.max_lpc_order) {
+                require_generated_lpc_fields_match(task, generated_tasks[task_index],
+                    "OpenCL mixed generated LPC fields diverged from scalar oracle");
+                require_lpc_coefficients_fit_precision(task,
+                    "OpenCL mixed generated LPC coefficient does not fit precision");
+            } else {
+                require_static_task_fields_match(task, plan.residual_tasks[task_index],
+                    "OpenCL mixed generated non-LPC task fields changed during generation");
+            }
+        }
+
+        auto best_size = result.analyzed_tasks[frame_base].data.size;
+        for (std::size_t slot = 1; slot < tasks_per_frame; ++slot) {
+            best_size = std::min(best_size,
+                result.analyzed_tasks[frame_base + slot].data.size);
+        }
+        require(result.best_tasks[frame].data.size == best_size,
+            "OpenCL mixed generated best task did not choose the smallest exact size");
+    }
+
+    require(result.best_tasks[0].data.type == kFlacClSubframeConstant,
+        "OpenCL mixed generated constant frame did not choose constant");
+    require(result.best_tasks[1].data.type == kFlacClSubframeFixed,
+        "OpenCL mixed generated linear frame did not choose fixed");
+    require(result.best_tasks[1].data.residualOrder == 2,
+        "OpenCL mixed generated linear frame did not choose fixed order 2");
+    require(result.best_tasks[2].data.type == kFlacClSubframeLpc,
+        "OpenCL mixed generated LPC frame did not choose LPC");
+}
+
 void test_opencl_lpc_analysis_smoke()
 {
     using namespace ldcompress::opencl_detail;
@@ -1347,6 +1475,7 @@ int main()
         test_opencl_lpc_analysis_input_validation();
         test_opencl_best_method_smoke();
         test_opencl_fixed_constant_analysis_smoke();
+        test_opencl_mixed_generated_analysis_smoke();
         test_opencl_lpc_analysis_smoke();
         test_opencl_lpc_multi_order_analysis_smoke();
         test_opencl_lpc_generated_analysis_smoke();

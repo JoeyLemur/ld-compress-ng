@@ -101,6 +101,9 @@ Implemented:
 - Device-free scalar generated-LPC task oracle for the current one-window
   OpenCL path, plus hardware-optional validation of generated order, shift,
   coefficient precision, coefficient ordering, and exact-analysis stability.
+- Hardware-optional mixed OpenCL generated analysis for encoder-shaped mono
+  task groups, combining generated LPC orders with constant and fixed
+  candidates before exact Rice analysis and best-method selection.
 - Linux OpenCL validation on `smaug`, Debian 13-era amd64 kernel
   `6.12.94+deb13-amd64`, NVIDIA OpenCL 3.0 CUDA runtime. The OpenCL analysis
   smoke tests compiled and ran on an RTX 4070 SUPER / RTX 5070 Ti host, and the

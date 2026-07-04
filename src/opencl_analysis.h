@@ -103,6 +103,13 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_generated_analysis(
     unsigned lpc_coefficient_precision = 12,
     unsigned max_rice_partition_order = 5);
 
+OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    std::optional<std::size_t> requested_device_index = std::nullopt,
+    unsigned lpc_coefficient_precision = 12,
+    unsigned max_rice_partition_order = 5);
+
 OpenClMonoFixedConstantAnalysisResult analyze_mono_fixed_constant_exact(
     const std::vector<std::int32_t>& samples,
     const OpenClMonoAnalysisTaskPlan& plan,
