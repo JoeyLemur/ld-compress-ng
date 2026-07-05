@@ -103,6 +103,9 @@ Implemented:
 - Hardware-optional mixed OpenCL generated analysis for encoder-shaped mono
   task groups, combining generated LPC orders with constant and fixed
   candidates before exact Rice analysis and best-method selection.
+- OpenCL generated LPC analysis for encoder-shaped task groups now evaluates
+  both rectangular and Tukey-windowed autocorrelation candidates, matching the
+  scalar native analyzer's first window-family split before exact Rice costing.
 - Encoder-facing OpenCL generated frame analysis wrapper that builds mixed
   mono task plans from frame samples and maps best FLACCL tasks to native
   `FlacSubframeDecision` records for future writer integration.
