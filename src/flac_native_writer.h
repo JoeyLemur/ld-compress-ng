@@ -36,6 +36,17 @@ enum class FlacSubframeKind {
     LpcRice,
 };
 
+enum class FlacLpcWindowKind {
+    Rectangular,
+    Tukey,
+    Welch,
+};
+
+enum class FlacLpcQuantizationKind {
+    Independent,
+    ErrorFeedback,
+};
+
 struct FlacSubframeDecision {
     FlacSubframeKind kind = FlacSubframeKind::Verbatim;
     unsigned fixed_order = 0;
@@ -51,6 +62,8 @@ struct FlacLpcSubframeAnalysis {
     unsigned wasted_bits = 0;
     unsigned coefficient_precision = 0;
     int quantization_shift = 0;
+    FlacLpcWindowKind window = FlacLpcWindowKind::Rectangular;
+    FlacLpcQuantizationKind quantization = FlacLpcQuantizationKind::Independent;
     std::vector<std::int32_t> coefficients;
     std::uint64_t estimated_bits = 0;
 };

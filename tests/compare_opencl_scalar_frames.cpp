@@ -42,8 +42,17 @@ struct DecisionView {
     unsigned wasted_bits = 0;
     unsigned coefficient_precision = 0;
     int quantization_shift = 0;
+    std::string lpc_window;
+    std::string lpc_quantization;
+    std::optional<std::size_t> opencl_task_slot;
     std::uint64_t estimated_bits = 0;
     std::vector<std::int32_t> coefficients;
+};
+
+struct OpenClLpcTaskShape {
+    std::size_t tasks_per_frame = 0;
+    std::size_t lpc_tasks_per_window = 0;
+    std::size_t total_lpc_tasks = 0;
 };
 
 void usage()
@@ -213,6 +222,139 @@ const char* kind_name(ldcompress::FlacSubframeKind kind)
     return "unknown";
 }
 
+const char* lpc_window_name(ldcompress::FlacLpcWindowKind window)
+{
+    switch (window) {
+    case ldcompress::FlacLpcWindowKind::Rectangular:
+        return "rectangular";
+    case ldcompress::FlacLpcWindowKind::Tukey:
+        return "tukey";
+    case ldcompress::FlacLpcWindowKind::Welch:
+        return "welch";
+    }
+    return "unknown";
+}
+
+const char* lpc_quantization_name(ldcompress::FlacLpcQuantizationKind quantization)
+{
+    switch (quantization) {
+    case ldcompress::FlacLpcQuantizationKind::Independent:
+        return "independent";
+    case ldcompress::FlacLpcQuantizationKind::ErrorFeedback:
+        return "error_feedback";
+    }
+    return "unknown";
+}
+
+std::string optional_slot_text(std::optional<std::size_t> slot)
+{
+    return slot.has_value() ? std::to_string(*slot) : std::string {};
+}
+
+ldcompress::opencl_detail::OpenClMonoAnalysisTaskOptions make_opencl_task_options(
+    const Options& options)
+{
+    ldcompress::opencl_detail::OpenClMonoAnalysisTaskOptions task_options;
+    task_options.frame_samples = options.frame_samples;
+    task_options.bits_per_sample = 16;
+    task_options.max_lpc_order = options.max_lpc_order;
+    task_options.min_fixed_order = 0;
+    task_options.max_fixed_order = 4;
+    task_options.include_constant = true;
+    return task_options;
+}
+
+OpenClLpcTaskShape opencl_lpc_task_shape(const Options& options)
+{
+    const auto plan = ldcompress::opencl_detail::build_mono_analysis_task_plan(
+        1, make_opencl_task_options(options));
+    OpenClLpcTaskShape shape {
+        .tasks_per_frame = plan.residual_tasks_per_frame,
+        .lpc_tasks_per_window = 0,
+        .total_lpc_tasks = 0,
+    };
+
+    while (shape.total_lpc_tasks < plan.residual_tasks_per_frame &&
+        plan.residual_tasks[shape.total_lpc_tasks].data.type ==
+            ldcompress::opencl_detail::kFlacClSubframeLpc) {
+        ++shape.total_lpc_tasks;
+    }
+    while (shape.lpc_tasks_per_window < shape.total_lpc_tasks &&
+        plan.residual_tasks[shape.lpc_tasks_per_window].data.residualOrder ==
+            static_cast<std::int32_t>(shape.lpc_tasks_per_window + 1U)) {
+        ++shape.lpc_tasks_per_window;
+    }
+    if (shape.tasks_per_frame == 0 || shape.total_lpc_tasks == 0 ||
+        shape.lpc_tasks_per_window == 0) {
+        throw std::runtime_error("could not derive OpenCL generated-LPC task shape");
+    }
+    return shape;
+}
+
+bool same_flaccl_task_data(
+    const ldcompress::opencl_detail::FlacClSubframeData& lhs,
+    const ldcompress::opencl_detail::FlacClSubframeData& rhs)
+{
+    return lhs.residualOrder == rhs.residualOrder &&
+        lhs.samplesOffs == rhs.samplesOffs &&
+        lhs.shift == rhs.shift &&
+        lhs.cbits == rhs.cbits &&
+        lhs.size == rhs.size &&
+        lhs.type == rhs.type &&
+        lhs.obits == rhs.obits &&
+        lhs.blocksize == rhs.blocksize &&
+        lhs.coding_method == rhs.coding_method &&
+        lhs.channel == rhs.channel &&
+        lhs.residualOffs == rhs.residualOffs &&
+        lhs.wbits == rhs.wbits &&
+        lhs.abits == rhs.abits &&
+        lhs.porder == rhs.porder &&
+        lhs.headerLen == rhs.headerLen &&
+        lhs.encodingOffset == rhs.encodingOffset;
+}
+
+bool same_flaccl_task(
+    const ldcompress::opencl_detail::FlacClSubframeTask& lhs,
+    const ldcompress::opencl_detail::FlacClSubframeTask& rhs)
+{
+    return same_flaccl_task_data(lhs.data, rhs.data) && lhs.coefs == rhs.coefs;
+}
+
+std::optional<std::size_t> find_opencl_task_slot(
+    const std::vector<ldcompress::opencl_detail::FlacClSubframeTask>& analyzed_tasks,
+    const ldcompress::opencl_detail::FlacClSubframeTask& best_task,
+    std::size_t frame,
+    const OpenClLpcTaskShape& shape)
+{
+    const auto frame_base = frame * shape.tasks_per_frame;
+    if (frame_base + shape.tasks_per_frame > analyzed_tasks.size()) {
+        return std::nullopt;
+    }
+    for (std::size_t slot = 0; slot < shape.tasks_per_frame; ++slot) {
+        if (same_flaccl_task(analyzed_tasks[frame_base + slot], best_task)) {
+            return slot;
+        }
+    }
+    return std::nullopt;
+}
+
+std::string opencl_lpc_window_name(
+    std::optional<std::size_t> slot,
+    const OpenClLpcTaskShape& shape)
+{
+    if (!slot.has_value() || *slot >= shape.total_lpc_tasks) {
+        return {};
+    }
+    const auto window = *slot / shape.lpc_tasks_per_window;
+    if (window == 0) {
+        return "rectangular";
+    }
+    if (window == 1) {
+        return "tukey";
+    }
+    return "welch";
+}
+
 unsigned decision_order(const ldcompress::FlacSubframeDecision& decision)
 {
     switch (decision.kind) {
@@ -239,6 +381,9 @@ DecisionView make_scalar_view(
         .wasted_bits = decision.wasted_bits,
         .coefficient_precision = 0,
         .quantization_shift = 0,
+        .lpc_window = {},
+        .lpc_quantization = {},
+        .opencl_task_slot = std::nullopt,
         .estimated_bits = decision.estimated_bits,
         .coefficients = {},
     };
@@ -248,6 +393,8 @@ DecisionView make_scalar_view(
         if (lpc.has_value()) {
             view.coefficient_precision = lpc->coefficient_precision;
             view.quantization_shift = lpc->quantization_shift;
+            view.lpc_window = lpc_window_name(lpc->window);
+            view.lpc_quantization = lpc_quantization_name(lpc->quantization);
             view.coefficients = lpc->coefficients;
         }
     }
@@ -256,7 +403,9 @@ DecisionView make_scalar_view(
 
 DecisionView make_opencl_view(
     const ldcompress::FlacSubframeDecision& decision,
-    const ldcompress::FlacSelectedSubframe& selected)
+    const ldcompress::FlacSelectedSubframe& selected,
+    std::optional<std::size_t> task_slot,
+    const OpenClLpcTaskShape& shape)
 {
     return DecisionView {
         .kind = kind_name(decision.kind),
@@ -265,6 +414,11 @@ DecisionView make_opencl_view(
         .wasted_bits = decision.wasted_bits,
         .coefficient_precision = selected.coefficient_precision,
         .quantization_shift = selected.quantization_shift,
+        .lpc_window = opencl_lpc_window_name(task_slot, shape),
+        .lpc_quantization = decision.kind == ldcompress::FlacSubframeKind::LpcRice
+            ? "round_to_even"
+            : "",
+        .opencl_task_slot = task_slot,
         .estimated_bits = decision.estimated_bits,
         .coefficients = selected.coefficients,
     };
@@ -355,6 +509,8 @@ void print_row(
               << ',' << scalar.wasted_bits
               << ',' << scalar.coefficient_precision
               << ',' << scalar.quantization_shift
+              << ',' << scalar.lpc_window
+              << ',' << scalar.lpc_quantization
               << ',' << scalar.estimated_bits
               << ',' << opencl.kind
               << ',' << opencl.order
@@ -362,6 +518,9 @@ void print_row(
               << ',' << opencl.wasted_bits
               << ',' << opencl.coefficient_precision
               << ',' << opencl.quantization_shift
+              << ',' << opencl.lpc_window
+              << ',' << opencl.lpc_quantization
+              << ',' << optional_slot_text(opencl.opencl_task_slot)
               << ',' << opencl.estimated_bits
               << ',' << delta
               << ',' << opencl_recost_bits
@@ -417,8 +576,13 @@ int run(const Options& options)
 
     std::vector<ldcompress::FlacSubframeDecision> opencl_decisions;
     std::vector<ldcompress::FlacSelectedSubframe> opencl_selected;
+    std::vector<ldcompress::opencl_detail::FlacClSubframeTask> opencl_analyzed_tasks;
+    std::vector<ldcompress::opencl_detail::FlacClSubframeTask> opencl_best_tasks;
+    const auto opencl_shape = opencl_lpc_task_shape(options);
     opencl_decisions.reserve(frame_count);
     opencl_selected.reserve(frame_count);
+    opencl_analyzed_tasks.reserve(frame_count * opencl_shape.tasks_per_frame);
+    opencl_best_tasks.reserve(frame_count);
     for (std::size_t batch_frame = 0; batch_frame < frame_count;
          batch_frame += kOpenClBatchFrames) {
         const auto batch_count = std::min(kOpenClBatchFrames, frame_count - batch_frame);
@@ -433,7 +597,9 @@ int run(const Options& options)
         auto opencl_result = ldcompress::opencl_detail::analyze_opencl_mono_generated_frames(
             batch_samples, info, options.frame_samples, selected_device.flat_index);
         if (opencl_result.decisions.size() != batch_count ||
-            opencl_result.selected_subframes.size() != batch_count) {
+            opencl_result.selected_subframes.size() != batch_count ||
+            opencl_result.best_tasks.size() != batch_count ||
+            opencl_result.analyzed_tasks.size() != batch_count * opencl_shape.tasks_per_frame) {
             throw std::runtime_error("OpenCL result frame count did not match input batch");
         }
         opencl_decisions.insert(
@@ -444,14 +610,23 @@ int run(const Options& options)
             opencl_selected.end(),
             opencl_result.selected_subframes.begin(),
             opencl_result.selected_subframes.end());
+        opencl_analyzed_tasks.insert(
+            opencl_analyzed_tasks.end(),
+            opencl_result.analyzed_tasks.begin(),
+            opencl_result.analyzed_tasks.end());
+        opencl_best_tasks.insert(
+            opencl_best_tasks.end(),
+            opencl_result.best_tasks.begin(),
+            opencl_result.best_tasks.end());
     }
 
     std::cout
         << "frame,sample_offset,sample_count,"
         << "scalar_kind,scalar_order,scalar_partition,scalar_wasted,"
-        << "scalar_precision,scalar_shift,scalar_bits,"
+        << "scalar_precision,scalar_shift,scalar_window,scalar_quantization,scalar_bits,"
         << "opencl_kind,opencl_order,opencl_partition,opencl_wasted,"
-        << "opencl_precision,opencl_shift,opencl_bits,delta_bits,"
+        << "opencl_precision,opencl_shift,opencl_window,opencl_quantization,"
+        << "opencl_task_slot,opencl_bits,delta_bits,"
         << "opencl_recost_bits,opencl_recost_delta_bits,"
         << "coefficients_match,first_coefficient_mismatch,max_abs_coefficient_delta";
     if (options.show_coefficients) {
@@ -480,9 +655,13 @@ int run(const Options& options)
 
         const auto scalar_decision = ldcompress::analyze_mono_best_frame(frame_samples, info);
         const auto scalar = make_scalar_view(scalar_decision, frame_samples, info);
+        const auto opencl_slot = find_opencl_task_slot(
+            opencl_analyzed_tasks, opencl_best_tasks[frame], frame, opencl_shape);
         const auto opencl = make_opencl_view(
             opencl_decisions[frame],
-            opencl_selected[frame]);
+            opencl_selected[frame],
+            opencl_slot,
+            opencl_shape);
         const auto opencl_recost_bits = recost_selected_subframe_bits(
             frame_samples, info, opencl_selected[frame]);
 
