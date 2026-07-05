@@ -234,6 +234,16 @@ Real-fixture sweep result:
   and OpenCL Welch is within `3` bits of scalar Welch/error-feedback, so the
   current first-frame regression is concentrated in Tukey generated-LPC
   coefficient parity.
+- A focused Tukey generation trace for frame `0`, order `12` shows shifted
+  samples match exactly, Tukey weights differ only at float precision
+  (`~2.97e-08` max), and windowed samples differ by only `~1.10e-05`.
+  The first meaningful split is OpenCL-style float autocorrelation/Levinson:
+  lag-0 autocorrelation differs by about `282` on a `24,068,158` scalar value,
+  and that is amplified into pre-quantized LPC coefficient deltas up to about
+  `0.885`, yielding Tukey quantized coefficient deltas up to `226`. Treat this
+  as a float-precision/conditioning limitation rather than an obvious formula
+  bug; do not chase a production fix unless a later task explicitly chooses a
+  higher-precision or extra-candidate OpenCL design.
 - Earlier Tukey-only retuning found Rice partition order `6` at `79,914,216`
   bytes, but the current top-two-order Welch result with order `5` is smaller;
   keep `5` as the default speed/size tradeoff.
