@@ -16,6 +16,7 @@ option(LDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS "Enable opt-in tests against externa
 option(LDCOMPRESS_ENABLE_FLAC_TEST_FILE_TESTS "Enable opt-in tests against external FLAC decoder testbench files" OFF)
 set(LDCOMPRESS_REAL_FIXTURE_DIR "" CACHE PATH "Directory containing external .lds fixtures for opt-in real-fixture tests")
 set(LDCOMPRESS_FLAC_TEST_FILE_DIR "" CACHE PATH "Directory containing external FLAC decoder testbench files")
+set(LDCOMPRESS_OPENCL_TEST_DEVICE "" CACHE STRING "Flattened OpenCL device index for opt-in OpenCL compatibility tests")
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 find_program(FFMPEG_EXECUTABLE ffmpeg)
@@ -285,6 +286,13 @@ if(BUILD_TESTING)
                 SKIP_RETURN_CODE 77
             )
 
+            set(LDCOMPRESS_OPENCL_REAL_FIXTURE_ARGS)
+            if(NOT LDCOMPRESS_OPENCL_TEST_DEVICE STREQUAL "")
+                list(APPEND LDCOMPRESS_OPENCL_REAL_FIXTURE_ARGS
+                    --opencl-device ${LDCOMPRESS_OPENCL_TEST_DEVICE}
+                )
+            endif()
+
             add_test(
                 NAME ld_decode_loader_opencl_real_fixture_compat
                 COMMAND
@@ -296,6 +304,7 @@ if(BUILD_TESTING)
                     --fixture-dir ${LDCOMPRESS_REAL_FIXTURE_DIR}
                     --fixture-limit 1
                     --real-fixture-backend opencl
+                    ${LDCOMPRESS_OPENCL_REAL_FIXTURE_ARGS}
             )
             set_tests_properties(ld_decode_loader_opencl_real_fixture_compat PROPERTIES
                 LABELS "real-fixtures;external-decode-compat;opencl"

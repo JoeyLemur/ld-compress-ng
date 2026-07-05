@@ -101,9 +101,19 @@ def optional_dir(
     return None
 
 
+def python_cache_args(root: Path, python_executable: Path | None) -> list[str]:
+    if python_executable is None:
+        return []
+    resolved = project_path(root, python_executable)
+    if not resolved.is_file():
+        raise RuntimeError(f"Python executable not found: {resolved}")
+    return [f"-DPython3_EXECUTABLE={resolved}"]
+
+
 def build_steps(args: argparse.Namespace) -> list[Step]:
     root = project_root()
     build_root = project_path(root, args.build_root)
+    common_cache_args = python_cache_args(root, args.python_executable)
     steps: list[Step] = []
 
     if not args.skip_default:
@@ -117,6 +127,7 @@ def build_steps(args: argparse.Namespace) -> list[Step]:
             [
                 "-DLDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS=OFF",
                 "-DLDCOMPRESS_ENABLE_FLAC_TEST_FILE_TESTS=OFF",
+                *common_cache_args,
             ],
             [],
         )
@@ -136,6 +147,7 @@ def build_steps(args: argparse.Namespace) -> list[Step]:
                 "-DLDCOMPRESS_ENABLE_OPENCL=OFF",
                 "-DLDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS=OFF",
                 "-DLDCOMPRESS_ENABLE_FLAC_TEST_FILE_TESTS=OFF",
+                *common_cache_args,
             ],
             [],
         )
@@ -163,11 +175,12 @@ def build_steps(args: argparse.Namespace) -> list[Step]:
                 "-DLDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS=OFF",
                 "-DLDCOMPRESS_ENABLE_FLAC_TEST_FILE_TESTS=ON",
                 f"-DLDCOMPRESS_FLAC_TEST_FILE_DIR={flac_dir}",
+                *common_cache_args,
             ],
             ["-L", "flac-test-files"],
         )
 
-    include_real = args.all_local or args.include_real_fixtures
+    include_real = args.all_local or args.include_real_fixtures or args.include_opencl_real_fixture
     real_dir = optional_dir(
         root,
         include_real,
@@ -180,17 +193,21 @@ def build_steps(args: argparse.Namespace) -> list[Step]:
         real_ctest_args = ["-L", "real-fixtures"]
         if not args.include_opencl_real_fixture:
             real_ctest_args.extend(["-LE", "opencl"])
+        real_cache_args = [
+            "-DLDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS=ON",
+            f"-DLDCOMPRESS_REAL_FIXTURE_DIR={real_dir}",
+            "-DLDCOMPRESS_ENABLE_FLAC_TEST_FILE_TESTS=OFF",
+            *common_cache_args,
+        ]
+        if args.opencl_device is not None:
+            real_cache_args.append(f"-DLDCOMPRESS_OPENCL_TEST_DEVICE={args.opencl_device}")
         add_configured_suite(
             steps,
             "real-fixtures",
             real_build,
             args.build_type,
             args.jobs,
-            [
-                "-DLDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS=ON",
-                f"-DLDCOMPRESS_REAL_FIXTURE_DIR={real_dir}",
-                "-DLDCOMPRESS_ENABLE_FLAC_TEST_FILE_TESTS=OFF",
-            ],
+            real_cache_args,
             real_ctest_args,
         )
 
@@ -213,14 +230,25 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--build-root", default=Path("build/local-check"), type=Path)
     parser.add_argument("--build-type", default="RelWithDebInfo")
     parser.add_argument("--jobs", help="job count passed to cmake --build --parallel")
-    parser.add_argument("--skip-default", action="store_true")
-    parser.add_argument("--skip-no-opencl", action="store_true")
+    parser.add_argument("--skip-default", action="store_true",
+        help="do not run the default configure/build/test lane")
+    parser.add_argument("--skip-no-opencl", action="store_true",
+        help="do not run the LDCOMPRESS_ENABLE_OPENCL=OFF lane")
     parser.add_argument("--include-flac-test-files", action="store_true")
     parser.add_argument("--include-real-fixtures", action="store_true")
     parser.add_argument(
         "--include-opencl-real-fixture",
         action="store_true",
-        help="include the OpenCL-labelled real-fixture compatibility test",
+        help="include the real-fixture lane and its OpenCL-labelled compatibility test",
+    )
+    parser.add_argument(
+        "--opencl-device",
+        help="flattened OpenCL device index for the OpenCL real-fixture compatibility test",
+    )
+    parser.add_argument(
+        "--python-executable",
+        type=Path,
+        help="Python interpreter to pass to CMake as Python3_EXECUTABLE",
     )
     parser.add_argument(
         "--all-local",
@@ -248,6 +276,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
+    if args.opencl_device is not None and not args.include_opencl_real_fixture:
+        raise RuntimeError("--opencl-device requires --include-opencl-real-fixture")
     root = project_root()
     steps = build_steps(args)
     if not steps:
