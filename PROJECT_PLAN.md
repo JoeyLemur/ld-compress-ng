@@ -190,6 +190,10 @@ Implemented:
   recost mismatches as CSV.
 - Generated test fixtures, opt-in real-fixture regression tests, and a
   real-fixture tuning sweep helper at `tools/sweep_real_fixtures.py`.
+- A local validation matrix helper at `tools/check_local_matrix.py` that runs
+  isolated default and no-OpenCL configure/build/test lanes, optional FLAC
+  testbench and real-fixture lanes, and device smoke checks from ignored build
+  directories.
 
 Current default native tuning values:
 
@@ -474,7 +478,9 @@ provided.
 
 - Maintain Linux and macOS build documentation, including the required CPU
   dependency set and optional OpenCL packages.
-- Add CI or a local equivalent for generated fixtures.
+- Add CI or a local equivalent for generated fixtures. Done for a local helper
+  that covers default, no-OpenCL, optional FLAC-testbench, and optional
+  real-fixture validation lanes.
 - Add performance checks against the old shell pipeline.
 - Keep a lightweight benchmark subcommand for local CPU/native backend
   comparisons across arm64 and amd64/x86_64 hosts.

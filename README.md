@@ -21,6 +21,12 @@ cmake --build build
 ctest --test-dir build
 ```
 
+For the repeatable local validation matrix, use:
+
+```sh
+python3 tools/check_local_matrix.py
+```
+
 Required build dependencies are `pkg-config`, `libFLAC`, and `libogg`. OpenCL is
 optional; when CMake cannot find it, the CPU compressor still builds and
 `devices` reports that OpenCL support was not built.

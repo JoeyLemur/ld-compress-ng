@@ -164,6 +164,48 @@ platform-local `platform/device` coordinates. The OpenCL compression backend is
 an experimental native FLAC path and requires an available OpenCL device at
 runtime.
 
+## Local Validation Matrix
+
+Use the local matrix helper when you want the normal configure/build/test checks
+without remembering the exact command pile:
+
+```sh
+python3 tools/check_local_matrix.py
+```
+
+By default, the helper configures isolated `build/local-check/default` and
+`build/local-check/no-opencl` trees, builds both, runs their CTest suites, and
+runs `ld-compress-ng devices` from each tree. The default lane keeps opt-in
+fixture suites disabled so an existing CMake cache cannot accidentally turn a
+quick check into a real-fixture run.
+
+Add local ignored fixture suites explicitly:
+
+```sh
+python3 tools/check_local_matrix.py --include-flac-test-files
+python3 tools/check_local_matrix.py --include-real-fixtures
+python3 tools/check_local_matrix.py --all-local
+```
+
+The FLAC testbench lane uses `reference/flac-test-files/` by default and runs
+only the `flac-test-files` CTest label. The real-fixture lane uses the current
+local `reference/testdata/ld-decode-testdata-ci/...` fixture root by default and
+runs `real-fixtures` while excluding the OpenCL-labelled real-fixture test.
+Pass `--include-opencl-real-fixture` when you want that runtime device check as
+part of the real-fixture lane. Use `--dry-run` to inspect the generated commands,
+and `--strict-optional` to fail instead of skipping when a requested local
+fixture directory is missing.
+
+The core OpenCL smoke tests are labelled `opencl`, so a configured OpenCL build
+can also run them directly:
+
+```sh
+ctest --test-dir build -L opencl --output-on-failure
+```
+
+In a real-fixture-enabled build, that label also includes the OpenCL
+real-fixture loader compatibility test.
+
 ## Opt-In Real Fixture Regression
 
 Normal tests use generated or embedded fixtures and do not require real RF

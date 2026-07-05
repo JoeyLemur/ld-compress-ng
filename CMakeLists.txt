@@ -147,6 +147,7 @@ if(BUILD_TESTING)
     )
 
     add_test(NAME opencl_analysis COMMAND test_opencl_analysis)
+    set_tests_properties(opencl_analysis PROPERTIES LABELS opencl)
 
     add_executable(test_opencl_devices
         tests/test_opencl_devices.cpp
@@ -158,6 +159,7 @@ if(BUILD_TESTING)
     )
 
     add_test(NAME opencl_devices COMMAND test_opencl_devices)
+    set_tests_properties(opencl_devices PROPERTIES LABELS opencl)
 
     add_executable(compare_opencl_scalar_frames
         tests/compare_opencl_scalar_frames.cpp
