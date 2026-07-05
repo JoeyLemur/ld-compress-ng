@@ -164,6 +164,11 @@ Implemented:
   as PCM. The CTest path is bounded to one fixture for both scalar native and
   OpenCL backends; the helper mode can run the full fixture tree and optionally
   include CPU Ogg `.ldf`/`.raw.oga` suffixes.
+- A build-only OpenCL/scalar frame decision diagnostic,
+  `compare_opencl_scalar_frames`, that unpacks real `.lds` fixtures, analyzes
+  identical full-frame sample windows through scalar native and OpenCL
+  generated-LPC paths, and reports the first per-frame decision/bit-count
+  mismatches as CSV.
 - Generated test fixtures, opt-in real-fixture regression tests, and a
   real-fixture tuning sweep helper at `tools/sweep_real_fixtures.py`.
 
@@ -201,6 +206,11 @@ Real-fixture sweep result:
   `12:14509,11:10389,8:462,10:190`. Scalar Rice partition orders are
   `0:10548,5:7181,4:6664,3:117`; OpenCL's are
   `0:11441,5:6935,4:6181,3:115`.
+- Initial per-frame diagnostic on `ntsc/ggv-ntsc-mb-v2800.lds` shows the
+  OpenCL/scalar gap starts at frame `0`: across `2,026` full frames, scalar
+  estimated `45,969,167` subframe bits and OpenCL estimated `46,016,008`
+  (`+46,841` bits), with `720` decision-shape mismatches, `2,001` bit-count
+  mismatches, `1,721` OpenCL-larger frames, and `280` OpenCL-smaller frames.
 - Earlier Tukey-only retuning found Rice partition order `6` at `79,914,216`
   bytes, but the current top-two-order Welch result with order `5` is smaller;
   keep `5` as the default speed/size tradeoff.

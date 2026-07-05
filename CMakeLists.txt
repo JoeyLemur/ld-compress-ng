@@ -159,6 +159,15 @@ if(BUILD_TESTING)
 
     add_test(NAME opencl_devices COMMAND test_opencl_devices)
 
+    add_executable(compare_opencl_scalar_frames
+        tests/compare_opencl_scalar_frames.cpp
+    )
+
+    target_link_libraries(compare_opencl_scalar_frames
+        PRIVATE
+            ldcompress_core
+    )
+
     add_executable(test_reference_ogg
         tests/test_reference_ogg.cpp
     )
