@@ -74,8 +74,8 @@ Implemented:
   device selection before running the OpenCL/native-FLAC encoder path.
 - Native FLAC writer primitives, STREAMINFO, frame headers, CRC handling, and
   native `.flac.ldf` output.
-- Experimental `native-verbatim` backend.
-- Experimental scalar `native-fixed` backend with constant, fixed/Rice,
+- Compatibility/debug `native-verbatim` backend.
+- Scalar `native-fixed` backend with constant, fixed/Rice,
   LPC/Rice, and verbatim subframe selection.
 - Native wasted-bits support for the low zero bits in LDS-derived PCM.
 - Rice partition search, scalar LPC order search, LPC coefficient precision
@@ -324,8 +324,9 @@ Immediate engineering focus:
 - Add targeted tests from `reference/flac-test-files/` only when they are useful
   for this compressor's native FLAC surface. Done for the first rejection-focused
   opt-in suite; expand only as native FLAC compatibility work needs it.
-- Keep CPU/libFLAC Ogg `.ldf` as the production default until native/GPU output
-  is both compatible and competitive.
+- Keep CPU/libFLAC Ogg `.ldf` as the default for maximum compatibility, while
+  treating scalar native-fixed and OpenCL native-FLAC output as ready for normal
+  use on validated hosts.
 
 ## Recommendation
 
@@ -342,8 +343,8 @@ C++ is the best fit for this targeted project because:
   LPC code. Porting that host code is more direct in C++ than in Python or Rust.
 - A C++/CMake project maps cleanly to both Linux and macOS packaging.
 
-Python remains useful for tests or helper scripts, but not for the main compressor
-or the future GPU backend.
+Python remains useful for tests or helper scripts, but not for the main
+compressor or the OpenCL backend.
 
 ## Proposed CLI
 
@@ -362,8 +363,8 @@ Initial behavior:
 
 - `compress` defaults to CPU compression using Ogg FLAC-compatible `.ldf` output.
 - `compress --backend cpu|native-verbatim|native-fixed|opencl` should select
-  between the implemented CPU path, experimental native FLAC writer paths, and
-  the experimental OpenCL-native FLAC encoder.
+  between the implemented CPU path, native FLAC writer paths, and the
+  OpenCL-native FLAC encoder.
 - `decompress` accepts existing `.ldf`, `.raw.oga`, and `.flac.ldf` inputs where
   supported by the implemented decoder path.
 - `verify` reports hashes for the compressed input and the decompressed/repacked
@@ -376,7 +377,7 @@ Initial behavior:
   frame size, LPC order, LPC coefficient precision, Rice partition order, and
   thread count, plus opt-in OpenCL rows with `--include-opencl`.
 - `devices` lists available OpenCL platforms/devices when OpenCL support is
-  built, and remains an enumeration scaffold until GPU compression exists.
+  built and provides the flattened indexes used by OpenCL compression.
 
 Default output naming should preserve existing conventions unless explicitly
 overridden:
@@ -411,8 +412,8 @@ provided.
 - Build native FLAC writer primitives before porting the OpenCL encoder,
   starting with bit writing, CRC helpers, STREAMINFO, and verbatim frame output.
   Done for the scalar native writer path.
-- Add an experimental native-FLAC verbatim backend to exercise the writer through
-  the real CLI before introducing compressed subframes or GPU work. Done.
+- Add a native-FLAC verbatim backend to exercise the writer through the real CLI
+  before introducing compressed subframes or GPU work. Done.
 - Add a scalar fixed-predictor/Rice backend as the first actually compressed
   native FLAC output path, then extend it with conservative Rice partition
   search before optimized partition ranges or GPU residual work. Done.
@@ -462,12 +463,12 @@ provided.
   order/precision pruning, and integration into the encoder path still need to
   be ported. Kernel code copied or adapted from FLACCL must keep the original
   LGPL-2.1-or-later notices and local modification notes. The current
-  fixed/constant, pre-populated LPC, and generated-LPC OpenCL analysis tests
-  have been validated on Linux/NVIDIA hardware; macOS currently has no local
-  OpenCL device for runtime kernel validation.
+  fixed/constant, pre-populated LPC, generated-LPC, and encoder-facing OpenCL
+  compression tests have been validated on Linux/NVIDIA hardware; macOS
+  currently has no local OpenCL device for runtime kernel validation.
 - Extend the initial OpenCL platform/device enumeration into explicit device
-  selection for GPU compression. Done for CLI plumbing and metadata selection;
-  real compression still awaits the FlaLDF-derived encoder port.
+  selection for GPU compression. Done for CLI plumbing, metadata selection, and
+  the OpenCL-native FLAC compression backend.
 - Add the `devices` subcommand. Done for enumeration scaffolding.
 - Preserve current GPU-style native FLAC `.flac.ldf` output unless a deliberate
   format migration is chosen later.

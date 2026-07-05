@@ -1,149 +1,193 @@
 # ld-compress-ng
 
-Targeted LaserDisc RF capture compression tooling.
+`ld-compress-ng` is a focused command-line compressor for LaserDisc RF capture
+files. It compresses packed `.lds` captures to FLAC-backed `.ldf` files,
+decompresses them back to `.lds`, and verifies round trips without requiring the
+old shell pipeline or helper tools.
 
-This repository is replacing the historical `ld-compress` shell pipeline with a
-native C++20/CMake CLI. Reference material from `FlaLDF/`, `ld-decode-tools/`,
-and the original `ld-compress` script is intentionally ignored by Git.
+The default CPU backend writes Ogg FLAC `.ldf` files with system `libFLAC` and
+`libogg`. The native scalar and OpenCL backends write native FLAC `.flac.ldf`
+files. CPU, scalar native, and OpenCL compression paths are ready for normal
+use; OpenCL just requires a build and runtime environment with a usable OpenCL
+device.
 
-See `PROJECT_PLAN.md` for the implementation plan and `BUILD.md` for platform
-build notes.
-
-The baseline CPU path is intended to stay portable across Linux and macOS on
-both arm64 and amd64/x86_64. CPU-specific optimizations and macOS Metal GPU
-support are later-phase work after compatibility is nailed down.
+`ld-compress-ng` does not depend at runtime on Qt, ffmpeg, `.NET`, Mono, FlaLDF,
+OpenSSL, or `ld-lds-converter`.
 
 ## Build
 
+Requirements:
+
+- CMake 3.20 or newer.
+- A C++20 compiler.
+- `pkg-config` or `pkgconf`.
+- `libFLAC` development files.
+- `libogg` development files.
+- Optional OpenCL headers and loader/framework for `devices` and
+  `--backend opencl`.
+
+### Linux
+
+Debian/Ubuntu:
+
 ```sh
+sudo apt install build-essential cmake pkg-config libflac-dev libogg-dev
 cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
-cmake --build build
-ctest --test-dir build
+cmake --build build --parallel
 ```
 
-For the repeatable local validation matrix, use:
+Fedora/RHEL-family:
 
 ```sh
-python3 tools/check_local_matrix.py
+sudo dnf install gcc-c++ cmake pkgconf-pkg-config flac-devel libogg-devel
+cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build --parallel
 ```
 
-Required build dependencies are `pkg-config`, `libFLAC`, and `libogg`. OpenCL is
-optional; when CMake cannot find it, the CPU compressor still builds and
-`devices` reports that OpenCL support was not built.
-
-`ld-compress-ng` itself does not depend on Qt, ffmpeg, `.NET`, Mono, FlaLDF,
-OpenSSL, or `ld-lds-converter`. Some of those tools remain useful for optional
-compatibility tests or regenerating legacy reference fixtures, but they are not
-normal build or runtime dependencies. Ignored real RF fixtures and local FLAC
-decoder testbench files can be exercised with the opt-in CMake suites documented
-in `BUILD.md`.
-
-## Current Status
-
-The current implementation provides:
-
-- Native LDS 10-bit pack/unpack conversion.
-- CPU compression to Ogg FLAC `.ldf` using `libFLAC`/`libogg`.
-- Decompression from Ogg FLAC and native FLAC to packed `.lds`.
-- Decode-time STREAMINFO/sample-rate/sample-count/PCM-MD5 validation for FLAC
-  inputs.
-- `decompress` writes through a temporary file and replaces the requested output
-  only after decode validation succeeds.
-- MD5-based verification, optionally against an original `.lds`.
-- A backend selection facade for CPU, scalar native FLAC, and OpenCL-native
-  FLAC output.
-- OpenCL device enumeration and explicit device-selection plumbing for the GPU
-  backend.
-- Native FLAC bitstream primitives and an experimental `native-verbatim` backend
-  that writes `.flac.ldf` streams with verbatim frames.
-- An experimental scalar `native-fixed` backend that selects native FLAC
-  constant, verbatim, fixed predictor/Rice-coded, or LPC/Rice-coded frames.
-- Optional frame-level threading for the native FLAC backends using a bounded
-  worker pool with ordered output.
-- Optional OpenCL device enumeration.
-- A hardware-optional OpenCL analysis and compression path for
-  FLACCL-compatible mono task buffers, including generated LPC, exact
-  residual/Rice analysis, and selected native FLAC frame writing. This has been
-  validated on a Linux/NVIDIA OpenCL host; macOS currently builds the optional
-  OpenCL path but has no local usable OpenCL device.
-
-The OpenCL/FlaLDF-derived GPU compression backend is implemented as an
-experimental Linux-first native FLAC path. CPU/libFLAC remains the default
-production backend.
-
-## Usage
+Arch Linux:
 
 ```sh
-ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] [--level N] [--threads N] [--frame-samples N] [--lpc-order N] [--lpc-precision N] [--rice-partition-order N] [--device INDEX|--opencl-device INDEX] [--stats] [--container ogg|flac] [--overwrite] INPUT [OUTPUT]
-ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]
-ld-compress-ng verify [--source ORIGINAL.lds] INPUT
-ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]
-ld-compress-ng bench [--threads 1,4,8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] [--lpc-precision N[,N...]] [--rice-partition-order N[,N...]] [--include-opencl] [--device INDEX|--opencl-device INDEX] INPUT
-ld-compress-ng devices
+sudo pacman -S base-devel cmake pkgconf flac libogg
+cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build --parallel
 ```
 
-Defaults:
+For OpenCL compression on Linux, also install OpenCL headers, the ICD loader
+development package, and a vendor runtime for your GPU or accelerator. Common
+package names include `ocl-icd-opencl-dev`/`opencl-headers` on Debian/Ubuntu,
+`ocl-icd-devel`/`opencl-headers` on Fedora, and `ocl-icd`/`opencl-headers` on
+Arch.
 
-- `compress` writes Ogg FLAC `.ldf` output.
-- `--backend cpu` is the current default production compression backend.
-- `--backend native-verbatim` writes native FLAC `.flac.ldf` output using
-  uncompressed verbatim FLAC frames. This is mainly a compatibility/debugging
-  path now that predictive scalar and OpenCL-native FLAC backends exist.
-- `--backend native-fixed` writes native FLAC `.flac.ldf` output using scalar
-  subframe selection: constant for flat frames, fixed prediction/Rice residuals,
-  LPC/Rice residuals up to order 12, partition-order search `0..5` by default
-  and up to `0..8` when requested,
-  wasted-bits handling for the low zero bits in LDS-derived PCM, and verbatim
-  fallback when predictive coding would be larger. It is still experimental,
-  but now tracks CPU/libFLAC closely on the current real-fixture set.
-- `--threads N` is currently supported for scalar native FLAC backends and
-  parallelizes frame encoding while preserving output order. The OpenCL backend
-  currently requires `--threads 1`. It defaults to `1`.
-- `--frame-samples N` is currently supported for native FLAC backends and sets
-  the FLAC block size used by the native encoder. It defaults to `4608` and is
-  constrained to `16..4608` for 40 kHz subset compatibility.
-- `--lpc-order N` is currently supported for predictive native FLAC backends
-  (`native-fixed` and `opencl`) and sets the maximum LPC order considered. It
-  defaults to `12`, matching the 40 kHz FLAC subset cap; `0` disables LPC.
-- `--lpc-precision N` is currently supported for predictive native FLAC
-  backends (`native-fixed` and `opencl`) and sets the LPC coefficient precision.
-  It defaults to `12`, based on the current real-fixture tuning sweep; FLAC
-  subset-compatible values `1..15` are accepted.
-- `--rice-partition-order N` is currently supported for predictive native FLAC
-  backends (`native-fixed` and `opencl`) and sets the maximum Rice partition
-  order considered. It defaults to `5`; values `0..8` are accepted for FLAC
-  subset compatibility.
-- `--stats` is currently supported for native FLAC backends and prints per-frame
-  subframe counts, fixed/LPC predictor order counts, Rice partition order
-  counts, and wasted-bits counts.
-- `--backend opencl` writes experimental native FLAC `.flac.ldf` output. Full
-  frames are analyzed on the selected OpenCL device and written through the
-  native selected-subframe writer; a short final frame is encoded with the
-  scalar native selector.
-- `--device INDEX` / `--opencl-device INDEX` is accepted with
-  `compress --backend opencl` and with `bench --include-opencl`. The indexes
-  are the flattened indexes printed by `ld-compress-ng devices`.
-- `--container flac` writes native FLAC, useful for compatibility testing with
-  the `.flac.ldf` native/OpenCL lane.
-- `--level N` is supported only by the CPU/libFLAC backend. Compression levels
-  accept the legacy CPU range `1..12`; values above libFLAC's preset range
-  currently map to libFLAC level 8.
+### macOS
 
-Benchmarking:
+Install the baseline CPU build dependencies with Homebrew:
 
-- `bench` runs one CPU/libFLAC Ogg baseline, native-verbatim baselines for the
-  requested frame sizes, and native-fixed rows across the requested
-  thread/tuning grid, then prints bytes, ratio, elapsed seconds, MiB/s, and
-  compact native decision stats for native backends. Add `--include-opencl` to
-  include experimental OpenCL backend rows for the same native tuning grid when
-  an OpenCL device is available; use `--device INDEX` when you want a specific
-  OpenCL device. For native backend tuning, `bench` accepts comma-separated
-  `--frame-samples`, `--lpc-order`, `--lpc-precision`, and
-  `--rice-partition-order` lists and runs the native-fixed cross product.
-- Benchmark output files are temporary and removed after each run; use
-  `compress` when you want to keep the encoded result.
-- `tools/sweep_real_fixtures.py` wraps `bench` across the ignored real-fixture
-  tree and writes CSV/Markdown summaries for native tuning work. Pass
-  `--include-opencl` and optionally `--opencl-device INDEX` to include the GPU
-  backend in the same sweep when an OpenCL device is available. See `BUILD.md`
-  for the command and default sweep grid.
+```sh
+brew install cmake pkg-config flac libogg
+cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build --parallel
+```
+
+Xcode Command Line Tools provide AppleClang and the macOS SDK. The SDK may also
+provide the deprecated OpenCL framework, but Apple platform OpenCL availability
+varies by OS and hardware. If you want a CPU-only build, use:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLDCOMPRESS_ENABLE_OPENCL=OFF
+cmake --build build --parallel
+```
+
+## Basic Usage
+
+Compress an `.lds` capture with the default CPU/libFLAC backend:
+
+```sh
+build/ld-compress-ng compress capture.lds
+```
+
+This writes `capture.ldf` unless you provide an explicit output path.
+
+Decompress an `.ldf`, `.raw.oga`, or `.flac.ldf` file back to `.lds`:
+
+```sh
+build/ld-compress-ng decompress capture.ldf
+```
+
+This writes `capture.lds` by default.
+
+Verify that a compressed file decodes to the original `.lds` data:
+
+```sh
+build/ld-compress-ng verify --source capture.lds capture.ldf
+```
+
+Overwrite an existing output only when you ask for it:
+
+```sh
+build/ld-compress-ng compress --overwrite capture.lds capture.ldf
+build/ld-compress-ng decompress --overwrite capture.ldf capture.lds
+```
+
+## Backends
+
+| Backend | Output | Notes |
+| --- | --- | --- |
+| `cpu` | Ogg FLAC `.ldf` | Default, portable, uses system `libFLAC`/`libogg`; supports `--level`. |
+| `native-fixed` | Native FLAC `.flac.ldf` | Scalar native encoder with fixed/LPC prediction, Rice coding, threading, and tuning controls. |
+| `opencl` | Native FLAC `.flac.ldf` | GPU-assisted native encoder; list devices with `devices`, select one with `--device INDEX`. |
+| `native-verbatim` | Native FLAC `.flac.ldf` | Compatibility/debug path using verbatim FLAC frames. |
+
+Use the scalar native backend:
+
+```sh
+build/ld-compress-ng compress --backend native-fixed capture.lds
+```
+
+Use OpenCL:
+
+```sh
+build/ld-compress-ng devices
+build/ld-compress-ng compress --backend opencl --device 0 capture.lds
+```
+
+## Advanced Usage
+
+Show the command summary:
+
+```sh
+build/ld-compress-ng --help
+```
+
+Tune CPU/libFLAC compression level:
+
+```sh
+build/ld-compress-ng compress --backend cpu --level 12 capture.lds
+```
+
+Run the scalar native backend with multiple encoding threads and summary stats:
+
+```sh
+build/ld-compress-ng compress --backend native-fixed --threads 8 --stats capture.lds
+```
+
+Native tuning defaults are `--frame-samples 4608`, `--lpc-order 12`,
+`--lpc-precision 12`, `--rice-partition-order 5`, and `--threads 1`; the
+defaults are the recommended settings for normal use. The OpenCL backend uses
+the same native FLAC tuning controls, but currently requires `--threads 1`.
+
+Use explicit native FLAC tuning controls when you are comparing size/speed
+tradeoffs:
+
+```sh
+build/ld-compress-ng compress --backend native-fixed \
+    --frame-samples 4608 \
+    --lpc-order 12 \
+    --lpc-precision 12 \
+    --rice-partition-order 5 \
+    capture.lds
+```
+
+Benchmark available backends on one capture:
+
+```sh
+build/ld-compress-ng bench capture.lds
+build/ld-compress-ng bench --include-opencl --device 0 capture.lds
+```
+
+Convert between packed LDS and signed 16-bit little-endian mono PCM:
+
+```sh
+build/ld-compress-ng convert --unpack capture.lds capture.s16
+build/ld-compress-ng convert --pack capture.s16 capture.lds
+```
+
+## Documentation
+
+- Detailed build, validation, fixture, and tuning notes:
+  [`docs/build-and-testing.md`](docs/build-and-testing.md)
+- Current implementation plan and project history:
+  [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md)
+- Development host sync notes:
+  [`docs/remote-sync.md`](docs/remote-sync.md)
+- Third-party license notices:
+  [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)

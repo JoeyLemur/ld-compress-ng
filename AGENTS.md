@@ -1,6 +1,6 @@
 # Agent Operating Notes
 
-- Read `PROJECT_PLAN.md` before implementation work.
+- Read `docs/PROJECT_PLAN.md` before implementation work.
 - Stay within this project tree unless explicit permission is requested and
   granted first.
 - Do not edit reference source trees (`FlaLDF/`, `ld-decode-tools/`) or the

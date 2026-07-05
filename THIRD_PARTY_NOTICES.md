@@ -5,10 +5,10 @@ CPU/Ogg FLAC path. The native FLAC encoder is project code, but its FLAC
 analysis work is checked against the Xiph.org FLAC reference implementation
 under `reference/flac/`.
 
-The experimental OpenCL analysis path includes a reduced, locally modified
-kernel slice derived from CUETools.FLACCL. Preserve the LGPL notice in the
-kernel source and keep local modification notes when changing that code. A copy
-of the LGPL 2.1 license text is provided at `LICENSES/LGPL-2.1-or-later.txt`.
+The OpenCL analysis path includes a reduced, locally modified kernel slice
+derived from CUETools.FLACCL. Preserve the LGPL notice in the kernel source and
+keep local modification notes when changing that code. A copy of the LGPL 2.1
+license text is provided at `LICENSES/LGPL-2.1-or-later.txt`.
 
 ## CUETools.FLACCL OpenCL Kernels
 

@@ -1,4 +1,4 @@
-# Build And Dependency Notes
+# Detailed Build, Testing, And Development Notes
 
 `ld-compress-ng` is a C++20/CMake project targeting Linux and macOS on arm64 and
 amd64/x86_64. The normal CPU compressor is intentionally small: it does not
@@ -15,7 +15,7 @@ tools when they are available and skip cleanly when they are not.
 | `pkg-config` / `pkgconf` | Yes | Locate FLAC/Ogg | CMake uses imported pkg-config targets. |
 | `libFLAC` development files | Yes | CPU FLAC encode/decode | Requires pkg-config module `flac`. |
 | `libogg` development files | Yes | Ogg FLAC container support | Requires pkg-config module `ogg`. |
-| OpenCL headers + loader/framework | Optional | `devices` enumeration, experimental OpenCL backend | Disable with `-DLDCOMPRESS_ENABLE_OPENCL=OFF`. |
+| OpenCL headers + loader/framework | Optional | `devices` enumeration and OpenCL compression backend | Disable with `-DLDCOMPRESS_ENABLE_OPENCL=OFF`. |
 | Python 3 interpreter | Optional | Skip-safe external decode compatibility CTests and helper scripts | CMake adds Python-based tests only when an interpreter is found. |
 | `ffmpeg`/`ffprobe` | Optional | External native-FLAC decode compatibility CTest and legacy fixture regeneration | The compatibility test skips if `ffmpeg` is unavailable. |
 | PyAV and reference `ld-decode` dependencies | Optional | External `ld-decode` loader compatibility CTests | Tests skip if the local reference tree or imports are unavailable. |
@@ -160,9 +160,39 @@ ctest --test-dir build --output-on-failure
 
 `ld-compress-ng devices` prints flattened OpenCL device indexes for
 `compress --backend opencl --device INDEX` or `--opencl-device INDEX`, plus
-platform-local `platform/device` coordinates. The OpenCL compression backend is
-an experimental native FLAC path and requires an available OpenCL device at
-runtime.
+platform-local `platform/device` coordinates. The OpenCL compression backend
+writes native FLAC and requires an available OpenCL device at runtime.
+
+## Compatibility And Tuning CLI Notes
+
+The README covers the normal compression and decompression commands. These
+commands are useful when checking compatibility or doing local size/speed
+tuning.
+
+Write native FLAC through the CPU/libFLAC backend instead of the default Ogg
+container:
+
+```sh
+build/ld-compress-ng compress --backend cpu --container flac capture.lds capture.flac.ldf
+```
+
+The scalar native and OpenCL backends use native FLAC tuning controls:
+
+```sh
+build/ld-compress-ng compress --backend native-fixed \
+    --threads 8 \
+    --frame-samples 4608 \
+    --lpc-order 12 \
+    --lpc-precision 12 \
+    --rice-partition-order 5 \
+    --stats \
+    capture.lds
+```
+
+The current recommended native defaults are frame size `4608`, maximum LPC
+order `12`, LPC coefficient precision `12`, maximum Rice partition order `5`,
+and one thread unless `--threads` is specified. OpenCL uses the same native
+tuning options, but currently requires `--threads 1`.
 
 ## Local Validation Matrix
 
@@ -283,8 +313,8 @@ python3 tools/sweep_real_fixtures.py \
 The default sweep is intentionally focused: frame size `4608`, LPC orders
 `10,12`, LPC coefficient precisions `10,12`, Rice partition order `5`, and one
 thread. Add `--include-opencl` and optionally `--opencl-device INDEX` to include
-experimental OpenCL backend rows in the CSV/Markdown output when an OpenCL
-device is available. Expand the grid explicitly when doing a broader local
+OpenCL backend rows in the CSV/Markdown output when an OpenCL device is
+available. Expand the grid explicitly when doing a broader local
 tuning pass:
 
 ```sh
