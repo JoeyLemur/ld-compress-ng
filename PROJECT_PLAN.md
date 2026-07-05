@@ -43,6 +43,10 @@ external `ld-lds-converter` command. System libraries such as `libFLAC`,
   The current reference tree does not directly read `.ldf`, `.raw.oga`,
   `.flac.ldf`, or FLAC RF captures; treat it as a compatibility reference for
   the eventual decoded-data pipeline, not as a direct compressed-RF reader.
+- `reference/FFmpeg/` contains the FFmpeg source tree. Use `libavcodec/flacenc.c`
+  and `libavcodec/lpc.c` as read-only references for FFmpeg's FLAC encoder
+  heuristics, LPC windowing, coefficient quantization, Rice partitioning, and
+  compression-level behavior.
 - `reference/flac/` contains the Xiph.org FLAC reference source. Treat it as an
   implementation reference, not vendored project code.
 - `reference/flac-test-files/` contains reference FLAC-encoded files for future
@@ -158,6 +162,9 @@ Real-fixture sweep result:
 - Aggregate native-fixed size after Tukey-windowed LPC analysis and focused
   retuning: `79,920,941` bytes, about `-0.21%` smaller than CPU/libFLAC for the
   same fixtures.
+- Aggregate OpenCL size after Tukey-windowed generated LPC analysis:
+  `80,443,214` bytes, about `+0.44%` larger than CPU/libFLAC and down from the
+  pre-Tukey OpenCL aggregate of `81,217,362` bytes (`+1.41%`).
 - Rice partition order `6` produced a slightly smaller aggregate
   (`79,914,216` bytes), but the byte gain was small enough that `5` remains the
   default speed/size tradeoff.
@@ -172,6 +179,13 @@ Immediate engineering focus:
 - Use `reference/ld-decode/` as the direct compatibility target for compressed
   RF input (`.ldf`, `.raw.oga`, and FlaLDF `.flac.ldf`). Keep
   `reference/decode-orc/` for later decoded TBC/CVBS pipeline compatibility.
+- Use `reference/FFmpeg/` as an additional read-only FLAC encoder heuristic
+  reference when evaluating future Welch-window, coefficient refinement, or
+  higher-order LPC experiments.
+- Do not replace OpenCL generated-LPC independent coefficient rounding with
+  error-feedback rounding wholesale. A two-fixture post-Tukey check regressed
+  slightly; revisit it only as an additional exact-costed candidate or as part
+  of a broader generated-LPC task-shape change.
 - Add targeted tests from `reference/flac-test-files/` only when they are useful
   for this compressor's native FLAC surface. Done for the first rejection-focused
   opt-in suite; expand only as native FLAC compatibility work needs it.
