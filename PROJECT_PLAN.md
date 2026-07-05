@@ -167,8 +167,8 @@ Implemented:
 - A build-only OpenCL/scalar frame decision diagnostic,
   `compare_opencl_scalar_frames`, that unpacks real `.lds` fixtures, analyzes
   identical full-frame sample windows through scalar native and OpenCL
-  generated-LPC paths, and reports the first per-frame decision/bit-count
-  mismatches as CSV.
+  generated-LPC paths, and reports the first per-frame decision/bit-count,
+  LPC coefficient, and OpenCL-selected native writer recost mismatches as CSV.
 - Generated test fixtures, opt-in real-fixture regression tests, and a
   real-fixture tuning sweep helper at `tools/sweep_real_fixtures.py`.
 
@@ -211,6 +211,13 @@ Real-fixture sweep result:
   estimated `45,969,167` subframe bits and OpenCL estimated `46,016,008`
   (`+46,841` bits), with `720` decision-shape mismatches, `2,001` bit-count
   mismatches, `1,721` OpenCL-larger frames, and `280` OpenCL-smaller frames.
+- The same diagnostic now confirms that OpenCL-selected subframes recost
+  exactly through the native writer on that fixture (`46,016,008` bits,
+  `0` recost delta, `0` recost mismatches). Frame `0` has the same LPC/Rice
+  shape as scalar but differs in LPC coefficients, and all `2,026` compared
+  frames have coefficient differences, so the remaining gap is in generated-LPC
+  coefficient generation/quantization rather than native selected-subframe
+  writing or Rice recosting.
 - Earlier Tukey-only retuning found Rice partition order `6` at `79,914,216`
   bytes, but the current top-two-order Welch result with order `5` is smaller;
   keep `5` as the default speed/size tradeoff.

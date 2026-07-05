@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -31,6 +32,7 @@ struct Options {
     std::size_t start_frame = 0;
     std::optional<std::size_t> max_frames;
     std::size_t mismatch_limit = 20;
+    bool show_coefficients = false;
 };
 
 struct DecisionView {
@@ -41,6 +43,7 @@ struct DecisionView {
     unsigned coefficient_precision = 0;
     int quantization_shift = 0;
     std::uint64_t estimated_bits = 0;
+    std::vector<std::int32_t> coefficients;
 };
 
 void usage()
@@ -55,7 +58,8 @@ void usage()
         << "  --rice-partition-order N\n"
         << "  --start-frame N\n"
         << "  --max-frames N\n"
-        << "  --mismatch-limit N\n";
+        << "  --mismatch-limit N\n"
+        << "  --show-coefficients\n";
 }
 
 std::uint64_t parse_u64(std::string_view text, std::string_view name)
@@ -128,6 +132,8 @@ Options parse_args(int argc, char** argv)
         } else if (arg == "--mismatch-limit") {
             options.mismatch_limit = static_cast<std::size_t>(
                 parse_u64(require_value(arg), "mismatch limit"));
+        } else if (arg == "--show-coefficients") {
+            options.show_coefficients = true;
         } else if (arg == "--help" || arg == "-h") {
             usage();
             std::exit(0);
@@ -234,6 +240,7 @@ DecisionView make_scalar_view(
         .coefficient_precision = 0,
         .quantization_shift = 0,
         .estimated_bits = decision.estimated_bits,
+        .coefficients = {},
     };
 
     if (decision.kind == ldcompress::FlacSubframeKind::LpcRice) {
@@ -241,6 +248,7 @@ DecisionView make_scalar_view(
         if (lpc.has_value()) {
             view.coefficient_precision = lpc->coefficient_precision;
             view.quantization_shift = lpc->quantization_shift;
+            view.coefficients = lpc->coefficients;
         }
     }
     return view;
@@ -258,6 +266,7 @@ DecisionView make_opencl_view(
         .coefficient_precision = selected.coefficient_precision,
         .quantization_shift = selected.quantization_shift,
         .estimated_bits = decision.estimated_bits,
+        .coefficients = selected.coefficients,
     };
 }
 
@@ -271,14 +280,72 @@ bool same_decision_shape(const DecisionView& scalar, const DecisionView& opencl)
         scalar.quantization_shift == opencl.quantization_shift;
 }
 
+std::string format_coefficients(const std::vector<std::int32_t>& coefficients)
+{
+    std::string formatted;
+    for (std::size_t i = 0; i < coefficients.size(); ++i) {
+        if (i != 0) {
+            formatted += ';';
+        }
+        formatted += std::to_string(coefficients[i]);
+    }
+    return formatted;
+}
+
+std::size_t first_coefficient_mismatch(
+    const std::vector<std::int32_t>& scalar,
+    const std::vector<std::int32_t>& opencl)
+{
+    const auto common = std::min(scalar.size(), opencl.size());
+    for (std::size_t i = 0; i < common; ++i) {
+        if (scalar[i] != opencl[i]) {
+            return i;
+        }
+    }
+    return common;
+}
+
+std::uint64_t max_abs_coefficient_delta(
+    const std::vector<std::int32_t>& scalar,
+    const std::vector<std::int32_t>& opencl)
+{
+    const auto common = std::min(scalar.size(), opencl.size());
+    std::uint64_t max_delta = 0;
+    for (std::size_t i = 0; i < common; ++i) {
+        const auto left = static_cast<std::int64_t>(scalar[i]);
+        const auto right = static_cast<std::int64_t>(opencl[i]);
+        const auto delta = left > right
+            ? static_cast<std::uint64_t>(left - right)
+            : static_cast<std::uint64_t>(right - left);
+        max_delta = std::max(max_delta, delta);
+    }
+    return max_delta;
+}
+
+std::uint64_t recost_selected_subframe_bits(
+    const std::vector<std::int32_t>& samples,
+    const ldcompress::FlacFrameInfo& info,
+    const ldcompress::FlacSelectedSubframe& selected)
+{
+    std::ostringstream sink(std::ios::binary);
+    const auto recost = ldcompress::write_mono_selected_frame(sink, samples, info, selected);
+    return recost.estimated_bits;
+}
+
 void print_row(
     std::size_t frame,
     unsigned frame_samples,
     const DecisionView& scalar,
-    const DecisionView& opencl)
+    const DecisionView& opencl,
+    bool show_coefficients,
+    std::uint64_t opencl_recost_bits)
 {
     const auto delta = static_cast<std::int64_t>(opencl.estimated_bits) -
         static_cast<std::int64_t>(scalar.estimated_bits);
+    const auto recost_delta = static_cast<std::int64_t>(opencl_recost_bits) -
+        static_cast<std::int64_t>(opencl.estimated_bits);
+    const auto first_mismatch = first_coefficient_mismatch(
+        scalar.coefficients, opencl.coefficients);
     std::cout << frame
               << ',' << (frame * static_cast<std::size_t>(frame_samples))
               << ',' << frame_samples
@@ -297,7 +364,16 @@ void print_row(
               << ',' << opencl.quantization_shift
               << ',' << opencl.estimated_bits
               << ',' << delta
-              << '\n';
+              << ',' << opencl_recost_bits
+              << ',' << recost_delta
+              << ',' << (scalar.coefficients == opencl.coefficients ? "yes" : "no")
+              << ',' << first_mismatch
+              << ',' << max_abs_coefficient_delta(scalar.coefficients, opencl.coefficients);
+    if (show_coefficients) {
+        std::cout << ',' << format_coefficients(scalar.coefficients)
+                  << ',' << format_coefficients(opencl.coefficients);
+    }
+    std::cout << '\n';
 }
 
 int run(const Options& options)
@@ -375,14 +451,23 @@ int run(const Options& options)
         << "scalar_kind,scalar_order,scalar_partition,scalar_wasted,"
         << "scalar_precision,scalar_shift,scalar_bits,"
         << "opencl_kind,opencl_order,opencl_partition,opencl_wasted,"
-        << "opencl_precision,opencl_shift,opencl_bits,delta_bits\n";
+        << "opencl_precision,opencl_shift,opencl_bits,delta_bits,"
+        << "opencl_recost_bits,opencl_recost_delta_bits,"
+        << "coefficients_match,first_coefficient_mismatch,max_abs_coefficient_delta";
+    if (options.show_coefficients) {
+        std::cout << ",scalar_coefficients,opencl_coefficients";
+    }
+    std::cout << '\n';
 
     std::uint64_t scalar_bits = 0;
     std::uint64_t opencl_bits = 0;
+    std::uint64_t opencl_recost_bits_total = 0;
     std::size_t shape_mismatches = 0;
     std::size_t bit_mismatches = 0;
+    std::size_t opencl_recost_mismatches = 0;
     std::size_t opencl_larger = 0;
     std::size_t opencl_smaller = 0;
+    std::size_t coefficient_mismatches = 0;
     std::size_t printed = 0;
     std::optional<std::size_t> first_opencl_larger;
 
@@ -398,17 +483,27 @@ int run(const Options& options)
         const auto opencl = make_opencl_view(
             opencl_decisions[frame],
             opencl_selected[frame]);
+        const auto opencl_recost_bits = recost_selected_subframe_bits(
+            frame_samples, info, opencl_selected[frame]);
 
         scalar_bits += scalar.estimated_bits;
         opencl_bits += opencl.estimated_bits;
+        opencl_recost_bits_total += opencl_recost_bits;
 
         const bool shape_differs = !same_decision_shape(scalar, opencl);
         const bool bits_differ = scalar.estimated_bits != opencl.estimated_bits;
+        const bool recost_differs = opencl_recost_bits != opencl.estimated_bits;
         if (shape_differs) {
             ++shape_mismatches;
         }
         if (bits_differ) {
             ++bit_mismatches;
+        }
+        if (recost_differs) {
+            ++opencl_recost_mismatches;
+        }
+        if (scalar.coefficients != opencl.coefficients) {
+            ++coefficient_mismatches;
         }
         if (opencl.estimated_bits > scalar.estimated_bits) {
             ++opencl_larger;
@@ -420,19 +515,31 @@ int run(const Options& options)
         }
 
         if ((shape_differs || bits_differ) && printed < options.mismatch_limit) {
-            print_row(options.start_frame + frame, options.frame_samples, scalar, opencl);
+            print_row(
+                options.start_frame + frame,
+                options.frame_samples,
+                scalar,
+                opencl,
+                options.show_coefficients,
+                opencl_recost_bits);
             ++printed;
         }
     }
 
     const auto bit_delta = static_cast<std::int64_t>(opencl_bits) -
         static_cast<std::int64_t>(scalar_bits);
+    const auto recost_delta = static_cast<std::int64_t>(opencl_recost_bits_total) -
+        static_cast<std::int64_t>(opencl_bits);
     std::cerr << "summary frames=" << frame_count
               << " scalar_bits=" << scalar_bits
               << " opencl_bits=" << opencl_bits
               << " delta_bits=" << bit_delta
+              << " opencl_recost_bits=" << opencl_recost_bits_total
+              << " opencl_recost_delta_bits=" << recost_delta
               << " shape_mismatches=" << shape_mismatches
               << " bit_mismatches=" << bit_mismatches
+              << " opencl_recost_mismatches=" << opencl_recost_mismatches
+              << " coefficient_mismatches=" << coefficient_mismatches
               << " opencl_larger=" << opencl_larger
               << " opencl_smaller=" << opencl_smaller;
     if (first_opencl_larger.has_value()) {
