@@ -195,10 +195,10 @@ Immediate engineering focus:
 - Use `reference/ld-decode/` as the direct compatibility target for compressed
   RF input (`.ldf`, `.raw.oga`, and FlaLDF `.flac.ldf`). Keep
   `reference/decode-orc/` for later decoded TBC/CVBS pipeline compatibility.
-- The current Linux host has `ffmpeg`/`ffprobe`, so `ffmpeg_native_flac_compat`
-  exercises native `.flac.ldf` decode in the default suite. It does not have
-  PyAV installed, so `ld_decode_pyav_compat` is also registered but skips until
-  the `av` Python module is available.
+- The current Linux host has `ffmpeg`/`ffprobe` and PyAV available through
+  `/home/epowell/.pyenv/versions/3.13.13/bin/python`. With CMake configured
+  using that `Python3_EXECUTABLE`, both `ffmpeg_native_flac_compat` and
+  `ld_decode_pyav_compat` pass against generated native `.flac.ldf` output.
 - Use `reference/FFmpeg/` as an additional read-only FLAC encoder heuristic
   reference when evaluating future Welch-window, coefficient refinement, or
   higher-order LPC experiments.
