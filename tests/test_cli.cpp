@@ -121,12 +121,17 @@ void test_cli(const std::filesystem::path& exe)
     const auto pcm = temp_dir / "fixture.s16";
     const auto repacked = temp_dir / "fixture.repacked.lds";
     const auto compressed = temp_dir / "fixture.ldf";
+    const auto cpu_level = temp_dir / "fixture.cpu-level.ldf";
     const auto decompressed = temp_dir / "fixture.out.lds";
     const auto native = temp_dir / "fixture.flac.ldf";
     const auto native_verbatim = temp_dir / "fixture.native-verbatim.flac.ldf";
     const auto native_verbatim_out = temp_dir / "fixture.native-verbatim.out.lds";
     const auto bad_native_verbatim = temp_dir / "fixture.bad-native-verbatim.ldf";
     const auto bad_native_verbatim_reversed = temp_dir / "fixture.bad-native-verbatim-reversed.ldf";
+    const auto bad_native_verbatim_level = temp_dir / "fixture.bad-native-verbatim-level.flac.ldf";
+    const auto bad_native_verbatim_lpc_order = temp_dir / "fixture.bad-native-verbatim-lpc-order.flac.ldf";
+    const auto bad_native_verbatim_lpc_precision = temp_dir / "fixture.bad-native-verbatim-lpc-precision.flac.ldf";
+    const auto bad_native_verbatim_rice_partition_order = temp_dir / "fixture.bad-native-verbatim-rice-partition-order.flac.ldf";
     const auto native_fixed = temp_dir / "fixture.native-fixed.flac.ldf";
     const auto native_fixed_out = temp_dir / "fixture.native-fixed.out.lds";
     const auto native_fixed_threads = temp_dir / "fixture.native-fixed-threads.flac.ldf";
@@ -152,8 +157,11 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_native_lpc_precision_large = temp_dir / "fixture.bad-native-lpc-precision-large.ldf";
     const auto bad_native_rice_partition_order = temp_dir / "fixture.bad-native-rice-partition-order.ldf";
     const auto bad_native_rice_partition_order_large = temp_dir / "fixture.bad-native-rice-partition-order-large.ldf";
+    const auto bad_native_fixed_level = temp_dir / "fixture.bad-native-fixed-level.flac.ldf";
     const auto bad_cpu_stats = temp_dir / "fixture.bad-cpu-stats.ldf";
     const auto bad_cpu_frame_samples = temp_dir / "fixture.bad-cpu-frame-samples.ldf";
+    const auto bad_cpu_frame_samples_default = temp_dir / "fixture.bad-cpu-frame-samples-default.ldf";
+    const auto bad_cpu_lpc_order_default = temp_dir / "fixture.bad-cpu-lpc-order-default.ldf";
     const auto bad_cpu_lpc_precision = temp_dir / "fixture.bad-cpu-lpc-precision.ldf";
     const auto bad_cpu_rice_partition_order = temp_dir / "fixture.bad-cpu-rice-partition-order.ldf";
     const auto bad_cpu_threads = temp_dir / "fixture.bad-cpu-threads.ldf";
@@ -161,6 +169,7 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_native_device = temp_dir / "fixture.bad-native-device.ldf";
     const auto bad_native_opencl_device = temp_dir / "fixture.bad-native-opencl-device.ldf";
     const auto bad_opencl_threads = temp_dir / "fixture.bad-opencl-threads.flac.ldf";
+    const auto bad_opencl_level = temp_dir / "fixture.bad-opencl-level.flac.ldf";
     const auto empty_lds = temp_dir / "empty.lds";
     const auto empty_native_verbatim = temp_dir / "empty.native-verbatim.flac.ldf";
     const auto empty_native_verbatim_out = temp_dir / "empty.native-verbatim.out.lds";
@@ -202,6 +211,8 @@ void test_cli(const std::filesystem::path& exe)
     run_ok(shell_quote(exe) + " decompress " + shell_quote(compressed) + " " + shell_quote(decompressed));
     run_fails(shell_quote(exe) + " decompress --overwrite " + shell_quote(compressed) + " " + shell_quote(compressed));
     require(read_file(decompressed) == fixture, "Ogg FLAC round trip changed LDS bytes");
+    run_ok(shell_quote(exe) + " compress --level 8 " + shell_quote(lds) + " " + shell_quote(cpu_level));
+    require(read_file(cpu_level).substr(0, 4) == "OggS", "CPU --level output was not Ogg FLAC");
 
     run_ok(shell_quote(exe) + " compress --backend cpu --container flac --overwrite " + shell_quote(lds) + " " + shell_quote(native));
     run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(native));
@@ -213,6 +224,14 @@ void test_cli(const std::filesystem::path& exe)
     require(!std::filesystem::exists(bad_native_verbatim), "native-verbatim Ogg rejection wrote output");
     run_fails(shell_quote(exe) + " compress --container ogg --backend native-verbatim " + shell_quote(lds) + " " + shell_quote(bad_native_verbatim_reversed));
     require(!std::filesystem::exists(bad_native_verbatim_reversed), "reversed native-verbatim Ogg rejection wrote output");
+    run_fails(shell_quote(exe) + " compress --backend native-verbatim --level 8 " + shell_quote(lds) + " " + shell_quote(bad_native_verbatim_level));
+    require(!std::filesystem::exists(bad_native_verbatim_level), "native-verbatim --level rejection wrote output");
+    run_fails(shell_quote(exe) + " compress --backend native-verbatim --lpc-order 12 " + shell_quote(lds) + " " + shell_quote(bad_native_verbatim_lpc_order));
+    require(!std::filesystem::exists(bad_native_verbatim_lpc_order), "native-verbatim --lpc-order rejection wrote output");
+    run_fails(shell_quote(exe) + " compress --backend native-verbatim --lpc-precision 12 " + shell_quote(lds) + " " + shell_quote(bad_native_verbatim_lpc_precision));
+    require(!std::filesystem::exists(bad_native_verbatim_lpc_precision), "native-verbatim --lpc-precision rejection wrote output");
+    run_fails(shell_quote(exe) + " compress --backend native-verbatim --rice-partition-order 5 " + shell_quote(lds) + " " + shell_quote(bad_native_verbatim_rice_partition_order));
+    require(!std::filesystem::exists(bad_native_verbatim_rice_partition_order), "native-verbatim --rice-partition-order rejection wrote output");
     run_ok(shell_quote(exe) + " compress --backend native-fixed " + shell_quote(lds) + " " + shell_quote(native_fixed));
     run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(native_fixed));
     run_ok(shell_quote(exe) + " decompress " + shell_quote(native_fixed) + " " + shell_quote(native_fixed_out));
@@ -255,10 +274,16 @@ void test_cli(const std::filesystem::path& exe)
     require(!std::filesystem::exists(bad_native_rice_partition_order), "invalid native Rice partition order wrote output");
     run_fails(shell_quote(exe) + " compress --backend native-fixed --rice-partition-order 99999999999999999999 " + shell_quote(lds) + " " + shell_quote(bad_native_rice_partition_order_large));
     require(!std::filesystem::exists(bad_native_rice_partition_order_large), "oversized native Rice partition order wrote output");
+    run_fails(shell_quote(exe) + " compress --backend native-fixed --level 8 " + shell_quote(lds) + " " + shell_quote(bad_native_fixed_level));
+    require(!std::filesystem::exists(bad_native_fixed_level), "native-fixed --level rejection wrote output");
     run_fails(shell_quote(exe) + " compress --stats " + shell_quote(lds) + " " + shell_quote(bad_cpu_stats));
     require(!std::filesystem::exists(bad_cpu_stats), "CPU --stats rejection wrote output");
     run_fails(shell_quote(exe) + " compress --frame-samples 2048 " + shell_quote(lds) + " " + shell_quote(bad_cpu_frame_samples));
     require(!std::filesystem::exists(bad_cpu_frame_samples), "CPU --frame-samples rejection wrote output");
+    run_fails(shell_quote(exe) + " compress --frame-samples 4608 " + shell_quote(lds) + " " + shell_quote(bad_cpu_frame_samples_default));
+    require(!std::filesystem::exists(bad_cpu_frame_samples_default), "CPU default --frame-samples rejection wrote output");
+    run_fails(shell_quote(exe) + " compress --lpc-order 12 " + shell_quote(lds) + " " + shell_quote(bad_cpu_lpc_order_default));
+    require(!std::filesystem::exists(bad_cpu_lpc_order_default), "CPU default --lpc-order rejection wrote output");
     run_fails(shell_quote(exe) + " compress --lpc-precision 10 " + shell_quote(lds) + " " + shell_quote(bad_cpu_lpc_precision));
     require(!std::filesystem::exists(bad_cpu_lpc_precision), "CPU --lpc-precision rejection wrote output");
     run_fails(shell_quote(exe) + " compress --rice-partition-order 4 " + shell_quote(lds) + " " + shell_quote(bad_cpu_rice_partition_order));
@@ -328,6 +353,8 @@ void test_cli(const std::filesystem::path& exe)
     }
     run_fails(shell_quote(exe) + " compress --backend opencl --threads 2 " + shell_quote(lds) + " " + shell_quote(bad_opencl_threads));
     require(!std::filesystem::exists(bad_opencl_threads), "OpenCL --threads rejection wrote output");
+    run_fails(shell_quote(exe) + " compress --backend opencl --level 8 " + shell_quote(lds) + " " + shell_quote(bad_opencl_level));
+    require(!std::filesystem::exists(bad_opencl_level), "OpenCL --level rejection wrote output");
     run_fails(shell_quote(exe) + " compress --backend opencl --device nope " + shell_quote(lds) + " " + shell_quote(bad_opencl_device));
     require(!std::filesystem::exists(bad_opencl_device), "invalid OpenCL device index wrote output");
     run_fails(shell_quote(exe) + " compress --backend opencl --container ogg " + shell_quote(lds) + " " + shell_quote(bad_opencl_container));

@@ -168,6 +168,10 @@ Implemented:
   `ld-decode` loader cover the same short-tail STREAMINFO edge as the native
   writer tests. The standalone `ldf_reader.py` check accepts only the exact
   expected PCM prefix plus small zero padding from PyAV's final plane buffer.
+- Compression CLI validation now rejects explicit no-op backend option
+  combinations: `--level` is CPU/libFLAC-only, CPU/libFLAC rejects native
+  tuning knobs even when they spell default values, and `native-verbatim`
+  rejects predictive LPC/Rice knobs that do not affect verbatim frames.
 - Opt-in real-fixture `ld-decode` loader compatibility coverage that compresses
   ignored `.lds` captures to native `.flac.ldf`, verifies reference
   `make_loader()` dispatch for `.flac.ldf` and `.flac`, and compares decoded

@@ -35,6 +35,11 @@ struct Options {
     bool container_explicit = false;
     bool show_stats = false;
     bool bench_include_opencl = false;
+    bool level_explicit = false;
+    bool native_frame_samples_explicit = false;
+    bool native_max_lpc_order_explicit = false;
+    bool native_lpc_precision_explicit = false;
+    bool native_max_rice_partition_order_explicit = false;
     unsigned level = 11;
     unsigned threads = 1;
     unsigned native_frame_samples = kDefaultNativeFrameSamples;
@@ -325,6 +330,7 @@ Options parse_compress(int argc, char** argv)
             if (++i >= argc) {
                 throw std::runtime_error("--level requires a value");
             }
+            options.level_explicit = true;
             options.level = parse_level(argv[i]);
         } else if (arg == "--threads") {
             if (++i >= argc) {
@@ -335,24 +341,28 @@ Options parse_compress(int argc, char** argv)
             if (++i >= argc) {
                 throw std::runtime_error("--frame-samples requires a value");
             }
+            options.native_frame_samples_explicit = true;
             options.native_frame_samples = parse_bounded_unsigned(
                 argv[i], "native FLAC frame sample count", 16, 4608);
         } else if (arg == "--lpc-order") {
             if (++i >= argc) {
                 throw std::runtime_error("--lpc-order requires a value");
             }
+            options.native_max_lpc_order_explicit = true;
             options.native_max_lpc_order = parse_bounded_unsigned(
                 argv[i], "native FLAC max LPC order", 0, 12);
         } else if (arg == "--lpc-precision") {
             if (++i >= argc) {
                 throw std::runtime_error("--lpc-precision requires a value");
             }
+            options.native_lpc_precision_explicit = true;
             options.native_lpc_precision = parse_bounded_unsigned(
                 argv[i], "native FLAC LPC coefficient precision", 1, 15);
         } else if (arg == "--rice-partition-order") {
             if (++i >= argc) {
                 throw std::runtime_error("--rice-partition-order requires a value");
             }
+            options.native_max_rice_partition_order_explicit = true;
             options.native_max_rice_partition_order = parse_bounded_unsigned(
                 argv[i], "native FLAC max Rice partition order", 0, 8);
         } else if (arg == "--device" || arg == "--opencl-device") {
@@ -390,6 +400,17 @@ Options parse_compress(int argc, char** argv)
         options.container = default_container_for_backend(options.backend);
     }
 
+    const bool native_predictive_options_explicit =
+        options.native_max_lpc_order_explicit ||
+        options.native_lpc_precision_explicit ||
+        options.native_max_rice_partition_order_explicit;
+    const bool native_tuning_options_explicit =
+        options.native_frame_samples_explicit || native_predictive_options_explicit;
+
+    if (options.level_explicit &&
+        options.backend != ldcompress::CompressionBackend::CpuLibFlac) {
+        throw std::runtime_error("--level is currently supported only by the cpu backend");
+    }
     if (options.threads != 1 &&
         options.backend == ldcompress::CompressionBackend::CpuLibFlac) {
         throw std::runtime_error("--threads is currently supported only by native FLAC backends");
@@ -403,11 +424,12 @@ Options parse_compress(int argc, char** argv)
         throw std::runtime_error("--device is currently supported only by the opencl backend");
     }
     if (options.backend == ldcompress::CompressionBackend::CpuLibFlac &&
-        (options.native_frame_samples != kDefaultNativeFrameSamples ||
-            options.native_max_lpc_order != kDefaultNativeMaxLpcOrder ||
-            options.native_lpc_precision != kDefaultNativeLpcPrecision ||
-            options.native_max_rice_partition_order != kDefaultNativeMaxRicePartitionOrder)) {
+        native_tuning_options_explicit) {
         throw std::runtime_error("--frame-samples, --lpc-order, --lpc-precision, and --rice-partition-order are supported only by native FLAC backends");
+    }
+    if (options.backend == ldcompress::CompressionBackend::NativeVerbatimFlac &&
+        native_predictive_options_explicit) {
+        throw std::runtime_error("--lpc-order, --lpc-precision, and --rice-partition-order are supported only by predictive native FLAC backends");
     }
 
     if (is_native_flac_backend(options.backend) &&

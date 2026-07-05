@@ -93,16 +93,17 @@ Defaults:
 - `--frame-samples N` is currently supported for native FLAC backends and sets
   the FLAC block size used by the native encoder. It defaults to `4608` and is
   constrained to `16..4608` for 40 kHz subset compatibility.
-- `--lpc-order N` is currently supported for native FLAC backends and sets the
-  maximum scalar LPC order considered by `native-fixed`. It defaults to `12`,
-  matching the 40 kHz FLAC subset cap; `0` disables LPC.
-- `--lpc-precision N` is currently supported for native FLAC backends and sets
-  the LPC coefficient precision considered by `native-fixed`. It defaults to
-  `12`, based on the current real-fixture tuning sweep; FLAC subset-compatible
-  values `1..15` are accepted.
-- `--rice-partition-order N` is currently supported for native FLAC backends and
-  sets the maximum Rice partition order considered by `native-fixed`. It
-  defaults to `5`; values `0..8` are accepted for FLAC subset compatibility.
+- `--lpc-order N` is currently supported for predictive native FLAC backends
+  (`native-fixed` and `opencl`) and sets the maximum LPC order considered. It
+  defaults to `12`, matching the 40 kHz FLAC subset cap; `0` disables LPC.
+- `--lpc-precision N` is currently supported for predictive native FLAC
+  backends (`native-fixed` and `opencl`) and sets the LPC coefficient precision.
+  It defaults to `12`, based on the current real-fixture tuning sweep; FLAC
+  subset-compatible values `1..15` are accepted.
+- `--rice-partition-order N` is currently supported for predictive native FLAC
+  backends (`native-fixed` and `opencl`) and sets the maximum Rice partition
+  order considered. It defaults to `5`; values `0..8` are accepted for FLAC
+  subset compatibility.
 - `--stats` is currently supported for native FLAC backends and prints per-frame
   subframe counts, fixed/LPC predictor order counts, Rice partition order
   counts, and wasted-bits counts.
@@ -115,18 +116,19 @@ Defaults:
   are the flattened indexes printed by `ld-compress-ng devices`.
 - `--container flac` writes native FLAC, useful for compatibility testing with
   the future `.flac.ldf` GPU lane.
-- Compression levels accept the legacy CPU range `1..12`; values above libFLAC's
-  preset range currently map to libFLAC level 8.
+- `--level N` is supported only by the CPU/libFLAC backend. Compression levels
+  accept the legacy CPU range `1..12`; values above libFLAC's preset range
+  currently map to libFLAC level 8.
 
 Benchmarking:
 
-- `bench` runs the CPU/libFLAC Ogg path, the native-verbatim path, and the
-  native-fixed path for each requested thread count, then prints bytes, ratio,
-  elapsed seconds, MiB/s, and compact native decision stats for native backends.
-  Add `--include-opencl` to include experimental OpenCL backend rows for the
-  same native tuning grid when an OpenCL device is available; use
-  `--device INDEX` when you want a specific OpenCL device. For native backend
-  tuning, `bench` accepts comma-separated
+- `bench` runs one CPU/libFLAC Ogg baseline, native-verbatim baselines for the
+  requested frame sizes, and native-fixed rows across the requested
+  thread/tuning grid, then prints bytes, ratio, elapsed seconds, MiB/s, and
+  compact native decision stats for native backends. Add `--include-opencl` to
+  include experimental OpenCL backend rows for the same native tuning grid when
+  an OpenCL device is available; use `--device INDEX` when you want a specific
+  OpenCL device. For native backend tuning, `bench` accepts comma-separated
   `--frame-samples`, `--lpc-order`, `--lpc-precision`, and
   `--rice-partition-order` lists and runs the native-fixed cross product.
 - Benchmark output files are temporary and removed after each run; use
