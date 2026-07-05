@@ -32,11 +32,17 @@ external `ld-lds-converter` command. System libraries such as `libFLAC`,
   bringing along the full Qt-based `ld-decode-tools` build.
 - `reference/testdata/` contains ignored real `.lds` fixtures from
   `ld-decode-testdata-ci` for opt-in regression and tuning sweeps.
-- `reference/decode-orc/` contains the downstream consumer for decoded output.
-  The current reference tree does not directly read `.ldf`, `.flac.ldf`, or
-  FLAC RF captures; it consumes later `.tbc` and CVBS artifacts. Treat it as a
-  compatibility reference for the eventual decoded-data pipeline, not as a
-  direct compressed-RF reader yet.
+- `reference/ld-decode/` contains the upstream RF decoder and is the direct
+  compatibility reference for ingesting FLAC-compressed RF captures. Its loader
+  routes `.raw.oga`, `.ldf`, and `.flac` inputs through FFmpeg/PyAV FLAC
+  decode, so FlaLDF `.flac.ldf` output follows the `.ldf` path. Its bundled
+  `scripts/ld-compress` documents the legacy CPU Ogg FLAC and FlaLDF native
+  FLAC workflows that this tool is replacing.
+- `reference/decode-orc/` contains the downstream post-RF consumer for decoded
+  TBC and CVBS artifacts (`.tbc`, `.tbcy`, `.tbcc`, `.composite`, `.y`, `.c`).
+  The current reference tree does not directly read `.ldf`, `.raw.oga`,
+  `.flac.ldf`, or FLAC RF captures; treat it as a compatibility reference for
+  the eventual decoded-data pipeline, not as a direct compressed-RF reader.
 - `reference/flac/` contains the Xiph.org FLAC reference source. Treat it as an
   implementation reference, not vendored project code.
 - `reference/flac-test-files/` contains reference FLAC-encoded files for future
@@ -163,9 +169,9 @@ Immediate engineering focus:
   keep Metal for macOS as a later optional backend.
 - Continue native FLAC compatibility hardening using `reference/rfc9639.txt`
   and `reference/flac/` as read-only references.
-- Revisit direct `reference/decode-orc/` integration if that tree gains
-  compressed-RF input support, or if this project grows a decoded TBC/CVBS
-  export path suitable for Decode-Orc pipeline tests.
+- Use `reference/ld-decode/` as the direct compatibility target for compressed
+  RF input (`.ldf`, `.raw.oga`, and FlaLDF `.flac.ldf`). Keep
+  `reference/decode-orc/` for later decoded TBC/CVBS pipeline compatibility.
 - Add targeted tests from `reference/flac-test-files/` only when they are useful
   for this compressor's native FLAC surface. Done for the first rejection-focused
   opt-in suite; expand only as native FLAC compatibility work needs it.
