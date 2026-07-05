@@ -94,6 +94,11 @@ std::optional<FlacLpcSubframeAnalysis> analyze_mono_lpc_order(
     const FlacFrameInfo& info,
     unsigned lpc_order);
 
+std::vector<FlacLpcSubframeAnalysis> analyze_mono_lpc_order_candidates(
+    const std::vector<std::int32_t>& samples,
+    const FlacFrameInfo& info,
+    unsigned lpc_order);
+
 FlacSubframeDecision write_mono_verbatim_frame(
     std::ostream& output,
     const std::vector<std::int32_t>& samples,

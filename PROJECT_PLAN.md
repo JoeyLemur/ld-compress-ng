@@ -227,6 +227,13 @@ Real-fixture sweep result:
   picks Tukey, and recost still matches OpenCL exactly. The next useful probe
   is to dump/re-cost same-order per-window OpenCL candidates beside scalar's
   rectangular/Tukey/Welch candidates for frame-level comparisons.
+- The frame `0`, order-12 candidate dump confirms scalar's best Tukey
+  candidate recosts to `23,085` bits while OpenCL's same-order Tukey task
+  recosts to `23,163` bits, so OpenCL rejects Tukey and chooses Welch at
+  `23,111` bits. OpenCL rectangular is slightly better than scalar rectangular,
+  and OpenCL Welch is within `3` bits of scalar Welch/error-feedback, so the
+  current first-frame regression is concentrated in Tukey generated-LPC
+  coefficient parity.
 - Earlier Tukey-only retuning found Rice partition order `6` at `79,914,216`
   bytes, but the current top-two-order Welch result with order `5` is smaller;
   keep `5` as the default speed/size tradeoff.
