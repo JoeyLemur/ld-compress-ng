@@ -150,6 +150,9 @@ Implemented:
 - Native FLAC decode now rejects STREAMINFO-declared non-RF sample counts before
   writing decoded LDS output, and preserves the first decoder validation error
   instead of overwriting it with a later libFLAC status.
+- The `decompress` CLI writes to a same-directory temporary output and renames
+  it into place only after decode and late FLAC validations succeed, so bad
+  STREAMINFO MD5/sample-count inputs do not replace an existing `.lds` output.
 - Native/OpenCL FLAC encoders now keep STREAMINFO min/max block sizes in the
   RFC-required `16..65535` range and exclude short final LDS tails from the
   minimum block-size bound.

@@ -76,6 +76,22 @@ void write_file(const std::filesystem::path& path, std::string_view data)
     output.write(data.data(), static_cast<std::streamsize>(data.size()));
 }
 
+std::string corrupt_native_streaminfo_md5(std::string data)
+{
+    require(data.size() > 42, "native FLAC test file is too small to corrupt STREAMINFO MD5");
+    require(data.substr(0, 4) == "fLaC", "native FLAC test file did not have fLaC marker");
+    data[26] = static_cast<char>(static_cast<unsigned char>(data[26]) ^ 0xffU);
+    return data;
+}
+
+std::string corrupt_native_streaminfo_sample_count(std::string data)
+{
+    require(data.size() > 42, "native FLAC test file is too small to corrupt STREAMINFO sample count");
+    require(data.substr(0, 4) == "fLaC", "native FLAC test file did not have fLaC marker");
+    data[25] = static_cast<char>(static_cast<unsigned char>(data[25]) ^ 0x04U);
+    return data;
+}
+
 std::string make_lds_fixture()
 {
     std::string data;
@@ -134,6 +150,10 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_native_verbatim_rice_partition_order = temp_dir / "fixture.bad-native-verbatim-rice-partition-order.flac.ldf";
     const auto native_fixed = temp_dir / "fixture.native-fixed.flac.ldf";
     const auto native_fixed_out = temp_dir / "fixture.native-fixed.out.lds";
+    const auto bad_native_fixed_md5 = temp_dir / "fixture.native-fixed.bad-md5.flac.ldf";
+    const auto bad_native_fixed_md5_out = temp_dir / "fixture.native-fixed.bad-md5.out.lds";
+    const auto bad_native_fixed_count = temp_dir / "fixture.native-fixed.bad-count.flac.ldf";
+    const auto protected_decompress_output = temp_dir / "fixture.protected-output.lds";
     const auto native_fixed_threads = temp_dir / "fixture.native-fixed-threads.flac.ldf";
     const auto native_fixed_threads_out = temp_dir / "fixture.native-fixed-threads.out.lds";
     const auto native_fixed_stats = temp_dir / "fixture.native-fixed-stats.flac.ldf";
@@ -238,6 +258,18 @@ void test_cli(const std::filesystem::path& exe)
     require(read_file(native_fixed_out) == fixture, "native-fixed FLAC round trip changed LDS bytes");
     require(std::filesystem::file_size(native_fixed) < std::filesystem::file_size(native_verbatim),
         "native-fixed fixture was not smaller than native-verbatim fixture");
+    write_file(bad_native_fixed_md5, corrupt_native_streaminfo_md5(read_file(native_fixed)));
+    run_fails(shell_quote(exe) + " decompress " + shell_quote(bad_native_fixed_md5) + " " + shell_quote(bad_native_fixed_md5_out));
+    require(!std::filesystem::exists(bad_native_fixed_md5_out),
+        "failed decompress without overwrite left output behind");
+    write_file(bad_native_fixed_count, corrupt_native_streaminfo_sample_count(read_file(native_fixed)));
+    write_file(protected_decompress_output, "keep this LDS output");
+    run_fails(shell_quote(exe) + " decompress --overwrite " + shell_quote(bad_native_fixed_count) + " " + shell_quote(protected_decompress_output));
+    require(read_file(protected_decompress_output) == "keep this LDS output",
+        "failed decompress replaced existing output");
+    run_ok(shell_quote(exe) + " decompress --overwrite " + shell_quote(native_fixed) + " " + shell_quote(protected_decompress_output));
+    require(read_file(protected_decompress_output) == fixture,
+        "successful overwrite decompress did not replace existing output");
     run_ok(shell_quote(exe) + " compress --backend native-fixed --threads 2 " + shell_quote(lds) + " " + shell_quote(native_fixed_threads));
     run_ok(shell_quote(exe) + " decompress " + shell_quote(native_fixed_threads) + " " + shell_quote(native_fixed_threads_out));
     require(read_file(native_fixed_threads_out) == fixture, "threaded native-fixed FLAC round trip changed LDS bytes");

@@ -176,6 +176,27 @@ void ensure_distinct_input_output(const std::string& input, const std::string& o
     }
 }
 
+std::filesystem::path make_temporary_output_path(const std::string& output)
+{
+    const std::filesystem::path output_path(output);
+    const auto directory = output_path.parent_path();
+    const auto filename = output_path.filename().string();
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    for (unsigned attempt = 0; attempt < 100; ++attempt) {
+        auto candidate = directory /
+            ("." + filename + ".tmp-" + std::to_string(stamp) + "-" + std::to_string(attempt));
+        std::error_code ec;
+        if (!std::filesystem::exists(candidate, ec)) {
+            return candidate;
+        }
+        if (ec) {
+            throw std::runtime_error("could not inspect temporary output path: " +
+                candidate.string() + ": " + ec.message());
+        }
+    }
+    throw std::runtime_error("could not allocate temporary output path for: " + output);
+}
+
 unsigned parse_level(std::string_view text)
 {
     unsigned level = 0;
@@ -763,12 +784,36 @@ int run_decompress(const Options& options)
 {
     ensure_distinct_input_output(options.input, options.output);
     ensure_output_allowed(options.output, options.overwrite);
-    std::ofstream output(options.output, std::ios::binary);
-    if (!output) {
-        throw std::runtime_error("could not open output: " + options.output);
+
+    const auto temp_output = make_temporary_output_path(options.output);
+    bool renamed = false;
+    ldcompress::ConversionStats stats;
+    try {
+        {
+            std::ofstream output(temp_output, std::ios::binary);
+            if (!output) {
+                throw std::runtime_error("could not open temporary output: " + temp_output.string());
+            }
+
+            stats = ldcompress::decompress_flac_to_lds(options.input, output);
+            output.close();
+            if (!output) {
+                throw std::runtime_error("failed to finish decompressed output: " +
+                    temp_output.string());
+            }
+        }
+
+        ensure_output_allowed(options.output, options.overwrite);
+        std::filesystem::rename(temp_output, options.output);
+        renamed = true;
+    } catch (...) {
+        if (!renamed) {
+            std::error_code ec;
+            std::filesystem::remove(temp_output, ec);
+        }
+        throw;
     }
 
-    const auto stats = ldcompress::decompress_flac_to_lds(options.input, output);
     std::cerr << "decompressed " << stats.input_bytes << " bytes to "
               << stats.output_bytes << " bytes (" << stats.samples
               << " samples)\n";

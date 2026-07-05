@@ -40,6 +40,8 @@ The current implementation provides:
 - Decompression from Ogg FLAC and native FLAC to packed `.lds`.
 - Decode-time STREAMINFO/sample-rate/sample-count/PCM-MD5 validation for FLAC
   inputs.
+- `decompress` writes through a temporary file and replaces the requested output
+  only after decode validation succeeds.
 - MD5-based verification, optionally against an original `.lds`.
 - A backend selection facade for CPU, scalar native FLAC, and OpenCL-native
   FLAC output.
