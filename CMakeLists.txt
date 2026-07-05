@@ -17,6 +17,9 @@ option(LDCOMPRESS_ENABLE_FLAC_TEST_FILE_TESTS "Enable opt-in tests against exter
 set(LDCOMPRESS_REAL_FIXTURE_DIR "" CACHE PATH "Directory containing external .lds fixtures for opt-in real-fixture tests")
 set(LDCOMPRESS_FLAC_TEST_FILE_DIR "" CACHE PATH "Directory containing external FLAC decoder testbench files")
 
+find_package(Python3 QUIET COMPONENTS Interpreter)
+find_program(FFMPEG_EXECUTABLE ffmpeg)
+find_program(FFPROBE_EXECUTABLE ffprobe)
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
 pkg_check_modules(FLAC REQUIRED IMPORTED_TARGET flac)
@@ -188,6 +191,37 @@ if(BUILD_TESTING)
     )
 
     add_test(NAME cli COMMAND test_cli $<TARGET_FILE:ld-compress-ng>)
+
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME ffmpeg_native_flac_compat
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_native_flac_external_decode.py
+                --decoder ffmpeg
+                --binary $<TARGET_FILE:ld-compress-ng>
+                --ffmpeg ${FFMPEG_EXECUTABLE}
+                --ffprobe ${FFPROBE_EXECUTABLE}
+        )
+        set_tests_properties(ffmpeg_native_flac_compat PROPERTIES
+            LABELS external-decode-compat
+            SKIP_RETURN_CODE 77
+        )
+
+        add_test(
+            NAME ld_decode_pyav_compat
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_native_flac_external_decode.py
+                --decoder ld-decode-pyav
+                --binary $<TARGET_FILE:ld-compress-ng>
+                --ldf-reader ${CMAKE_CURRENT_SOURCE_DIR}/reference/ld-decode/lddecode/ldf_reader.py
+        )
+        set_tests_properties(ld_decode_pyav_compat PROPERTIES
+            LABELS external-decode-compat
+            SKIP_RETURN_CODE 77
+        )
+    endif()
 
     if(LDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS)
         if(NOT LDCOMPRESS_REAL_FIXTURE_DIR)

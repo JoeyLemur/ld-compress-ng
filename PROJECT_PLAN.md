@@ -150,6 +150,11 @@ Implemented:
 - Native FLAC STREAMINFO/frame-header contract tests.
 - Opt-in FLAC decoder testbench regression coverage for rejecting non-RF-shaped
   and malformed FLAC inputs cleanly.
+- Skip-safe external native-FLAC decode CTest coverage that generates native
+  `.flac.ldf` output, checks FFmpeg can probe/decode it as mono 40 kHz FLAC,
+  and, when PyAV is available, runs the reference `ld-decode` PyAV-based
+  `ldf_reader.py`; both paths compare emitted signed 16-bit mono PCM against
+  the expected LDS-unpacked samples.
 - Generated test fixtures, opt-in real-fixture regression tests, and a
   real-fixture tuning sweep helper at `tools/sweep_real_fixtures.py`.
 
@@ -190,6 +195,10 @@ Immediate engineering focus:
 - Use `reference/ld-decode/` as the direct compatibility target for compressed
   RF input (`.ldf`, `.raw.oga`, and FlaLDF `.flac.ldf`). Keep
   `reference/decode-orc/` for later decoded TBC/CVBS pipeline compatibility.
+- The current Linux host has `ffmpeg`/`ffprobe`, so `ffmpeg_native_flac_compat`
+  exercises native `.flac.ldf` decode in the default suite. It does not have
+  PyAV installed, so `ld_decode_pyav_compat` is also registered but skips until
+  the `av` Python module is available.
 - Use `reference/FFmpeg/` as an additional read-only FLAC encoder heuristic
   reference when evaluating future Welch-window, coefficient refinement, or
   higher-order LPC experiments.
