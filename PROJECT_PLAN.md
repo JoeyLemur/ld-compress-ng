@@ -116,6 +116,10 @@ Implemented:
 - OpenCL generated LPC analysis for encoder-shaped task groups now evaluates
   both rectangular and Tukey-windowed autocorrelation candidates, matching the
   scalar native analyzer's first window-family split before exact Rice costing.
+- OpenCL generated LPC analysis also uses the two spare FLACCL-style task slots
+  for high-order Welch-windowed LPC candidates, keeping the default mixed task
+  group at the 32-task OpenCL limit while improving exact-costed candidate
+  coverage.
 - Encoder-facing OpenCL generated frame analysis wrapper that builds mixed
   mono task plans from frame samples and maps best FLACCL tasks to native
   `FlacSubframeDecision` records for future writer integration.
@@ -162,9 +166,11 @@ Real-fixture sweep result:
 - Aggregate native-fixed size after Tukey-windowed LPC analysis and focused
   retuning: `79,920,941` bytes, about `-0.21%` smaller than CPU/libFLAC for the
   same fixtures.
-- Aggregate OpenCL size after Tukey-windowed generated LPC analysis:
-  `80,443,214` bytes, about `+0.44%` larger than CPU/libFLAC and down from the
-  pre-Tukey OpenCL aggregate of `81,217,362` bytes (`+1.41%`).
+- Aggregate OpenCL size after adding Tukey plus two high-order Welch generated
+  LPC candidates: `79,952,094` bytes, about `-0.17%` smaller than CPU/libFLAC
+  and down from the Tukey-only OpenCL aggregate of `80,443,214` bytes
+  (`+0.44%`) and the pre-Tukey OpenCL aggregate of `81,217,362` bytes
+  (`+1.41%`).
 - Rice partition order `6` produced a slightly smaller aggregate
   (`79,914,216` bytes), but the byte gain was small enough that `5` remains the
   default speed/size tradeoff.

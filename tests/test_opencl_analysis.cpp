@@ -26,7 +26,6 @@
 
 namespace {
 
-constexpr std::size_t kGeneratedLpcWindowCount = 2;
 constexpr double kGeneratedTukeyTaperFraction = 0.5;
 
 void require(bool condition, const char* message)
@@ -434,23 +433,32 @@ std::vector<float> generated_lpc_windows(
     auto* tukey = windows.data() + blocksize;
     const auto edge_width = static_cast<std::size_t>(
         (kGeneratedTukeyTaperFraction / 2.0) * static_cast<double>(blocksize));
-    if (edge_width == 0) {
-        return windows;
+    if (edge_width != 0) {
+        const auto np = edge_width - 1U;
+        if (np == 0) {
+            tukey[0] = 0.0f;
+            tukey[blocksize - 1U] = 0.0f;
+        } else {
+            for (std::size_t n = 0; n <= np; ++n) {
+                const auto left_weight =
+                    0.5 - (0.5 * std::cos(kPi * static_cast<double>(n) / static_cast<double>(np)));
+                const auto right_weight =
+                    0.5 - (0.5 * std::cos(kPi * static_cast<double>(n + np) / static_cast<double>(np)));
+                tukey[n] = static_cast<float>(left_weight);
+                tukey[blocksize - np - 1U + n] = static_cast<float>(right_weight);
+            }
+        }
     }
-    const auto np = edge_width - 1U;
-    if (np == 0) {
-        tukey[0] = 0.0f;
-        tukey[blocksize - 1U] = 0.0f;
+    if (window_count < 3) {
         return windows;
     }
 
-    for (std::size_t n = 0; n <= np; ++n) {
-        const auto left_weight =
-            0.5 - (0.5 * std::cos(kPi * static_cast<double>(n) / static_cast<double>(np)));
-        const auto right_weight =
-            0.5 - (0.5 * std::cos(kPi * static_cast<double>(n + np) / static_cast<double>(np)));
-        tukey[n] = static_cast<float>(left_weight);
-        tukey[blocksize - np - 1U + n] = static_cast<float>(right_weight);
+    auto* welch = windows.data() + (2U * blocksize);
+    const auto endpoint = static_cast<double>(blocksize - 1U);
+    const auto midpoint = endpoint / 2.0;
+    for (std::size_t n = 0; n < blocksize; ++n) {
+        const auto k = (static_cast<double>(n) - midpoint) / midpoint;
+        welch[n] = static_cast<float>(1.0 - (k * k));
     }
     return windows;
 }
@@ -586,18 +594,23 @@ GeneratedLpcPrefixShape generated_lpc_prefix_shape(
     }
     require(lpc_tasks_per_window > 0 && lpc_tasks_per_window <= kFlacClMaxOrder,
         "generated LPC oracle has invalid tasks per window");
-    require((total_lpc_tasks % lpc_tasks_per_window) == 0,
-        "generated LPC oracle has incomplete window groups");
-
-    const auto window_count = total_lpc_tasks / lpc_tasks_per_window;
+    const auto window_count =
+        (total_lpc_tasks + lpc_tasks_per_window - 1U) / lpc_tasks_per_window;
     for (std::size_t window = 0; window < window_count; ++window) {
         const auto window_base = frame_base + window * lpc_tasks_per_window;
-        for (std::size_t slot = 0; slot < lpc_tasks_per_window; ++slot) {
+        const auto remaining = total_lpc_tasks - (window * lpc_tasks_per_window);
+        const auto slots_this_window = std::min(lpc_tasks_per_window, remaining);
+        for (std::size_t slot = 0; slot < slots_this_window; ++slot) {
             const auto& task = plan.residual_tasks[window_base + slot];
             require(task.data.type == kFlacClSubframeLpc,
                 "generated LPC oracle window group type mismatch");
-            require(task.data.residualOrder == static_cast<std::int32_t>(slot + 1U),
+            require(task.data.residualOrder > 0 &&
+                    task.data.residualOrder <= static_cast<std::int32_t>(kFlacClMaxOrder),
                 "generated LPC oracle window group order mismatch");
+            if (slots_this_window == lpc_tasks_per_window) {
+                require(task.data.residualOrder == static_cast<std::int32_t>(slot + 1U),
+                    "generated LPC oracle full window group order mismatch");
+            }
         }
     }
 
@@ -642,8 +655,11 @@ std::vector<ldcompress::opencl_detail::FlacClSubframeTask> make_generated_lpc_or
             const auto lpcs = generated_lpc_coefficients(autocor);
 
             for (std::size_t slot = 0; slot < lpc_shape.lpc_tasks_per_window; ++slot) {
-                const auto order = slot + 1U;
+                if (window_base + slot >= frame_base + lpc_shape.total_lpc_tasks) {
+                    break;
+                }
                 auto& task = tasks[window_base + slot];
+                const auto order = static_cast<std::size_t>(task.data.residualOrder);
 
                 std::int32_t max_coefficient = 0;
                 for (std::size_t i = 0; i < order; ++i) {
@@ -863,13 +879,13 @@ void test_default_mono_task_plan()
     using namespace ldcompress::opencl_detail;
 
     const OpenClMonoAnalysisTaskOptions options;
-    require(mono_analysis_tasks_per_frame(options) == 30, "unexpected default task count");
+    require(mono_analysis_tasks_per_frame(options) == 32, "unexpected default task count");
 
     const auto plan = build_mono_analysis_task_plan(2, options);
-    require(plan.residual_tasks_per_frame == 30, "unexpected residual tasks per frame");
-    require(plan.estimate_tasks_per_frame == 30, "unexpected estimate tasks per frame");
-    require(plan.residual_tasks.size() == 60, "unexpected residual task vector size");
-    require(plan.selected_tasks.size() == 60, "unexpected selected task vector size");
+    require(plan.residual_tasks_per_frame == 32, "unexpected residual tasks per frame");
+    require(plan.estimate_tasks_per_frame == 32, "unexpected estimate tasks per frame");
+    require(plan.residual_tasks.size() == 64, "unexpected residual task vector size");
+    require(plan.selected_tasks.size() == 64, "unexpected selected task vector size");
 
     for (std::size_t i = 0; i < plan.selected_tasks.size(); ++i) {
         require(plan.selected_tasks[i] == static_cast<int>(i), "selected task index mismatch");
@@ -886,11 +902,14 @@ void test_default_mono_task_plan()
             0);
     }
 
-    const auto& constant = plan.residual_tasks[24];
+    require_common_task_fields(plan.residual_tasks[24], kFlacClSubframeLpc, 11, 0);
+    require_common_task_fields(plan.residual_tasks[25], kFlacClSubframeLpc, 12, 0);
+
+    const auto& constant = plan.residual_tasks[26];
     require_common_task_fields(constant, kFlacClSubframeConstant, 1, 0);
     require(constant.coefs[0] == 1, "constant coefficient mismatch");
 
-    const auto fixed_base = static_cast<std::size_t>(25);
+    const auto fixed_base = static_cast<std::size_t>(27);
     for (int order = 0; order <= 4; ++order) {
         require_common_task_fields(plan.residual_tasks[fixed_base + static_cast<std::size_t>(order)],
             kFlacClSubframeFixed,
@@ -905,8 +924,8 @@ void test_default_mono_task_plan()
     require(plan.residual_tasks[fixed_base + 4].coefs[2] == -6, "fixed order 4 coefficient 2 mismatch");
     require(plan.residual_tasks[fixed_base + 4].coefs[3] == 4, "fixed order 4 coefficient 3 mismatch");
 
-    require_common_task_fields(plan.residual_tasks[30], kFlacClSubframeLpc, 1, 4608);
-    require_common_task_fields(plan.residual_tasks[59], kFlacClSubframeFixed, 4, 4608);
+    require_common_task_fields(plan.residual_tasks[32], kFlacClSubframeLpc, 1, 4608);
+    require_common_task_fields(plan.residual_tasks[63], kFlacClSubframeFixed, 4, 4608);
 }
 
 void test_small_custom_task_plan()
@@ -1557,7 +1576,7 @@ void test_opencl_mixed_generated_analysis_smoke()
     samples.insert(samples.end(), lpc_samples.begin(), lpc_samples.end());
 
     const auto tasks_per_frame = mono_analysis_tasks_per_frame(options);
-    require(tasks_per_frame == 30,
+    require(tasks_per_frame == 32,
         "unexpected mixed generated task count");
     const auto plan = build_mono_analysis_task_plan(3, options);
     const auto generated_tasks = make_generated_lpc_oracle_tasks(samples, plan, 12);
@@ -1573,6 +1592,7 @@ void test_opencl_mixed_generated_analysis_smoke()
 
     for (std::size_t frame = 0; frame < 3; ++frame) {
         const auto frame_base = frame * tasks_per_frame;
+        const auto lpc_shape = generated_lpc_prefix_shape(plan, frame);
         for (std::size_t slot = 0; slot < tasks_per_frame; ++slot) {
             const auto task_index = frame_base + slot;
             const auto& task = result.analyzed_tasks[task_index];
@@ -1580,7 +1600,7 @@ void test_opencl_mixed_generated_analysis_smoke()
                 "OpenCL mixed generated exact size was not populated");
             require(task.data.porder >= 0 && task.data.porder <= 5,
                 "OpenCL mixed generated partition order out of range");
-            if (slot < options.max_lpc_order * kGeneratedLpcWindowCount) {
+            if (slot < lpc_shape.total_lpc_tasks) {
                 require_generated_lpc_fields_match(task, generated_tasks[task_index],
                     "OpenCL mixed generated LPC fields diverged from scalar oracle");
                 require_lpc_coefficients_fit_precision(task,
@@ -1636,6 +1656,11 @@ void test_opencl_generated_frame_analysis_wrapper_smoke()
     const auto lpc_samples = make_lpc_friendly_samples();
     samples.insert(samples.end(), lpc_samples.begin(), lpc_samples.end());
 
+    OpenClMonoAnalysisTaskOptions options;
+    options.frame_samples = 512;
+    options.max_lpc_order = 12;
+    const auto expected_tasks_per_frame = mono_analysis_tasks_per_frame(options);
+
     const auto result = analyze_opencl_mono_generated_frames(
         samples,
         make_lpc_frame_info(12, 12, 5),
@@ -1644,7 +1669,7 @@ void test_opencl_generated_frame_analysis_wrapper_smoke()
 
     require(!result.device_name.empty(),
         "OpenCL generated frame wrapper did not report a device");
-    require(result.analyzed_tasks.size() == 90,
+    require(result.analyzed_tasks.size() == expected_tasks_per_frame * 3U,
         "OpenCL generated frame wrapper analyzed task count mismatch");
     require(result.best_tasks.size() == 3,
         "OpenCL generated frame wrapper best task count mismatch");
