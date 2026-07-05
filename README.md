@@ -26,10 +26,11 @@ optional; when CMake cannot find it, the CPU compressor still builds and
 `devices` reports that OpenCL support was not built.
 
 `ld-compress-ng` itself does not depend on Qt, ffmpeg, `.NET`, Mono, FlaLDF,
-OpenSSL, or `ld-lds-converter`. Some of those tools remain useful for regenerating
-legacy reference fixtures, but they are not normal build or runtime dependencies.
-Ignored real RF fixtures and local FLAC decoder testbench files can be exercised
-with the opt-in CMake suites documented in `BUILD.md`.
+OpenSSL, or `ld-lds-converter`. Some of those tools remain useful for optional
+compatibility tests or regenerating legacy reference fixtures, but they are not
+normal build or runtime dependencies. Ignored real RF fixtures and local FLAC
+decoder testbench files can be exercised with the opt-in CMake suites documented
+in `BUILD.md`.
 
 ## Current Status
 
@@ -80,8 +81,8 @@ Defaults:
 - `compress` writes Ogg FLAC `.ldf` output.
 - `--backend cpu` is the current default production compression backend.
 - `--backend native-verbatim` writes native FLAC `.flac.ldf` output using
-  uncompressed verbatim FLAC frames. This is mainly a compatibility stepping
-  stone for the future native/GPU encoder, not the final compressed path.
+  uncompressed verbatim FLAC frames. This is mainly a compatibility/debugging
+  path now that predictive scalar and OpenCL-native FLAC backends exist.
 - `--backend native-fixed` writes native FLAC `.flac.ldf` output using scalar
   subframe selection: constant for flat frames, fixed prediction/Rice residuals,
   LPC/Rice residuals up to order 12, partition-order search `0..5` by default
@@ -117,7 +118,7 @@ Defaults:
   `compress --backend opencl` and with `bench --include-opencl`. The indexes
   are the flattened indexes printed by `ld-compress-ng devices`.
 - `--container flac` writes native FLAC, useful for compatibility testing with
-  the future `.flac.ldf` GPU lane.
+  the `.flac.ldf` native/OpenCL lane.
 - `--level N` is supported only by the CPU/libFLAC backend. Compression levels
   accept the legacy CPU range `1..12`; values above libFLAC's preset range
   currently map to libFLAC level 8.

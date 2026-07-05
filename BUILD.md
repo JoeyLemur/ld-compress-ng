@@ -3,7 +3,8 @@
 `ld-compress-ng` is a C++20/CMake project targeting Linux and macOS on arm64 and
 amd64/x86_64. The normal CPU compressor is intentionally small: it does not
 depend on Qt, ffmpeg, `.NET`, Mono, FlaLDF, OpenSSL, or `ld-lds-converter` at
-build time or runtime.
+build time or runtime. Some optional compatibility tests use local reference
+tools when they are available and skip cleanly when they are not.
 
 ## Dependency Matrix
 
@@ -15,7 +16,9 @@ build time or runtime.
 | `libFLAC` development files | Yes | CPU FLAC encode/decode | Requires pkg-config module `flac`. |
 | `libogg` development files | Yes | Ogg FLAC container support | Requires pkg-config module `ogg`. |
 | OpenCL headers + loader/framework | Optional | `devices` enumeration, experimental OpenCL backend | Disable with `-DLDCOMPRESS_ENABLE_OPENCL=OFF`. |
-| `ffmpeg` | No | Legacy fixture regeneration only | Not used by normal builds/tests/runtime. |
+| Python 3 interpreter | Optional | Skip-safe external decode compatibility CTests and helper scripts | CMake adds Python-based tests only when an interpreter is found. |
+| `ffmpeg`/`ffprobe` | Optional | External native-FLAC decode compatibility CTest and legacy fixture regeneration | The compatibility test skips if `ffmpeg` is unavailable. |
+| PyAV and reference `ld-decode` dependencies | Optional | External `ld-decode` loader compatibility CTests | Tests skip if the local reference tree or imports are unavailable. |
 | `ld-lds-converter` | No | Legacy fixture regeneration only | Reference binary may live under `build-ld-lds-converter/`. |
 | Qt | No | Reference converter build only | `ld-compress-ng` itself does not link Qt. |
 
@@ -117,7 +120,7 @@ ctest --test-dir build --output-on-failure
 ```
 
 Observed result: `build/test_opencl_analysis` exited successfully without skip
-messages, and the default CTest suite passed `9/9` tests. The test currently
+messages, and the non-real-fixture CTest suite passed. The test currently
 selects the first available OpenCL device, so this validates device `[0]` unless
 future tests add explicit multi-device coverage.
 
@@ -175,11 +178,21 @@ cmake --build build-real-fixtures --parallel
 ctest --test-dir build-real-fixtures -L real-fixtures --output-on-failure
 ```
 
-The real-fixture test recursively finds `.lds` files under the configured
+The C++ real-fixture test recursively finds `.lds` files under the configured
 directory, verifies matching legacy `.ldf` files when present, and round-trips
 each fixture through the CPU/libFLAC and threaded native-fixed backends. It
 prints ratio, timing, and compact native decision-stat columns as a local
-regression scoreboard. The fixture tree remains ignored by Git.
+regression scoreboard.
+
+When Python and the local `reference/ld-decode/` loader dependencies are
+available, the same CMake option also adds skip-safe external compatibility
+tests. Those compress the first fixture to native `.flac.ldf` output and verify
+the reference `ld-decode` loader can read both `.flac.ldf` and `.flac` suffixes.
+An OpenCL real-fixture loader test is added too; it skips cleanly when OpenCL
+support, a runtime device, or the reference loader dependencies are unavailable.
+Use `ctest --test-dir build-real-fixtures -L real-fixtures -LE opencl` when you
+want the scalar real-fixture suite without the OpenCL runtime check. The fixture
+tree remains ignored by Git.
 
 ## Opt-In FLAC Decoder Testbench
 
@@ -232,19 +245,23 @@ Use `--dry-run` to print the generated `bench` commands and `--limit N` for a
 quick subset check. The helper depends only on Python 3 stdlib, the built
 `ld-compress-ng` binary, and local ignored fixture files.
 
-After adding Tukey-windowed LPC analysis candidates and retuning over the six
-current real fixtures, frame size `4608`, LPC order `12`, LPC coefficient
-precision `12`, and Rice partition order `5` are the current default
-native-fixed settings. That configuration produces `79,920,941` bytes across
-the current real fixtures, about `-0.21%` smaller than CPU/libFLAC. Rice
-partition order `6` squeezed the aggregate to `79,914,216` bytes, but the byte
-gain was small enough that `5` remains the default speed/size tradeoff.
+After adding Tukey-windowed LPC analysis candidates plus high-order
+Welch-windowed candidates and retuning over the six current real fixtures, frame
+size `4608`, LPC order `12`, LPC coefficient precision `12`, and Rice partition
+order `5` are the current default native-fixed settings. In the latest pinned
+sweep, raw LDS inputs total `149,954,560` bytes, CPU/libFLAC outputs total
+`80,086,984` bytes, scalar native-fixed outputs total `79,867,690` bytes, and
+OpenCL outputs total `79,952,087` bytes. That leaves scalar native-fixed about
+`-0.27%` smaller than CPU/libFLAC and OpenCL about `-0.17%` smaller than
+CPU/libFLAC on the current fixture set; keep Rice partition order `5` as the
+default speed/size tradeoff unless a future sweep justifies changing it.
 
 ## Legacy Fixture Regeneration
 
-Committed tests do not require `ffmpeg` or `ld-lds-converter`; the legacy Ogg
-FLAC fixture is embedded as bytes. To regenerate that fixture intentionally, use
-the reference converter and ffmpeg outside the normal build path:
+Committed generated-fixture tests do not require `ffmpeg` or `ld-lds-converter`;
+the legacy Ogg FLAC fixture is embedded as bytes. To regenerate that fixture
+intentionally, use the reference converter and ffmpeg outside the normal build
+path:
 
 ```sh
 build-ld-lds-converter/ld-lds-converter -q -u -i reference.lds -o reference.s16
