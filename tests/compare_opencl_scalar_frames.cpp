@@ -22,6 +22,22 @@
 #include <string_view>
 #include <vector>
 
+/*
+ * Portions of the OpenCL-style LPC trace logic in this diagnostic are derived
+ * from CUETools.FLACCL: FLAC audio encoder using OpenCL
+ * Copyright (c) 2010-2022 Gregory S. Chudov
+ *
+ * This library is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU Lesser General Public License as published by the
+ * Free Software Foundation; either version 2.1 of the License, or (at your
+ * option) any later version.
+ *
+ * Local modifications for ld-compress-ng, 2026-07-05:
+ * - Reimplemented the generated-LPC autocorrelation, Levinson-Durbin, and
+ *   coefficient-quantization flow as host-side trace helpers.
+ * - Emits scalar/OpenCL checkpoint CSV rows for parity diagnostics only.
+ */
+
 namespace {
 
 constexpr std::size_t kOpenClBatchFrames = 32;
