@@ -178,18 +178,29 @@ Current default native tuning values:
 Real-fixture sweep result:
 
 - Broad sweep artifact paths are under ignored `build/real-fixture-sweeps/`.
+- Latest pinned current-default comparison:
+  `build/real-fixture-sweeps/real-fixture-sweep-20260705-102155.{csv,md}`.
 - Current default target across the six local real fixtures:
   `threads=1`, `frame=4608`, `lpc=12`, `prec=12`, `rice=5`.
 - Aggregate native-fixed size after Tukey plus top-two-order Welch-windowed LPC
   candidates: `79,867,690` bytes, about `-0.27%` smaller than CPU/libFLAC for
   the same fixtures. The broader scalar all-order Welch experiment reached
   `79,865,754` bytes but took `274.760` sweep seconds; the top-two-order shape
-  keeps nearly the same size result at `210.633` sweep seconds.
+  keeps nearly the same size result at `210.522` sweep seconds in the latest
+  pinned comparison.
 - Aggregate OpenCL size after adding Tukey plus two high-order Welch generated
   LPC candidates: `79,952,087` bytes, about `-0.17%` smaller than CPU/libFLAC
   and down from the Tukey-only OpenCL aggregate of `80,443,214` bytes
   (`+0.44%`) and the pre-Tukey OpenCL aggregate of `81,217,362` bytes
-  (`+1.41%`).
+  (`+1.41%`). In the latest pinned comparison, OpenCL took `182.213` sweep
+  seconds versus CPU/libFLAC at `2.414` seconds and scalar native-fixed at
+  `210.522` seconds.
+- Current default aggregate decision stats: scalar native-fixed and OpenCL both
+  choose LPC/Rice for all `26,037` frames with wasted bits `6`; scalar chooses
+  LPC orders `12:14408,11:10406,10:567,8:298`, while OpenCL chooses
+  `12:14509,11:10389,8:462,10:190`. Scalar Rice partition orders are
+  `0:10548,5:7181,4:6664,3:117`; OpenCL's are
+  `0:11441,5:6935,4:6181,3:115`.
 - Earlier Tukey-only retuning found Rice partition order `6` at `79,914,216`
   bytes, but the current top-two-order Welch result with order `5` is smaller;
   keep `5` as the default speed/size tradeoff.
