@@ -145,6 +145,24 @@ def run_checked(args, **kwargs):
     return result
 
 
+def available_opencl_device(binary, requested_device):
+    result = run_checked([str(binary), "devices"])
+    if "OpenCL support: not built" in result.stdout:
+        return None, "OpenCL support is not built"
+
+    current_index = None
+    for line in result.stdout.splitlines():
+        if line.startswith("[") and "]" in line:
+            current_index = line.split("]", 1)[0][1:]
+        elif current_index is not None and line.strip() == "available: yes":
+            if requested_device is None or current_index == requested_device:
+                return current_index, None
+
+    if requested_device is not None:
+        return None, f"requested OpenCL device {requested_device} is not available"
+    return None, "no available OpenCL device"
+
+
 def run_binary_decode(args):
     result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode != 0:
@@ -192,15 +210,24 @@ def ffprobe_native_flac(ffprobe, flac_path):
     require(stream.get("channels") == 1, "ffprobe did not report mono audio")
 
 
-def compress_native_fixed(binary, lds_path, flac_path, threads=None):
+def compress_native_flac_backend(
+    binary,
+    backend,
+    lds_path,
+    flac_path,
+    threads=None,
+    opencl_device=None,
+):
     command = [
         str(binary),
         "compress",
         "--backend",
-        "native-fixed",
+        backend,
     ]
     if threads is not None:
         command.extend(["--threads", str(threads)])
+    if opencl_device is not None:
+        command.extend(["--device", str(opencl_device)])
     command.extend(
         [
             "--overwrite",
@@ -209,7 +236,27 @@ def compress_native_fixed(binary, lds_path, flac_path, threads=None):
         ]
     )
     run_checked(command)
-    require(flac_path.exists(), "native-fixed compression did not create output")
+    require(flac_path.exists(), f"{backend} compression did not create output")
+
+
+def compress_native_fixed(binary, lds_path, flac_path, threads=None):
+    compress_native_flac_backend(
+        binary,
+        "native-fixed",
+        lds_path,
+        flac_path,
+        threads=threads,
+    )
+
+
+def compress_opencl_native(binary, lds_path, flac_path, opencl_device):
+    compress_native_flac_backend(
+        binary,
+        "opencl",
+        lds_path,
+        flac_path,
+        opencl_device=opencl_device,
+    )
 
 
 def compress_cpu_ogg(binary, lds_path, flac_path):
@@ -359,11 +406,22 @@ def decode_real_fixtures_with_ld_decode_loader(args, binary, temp_dir):
     root = Path(args.real_fixture_dir) if args.real_fixture_dir else None
     if root is None or not root.is_dir():
         return "real LDS fixture directory not found"
-    require(args.real_fixture_threads > 0, "real fixture thread count must be positive")
+    if args.real_fixture_threads is not None:
+        require(args.real_fixture_threads > 0, "real fixture thread count must be positive")
+    require(
+        args.real_fixture_backend != "opencl" or args.real_fixture_threads is None,
+        "OpenCL real fixture mode does not accept --real-fixture-threads",
+    )
 
     utils, skip_reason = import_ld_decode_utils(args, temp_dir)
     if skip_reason is not None:
         return skip_reason
+
+    opencl_device = args.opencl_device
+    if args.real_fixture_backend == "opencl":
+        opencl_device, skip_reason = available_opencl_device(binary, opencl_device)
+        if skip_reason is not None:
+            return skip_reason
 
     fixtures = find_lds_fixtures(root, args.real_fixture_limit)
     if not fixtures:
@@ -375,8 +433,8 @@ def decode_real_fixtures_with_ld_decode_loader(args, binary, temp_dir):
 
         ogg_ldf = case_dir / "fixture.ldf"
         ogg_raw_oga = case_dir / "fixture.raw.oga"
-        native_flac_ldf = case_dir / "fixture.flac.ldf"
-        native_flac = case_dir / "fixture.flac"
+        native_flac_ldf = case_dir / f"fixture.{args.real_fixture_backend}.flac.ldf"
+        native_flac = case_dir / f"fixture.{args.real_fixture_backend}.flac"
 
         compressed_paths = []
         if args.real_fixture_suffixes == "all":
@@ -384,12 +442,15 @@ def decode_real_fixtures_with_ld_decode_loader(args, binary, temp_dir):
             duplicate_file(ogg_ldf, ogg_raw_oga)
             compressed_paths.extend([ogg_ldf, ogg_raw_oga])
 
-        compress_native_fixed(
-            binary,
-            lds_path,
-            native_flac_ldf,
-            threads=args.real_fixture_threads,
-        )
+        if args.real_fixture_backend == "native-fixed":
+            compress_native_fixed(
+                binary,
+                lds_path,
+                native_flac_ldf,
+                threads=args.real_fixture_threads or 8,
+            )
+        else:
+            compress_opencl_native(binary, lds_path, native_flac_ldf, opencl_device)
         duplicate_file(native_flac_ldf, native_flac)
         compressed_paths.extend([native_flac_ldf, native_flac])
 
@@ -402,7 +463,7 @@ def decode_real_fixtures_with_ld_decode_loader(args, binary, temp_dir):
             fixture_name = str(lds_path)
         print(
             f"checked ld-decode loader real fixture {index}/{len(fixtures)}: "
-            f"{fixture_name}",
+            f"{fixture_name} ({args.real_fixture_backend})",
             flush=True,
         )
 
@@ -437,7 +498,13 @@ def parse_args(argv):
         choices=("native", "all"),
         default="native",
     )
-    parser.add_argument("--real-fixture-threads", type=int, default=8)
+    parser.add_argument(
+        "--real-fixture-backend",
+        choices=("native-fixed", "opencl"),
+        default="native-fixed",
+    )
+    parser.add_argument("--real-fixture-threads", type=int)
+    parser.add_argument("--opencl-device")
     return parser.parse_args(argv)
 
 

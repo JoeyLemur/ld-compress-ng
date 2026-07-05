@@ -161,8 +161,9 @@ Implemented:
   ignored `.lds` captures to native `.flac.ldf`, verifies reference
   `make_loader()` dispatch for `.flac.ldf` and `.flac`, and compares decoded
   PCM windows against LDS-unpacked samples without materializing whole captures
-  as PCM. The CTest path is bounded to one fixture; the helper mode can run the
-  full fixture tree and optionally include CPU Ogg `.ldf`/`.raw.oga` suffixes.
+  as PCM. The CTest path is bounded to one fixture for both scalar native and
+  OpenCL backends; the helper mode can run the full fixture tree and optionally
+  include CPU Ogg `.ldf`/`.raw.oga` suffixes.
 - Generated test fixtures, opt-in real-fixture regression tests, and a
   real-fixture tuning sweep helper at `tools/sweep_real_fixtures.py`.
 
@@ -211,7 +212,10 @@ Immediate engineering focus:
   generated compatibility fixtures. The opt-in
   `ld_decode_loader_real_fixture_compat` CTest passes against the first local
   real fixture, and the helper mode has passed against all six local real
-  fixtures in native `.flac.ldf`/`.flac` mode.
+  fixtures in native `.flac.ldf`/`.flac` mode. The opt-in
+  `ld_decode_loader_opencl_real_fixture_compat` CTest also passes on the first
+  local real fixture, and the helper mode has passed against all six local real
+  fixtures using OpenCL-produced native `.flac.ldf`/`.flac` output.
 - Use `reference/FFmpeg/` as an additional read-only FLAC encoder heuristic
   reference when evaluating future Welch-window, coefficient refinement, or
   higher-order LPC experiments.
