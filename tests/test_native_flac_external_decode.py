@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import shutil
 import struct
 import subprocess
@@ -120,6 +121,21 @@ def compress_native_fixed(binary, lds_path, flac_path):
     require(flac_path.exists(), "native-fixed compression did not create output")
 
 
+def compress_cpu_ogg(binary, lds_path, flac_path):
+    run_checked(
+        [
+            str(binary),
+            "compress",
+            "--backend",
+            "cpu",
+            "--overwrite",
+            str(lds_path),
+            str(flac_path),
+        ]
+    )
+    require(flac_path.exists(), "CPU compression did not create output")
+
+
 def decode_with_ffmpeg(args, flac_path):
     ffmpeg = resolve_tool(args.ffmpeg)
     if ffmpeg is None:
@@ -162,12 +178,85 @@ def decode_with_ld_decode_pyav(args, flac_path):
     return decoded, None
 
 
+def close_loader(loader):
+    close = getattr(loader, "_close", None)
+    if close is not None:
+        close()
+
+
+def require_loader_bytes(utils, path, sample, readlen, expected_pcm):
+    loader = utils.make_loader(str(path))
+    try:
+        require(
+            isinstance(loader, utils.LoadLDF),
+            f"{path.name} did not dispatch to LoadLDF",
+        )
+        with path.open("rb") as infile:
+            decoded = loader(infile, sample, readlen)
+        require(decoded is not None, f"{path.name} loader returned EOF")
+        expected = expected_pcm[sample * 2 : (sample + readlen) * 2]
+        require(
+            decoded.tobytes() == expected,
+            f"{path.name} loader changed samples at offset {sample}",
+        )
+    finally:
+        close_loader(loader)
+
+
+def decode_with_ld_decode_loader(args, binary, lds_path, temp_dir, expected_pcm):
+    ld_decode_dir = Path(args.ld_decode_dir) if args.ld_decode_dir else None
+    if ld_decode_dir is None or not ld_decode_dir.exists():
+        return "reference ld-decode directory not found"
+
+    os.environ["NUMBA_CACHE_DIR"] = str(temp_dir / "numba-cache")
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, str(ld_decode_dir))
+    try:
+        from lddecode import utils
+    except ImportError as ex:
+        return f"reference ld-decode loader dependencies are not available: {ex}"
+
+    ogg_ldf = temp_dir / "fixture.ldf"
+    ogg_raw_oga = temp_dir / "fixture.raw.oga"
+    native_flac_ldf = temp_dir / "fixture.flac.ldf"
+    native_flac = temp_dir / "fixture.flac"
+    compress_cpu_ogg(binary, lds_path, ogg_ldf)
+    shutil.copyfile(ogg_ldf, ogg_raw_oga)
+    compress_native_fixed(binary, lds_path, native_flac_ldf)
+    shutil.copyfile(native_flac_ldf, native_flac)
+
+    outputs = [
+        ("ogg .ldf", ogg_ldf),
+        ("ogg .raw.oga", ogg_raw_oga),
+        ("native .flac.ldf", native_flac_ldf),
+        ("native .flac", native_flac),
+    ]
+
+    total_samples = len(expected_pcm) // 2
+    offset_sample = 257
+    offset_readlen = 4096
+    require(
+        offset_sample + offset_readlen <= total_samples,
+        "fixture is too small for nonzero loader read",
+    )
+    for _, path in outputs:
+        require_loader_bytes(utils, path, 0, total_samples, expected_pcm)
+        require_loader_bytes(utils, path, offset_sample, offset_readlen, expected_pcm)
+
+    return None
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--decoder", choices=("ffmpeg", "ld-decode-pyav"), required=True)
+    parser.add_argument(
+        "--decoder",
+        choices=("ffmpeg", "ld-decode-pyav", "ld-decode-loader"),
+        required=True,
+    )
     parser.add_argument("--binary", required=True)
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--ffprobe", default="ffprobe")
+    parser.add_argument("--ld-decode-dir")
     parser.add_argument("--ldf-reader")
     return parser.parse_args(argv)
 
@@ -183,20 +272,29 @@ def main(argv):
         flac_path = temp_dir / "fixture.flac.ldf"
         expected_lds, expected_pcm = make_fixture()
         lds_path.write_bytes(expected_lds)
-        compress_native_fixed(binary, lds_path, flac_path)
 
         if args.decoder == "ffmpeg":
+            compress_native_fixed(binary, lds_path, flac_path)
             decoded, skip_reason = decode_with_ffmpeg(args, flac_path)
-        else:
+            if skip_reason is None:
+                require(
+                    decoded == expected_pcm,
+                    f"{args.decoder} changed native .flac.ldf PCM bytes",
+                )
+        elif args.decoder == "ld-decode-pyav":
+            compress_native_fixed(binary, lds_path, flac_path)
             decoded, skip_reason = decode_with_ld_decode_pyav(args, flac_path)
+            if skip_reason is None:
+                require(
+                    decoded == expected_pcm,
+                    f"{args.decoder} changed native .flac.ldf PCM bytes",
+                )
+        else:
+            skip_reason = decode_with_ld_decode_loader(
+                args, binary, lds_path, temp_dir, expected_pcm)
 
         if skip_reason is not None:
             return skip(skip_reason)
-
-        require(
-            decoded == expected_pcm,
-            f"{args.decoder} changed native .flac.ldf PCM bytes",
-        )
 
     return 0
 

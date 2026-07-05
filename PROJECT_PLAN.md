@@ -152,9 +152,11 @@ Implemented:
   and malformed FLAC inputs cleanly.
 - Skip-safe external native-FLAC decode CTest coverage that generates native
   `.flac.ldf` output, checks FFmpeg can probe/decode it as mono 40 kHz FLAC,
-  and, when PyAV is available, runs the reference `ld-decode` PyAV-based
-  `ldf_reader.py`; both paths compare emitted signed 16-bit mono PCM against
-  the expected LDS-unpacked samples.
+  runs the reference `ld-decode` PyAV-based `ldf_reader.py`, and directly
+  exercises the reference `make_loader()` suffix dispatch for CPU Ogg `.ldf`,
+  CPU Ogg `.raw.oga`, native `.flac.ldf`, and native `.flac`; all available
+  paths compare emitted signed 16-bit mono PCM against the expected
+  LDS-unpacked samples.
 - Generated test fixtures, opt-in real-fixture regression tests, and a
   real-fixture tuning sweep helper at `tools/sweep_real_fixtures.py`.
 
@@ -195,10 +197,12 @@ Immediate engineering focus:
 - Use `reference/ld-decode/` as the direct compatibility target for compressed
   RF input (`.ldf`, `.raw.oga`, and FlaLDF `.flac.ldf`). Keep
   `reference/decode-orc/` for later decoded TBC/CVBS pipeline compatibility.
-- The current Linux host has `ffmpeg`/`ffprobe` and PyAV available through
-  `/home/epowell/.pyenv/versions/3.13.13/bin/python`. With CMake configured
-  using that `Python3_EXECUTABLE`, both `ffmpeg_native_flac_compat` and
-  `ld_decode_pyav_compat` pass against generated native `.flac.ldf` output.
+- The current Linux host has `ffmpeg`/`ffprobe`, plus PyAV and the full
+  reference `ld-decode` loader dependency set available through
+  `/home/epowell/.pyenv/versions/3.13.13/envs/ld/bin/python`. With CMake
+  configured using that `Python3_EXECUTABLE`, `ffmpeg_native_flac_compat`,
+  `ld_decode_pyav_compat`, and `ld_decode_loader_compat` pass against
+  generated compatibility fixtures.
 - Use `reference/FFmpeg/` as an additional read-only FLAC encoder heuristic
   reference when evaluating future Welch-window, coefficient refinement, or
   higher-order LPC experiments.

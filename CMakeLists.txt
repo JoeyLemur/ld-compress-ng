@@ -221,6 +221,20 @@ if(BUILD_TESTING)
             LABELS external-decode-compat
             SKIP_RETURN_CODE 77
         )
+
+        add_test(
+            NAME ld_decode_loader_compat
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_native_flac_external_decode.py
+                --decoder ld-decode-loader
+                --binary $<TARGET_FILE:ld-compress-ng>
+                --ld-decode-dir ${CMAKE_CURRENT_SOURCE_DIR}/reference/ld-decode
+        )
+        set_tests_properties(ld_decode_loader_compat PROPERTIES
+            LABELS external-decode-compat
+            SKIP_RETURN_CODE 77
+        )
     endif()
 
     if(LDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS)
