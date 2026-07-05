@@ -224,9 +224,9 @@ Real-fixture sweep result:
   error-feedback quantization at `23,085` bits, while OpenCL picks order-12
   Welch with round-to-even quantization at `23,111` bits. In the first `32`
   frames, OpenCL commonly picks the high-order Welch slot while scalar often
-  picks Tukey, and recost still matches OpenCL exactly. The next useful probe
-  is to dump/re-cost same-order per-window OpenCL candidates beside scalar's
-  rectangular/Tukey/Welch candidates for frame-level comparisons.
+  picks Tukey, and recost still matches OpenCL exactly. The follow-up
+  candidate and Tukey trace probes below closed this as a tuning/heuristic
+  difference rather than a correctness issue.
 - The frame `0`, order-12 candidate dump confirms scalar's best Tukey
   candidate recosts to `23,085` bits while OpenCL's same-order Tukey task
   recosts to `23,163` bits, so OpenCL rejects Tukey and chooses Welch at
@@ -247,12 +247,26 @@ Real-fixture sweep result:
 - Earlier Tukey-only retuning found Rice partition order `6` at `79,914,216`
   bytes, but the current top-two-order Welch result with order `5` is smaller;
   keep `5` as the default speed/size tradeoff.
+- OpenCL correctness is accepted for the current Linux/NVIDIA target: device
+  enumeration works, OpenCL-specific CTests pass, reference `ld-decode` loader
+  compatibility passes, a direct real-fixture `compress --backend opencl`
+  followed by `verify --source` matches the original LDS MD5, and OpenCL
+  selected subframes recost exactly through the native writer
+  (`opencl_recost_delta_bits=0`, `opencl_recost_mismatches=0`).
+- Across the latest six-fixture sweep, the raw LDS inputs total
+  `149,954,560` bytes, CPU/libFLAC outputs total `80,086,984` bytes, scalar
+  native-fixed outputs total `79,867,690` bytes, and OpenCL outputs total
+  `79,952,087` bytes. OpenCL is smaller than CPU/libFLAC by `134,897` bytes and
+  larger than scalar native-fixed by `84,397` bytes, which is good enough for
+  now; stop OpenCL LPC parity tuning unless a future task explicitly chooses a
+  higher-compression or higher-precision OpenCL design.
 
 Immediate engineering focus:
 
-- Continue OpenCL-heavy development on the Linux/NVIDIA host now that macOS has
-  no usable local OpenCL device. Treat OpenCL as the Linux-first GPU path and
-  keep Metal for macOS as a later optional backend.
+- Move on from OpenCL LPC parity tuning. Keep the Linux/NVIDIA OpenCL path under
+  regression coverage, treat Metal for macOS as a later optional backend, and
+  reopen OpenCL tuning only for an explicit higher-compression or higher-speed
+  design pass.
 - Continue native FLAC compatibility hardening using `reference/rfc9639.txt`
   and `reference/flac/` as read-only references.
 - Use `reference/ld-decode/` as the direct compatibility target for compressed
