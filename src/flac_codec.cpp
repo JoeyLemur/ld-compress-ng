@@ -14,6 +14,7 @@
 #include <ostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ldcompress {
@@ -74,6 +75,13 @@ struct DecoderClient {
     std::string error;
 };
 
+void set_error_once(DecoderClient& client, std::string message)
+{
+    if (client.error.empty()) {
+        client.error = std::move(message);
+    }
+}
+
 bool write_packed_group(DecoderClient& client)
 {
     const auto packed = pack_group(client.pending);
@@ -94,24 +102,27 @@ FLAC__StreamDecoderWriteStatus write_callback(
     void* client_data)
 {
     auto& client = *static_cast<DecoderClient*>(client_data);
+    if (!client.error.empty()) {
+        return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
+    }
 
     if (frame->header.channels != kChannels) {
-        client.error = "FLAC stream is not mono";
+        set_error_once(client, "FLAC stream is not mono");
         return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
     }
     if (frame->header.bits_per_sample != kBitsPerSample) {
-        client.error = "FLAC stream is not 16-bit";
+        set_error_once(client, "FLAC stream is not 16-bit");
         return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
     }
     if (frame->header.sample_rate != kSampleRate) {
-        client.error = "FLAC stream sample rate is not 40000 Hz";
+        set_error_once(client, "FLAC stream sample rate is not 40000 Hz");
         return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
     }
 
     for (std::uint32_t i = 0; i < frame->header.blocksize; ++i) {
         const auto sample = buffer[0][i];
         if (sample < -32768 || sample > 32767) {
-            client.error = "decoded FLAC sample is outside int16 range";
+            set_error_once(client, "decoded FLAC sample is outside int16 range");
             return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
         }
 
@@ -153,6 +164,17 @@ void metadata_callback(
     std::copy(std::begin(metadata->data.stream_info.md5sum),
         std::end(metadata->data.stream_info.md5sum),
         client.expected_sample_md5.begin());
+
+    if (client.expected_channels != kChannels) {
+        set_error_once(client, "FLAC STREAMINFO channel count is not mono");
+    } else if (client.expected_bits_per_sample != kBitsPerSample) {
+        set_error_once(client, "FLAC STREAMINFO bit depth is not 16-bit");
+    } else if (client.expected_sample_rate != kSampleRate) {
+        set_error_once(client, "FLAC STREAMINFO sample rate is not 40000 Hz");
+    } else if (client.expected_total_samples != 0 &&
+        (client.expected_total_samples % 4U) != 0) {
+        set_error_once(client, "FLAC STREAMINFO total sample count is not divisible by four");
+    }
 }
 
 void error_callback(
@@ -161,8 +183,8 @@ void error_callback(
     void* client_data)
 {
     auto& client = *static_cast<DecoderClient*>(client_data);
-    client.error = std::string("FLAC decoder error: ") +
-        FLAC__StreamDecoderErrorStatusString[status];
+    set_error_once(client, std::string("FLAC decoder error: ") +
+        FLAC__StreamDecoderErrorStatusString[status]);
 }
 
 }  // namespace
@@ -287,6 +309,17 @@ ConversionStats decompress_flac_to_lds(
 
     DecoderClient client {
         .output = lds_output,
+        .stats = {},
+        .sample_md5 = {},
+        .expected_sample_md5 = {},
+        .expected_total_samples = 0,
+        .expected_sample_rate = 0,
+        .expected_channels = 0,
+        .expected_bits_per_sample = 0,
+        .have_streaminfo = false,
+        .pending = {},
+        .pending_count = 0,
+        .error = {},
     };
     const auto container = detect_flac_container(input_path);
     const FLAC__StreamDecoderInitStatus init_status =

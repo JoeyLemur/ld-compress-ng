@@ -147,6 +147,12 @@ Implemented:
   partition order, and wasted-bit counts.
 - Native FLAC decode hardening for STREAMINFO presence, RF-shaped 40 kHz mono
   16-bit streams, decoded sample count, and decoded PCM MD5.
+- Native FLAC decode now rejects STREAMINFO-declared non-RF sample counts before
+  writing decoded LDS output, and preserves the first decoder validation error
+  instead of overwriting it with a later libFLAC status.
+- Native/OpenCL FLAC encoders now keep STREAMINFO min/max block sizes in the
+  RFC-required `16..65535` range and exclude short final LDS tails from the
+  minimum block-size bound.
 - Native FLAC STREAMINFO/frame-header contract tests.
 - Opt-in FLAC decoder testbench regression coverage for rejecting non-RF-shaped
   and malformed FLAC inputs cleanly.

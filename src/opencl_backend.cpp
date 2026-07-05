@@ -91,20 +91,18 @@ FlacStreamInfo make_streaminfo(
     unsigned sample_rate,
     const std::array<std::uint8_t, 16>& md5)
 {
-    std::uint64_t min_block = kMinimumStreamInfoBlockSize;
-    std::uint64_t max_block = kMinimumStreamInfoBlockSize;
-    if (stats.samples > 0 && stats.samples <= frame_sample_count) {
-        min_block = stats.samples;
-        max_block = stats.samples;
-    } else if (stats.samples > frame_sample_count) {
-        const auto remainder = stats.samples % frame_sample_count;
-        min_block = remainder == 0 ? frame_sample_count : remainder;
-        max_block = frame_sample_count;
+    auto streaminfo_block_size = frame_sample_count;
+    if (stats.samples == 0) {
+        streaminfo_block_size = kMinimumStreamInfoBlockSize;
+    } else if (stats.samples < frame_sample_count) {
+        streaminfo_block_size = stats.samples < kMinimumStreamInfoBlockSize
+            ? kMinimumStreamInfoBlockSize
+            : static_cast<unsigned>(stats.samples);
     }
 
     return FlacStreamInfo {
-        .min_block_size = static_cast<unsigned>(min_block),
-        .max_block_size = static_cast<unsigned>(max_block),
+        .min_block_size = streaminfo_block_size,
+        .max_block_size = streaminfo_block_size,
         .min_frame_size = 0,
         .max_frame_size = 0,
         .sample_rate = sample_rate,

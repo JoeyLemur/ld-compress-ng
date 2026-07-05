@@ -3,6 +3,7 @@
 #include "flac_primitives.h"
 #include "hash.h"
 #include "lds_codec.h"
+#include "native_flac_encoder.h"
 
 #include <algorithm>
 #include <array>
@@ -904,6 +905,65 @@ void test_native_streaminfo_and_frame_header_contract()
     std::filesystem::remove_all(temp_dir);
 }
 
+std::vector<std::int32_t> make_counted_samples(std::size_t count)
+{
+    std::vector<std::int32_t> samples;
+    samples.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto value = ((static_cast<int>(i * 37U) % 1024) - 512) * 64;
+        samples.push_back(value);
+    }
+    return samples;
+}
+
+void verify_native_encoder_streaminfo_block_bounds(
+    const std::filesystem::path& flac_path,
+    std::size_t sample_count,
+    unsigned expected_streaminfo_block_size)
+{
+    constexpr unsigned kFrameSamples = 16;
+    const auto samples = make_counted_samples(sample_count);
+    const auto packed = pack_expected_lds(samples);
+    std::istringstream input(packed);
+
+    const auto encode_stats = ldcompress::compress_lds_to_native_verbatim_flac(
+        input,
+        flac_path.string(),
+        40000,
+        1,
+        kFrameSamples,
+        0,
+        12,
+        0);
+    require(encode_stats.samples == sample_count, "short-tail native encode sample count mismatch");
+
+    const auto streaminfo = native_streaminfo(flac_path);
+    require(streaminfo.min_block_size == expected_streaminfo_block_size,
+        "short-tail native STREAMINFO min block size mismatch");
+    require(streaminfo.max_block_size == expected_streaminfo_block_size,
+        "short-tail native STREAMINFO max block size mismatch");
+    require(streaminfo.total_samples == sample_count,
+        "short-tail native STREAMINFO total sample count mismatch");
+
+    std::ostringstream decoded;
+    const auto decode_stats = ldcompress::decompress_flac_to_lds(flac_path.string(), decoded);
+    require(decode_stats.samples == sample_count, "short-tail native decoded sample count mismatch");
+    require(decoded.str() == packed, "short-tail native FLAC did not round-trip to expected LDS");
+}
+
+void test_native_encoder_streaminfo_block_bounds_for_short_tail()
+{
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+        ("ld-compress-ng-native-short-tail-streaminfo-test-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directory(temp_dir);
+
+    verify_native_encoder_streaminfo_block_bounds(temp_dir / "tiny.flac", 4, 16);
+    verify_native_encoder_streaminfo_block_bounds(temp_dir / "short-tail.flac", 20, 16);
+
+    std::filesystem::remove_all(temp_dir);
+}
+
 void test_native_streaminfo_md5_mismatch_is_rejected()
 {
     const auto temp_dir = std::filesystem::temp_directory_path() /
@@ -974,7 +1034,7 @@ void test_native_streaminfo_total_samples_mismatch_is_rejected()
         .sample_rate = 40000,
         .channels = 1,
         .bits_per_sample = 16,
-        .total_samples = samples.size() + 1U,
+        .total_samples = samples.size() + 4U,
         .md5 = md5_samples_s16le(samples),
     };
     ldcompress::write_native_flac_streaminfo(output, stream_info);
@@ -998,6 +1058,53 @@ void test_native_streaminfo_total_samples_mismatch_is_rejected()
     std::filesystem::remove_all(temp_dir);
 }
 
+void test_native_streaminfo_non_lds_sample_count_is_rejected_before_writing()
+{
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+        ("ld-compress-ng-native-non-lds-sample-count-test-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directory(temp_dir);
+
+    const auto flac_path = temp_dir / "bad-lds-shape.flac";
+    const auto samples = make_samples();
+
+    std::ofstream output(flac_path, std::ios::binary);
+    if (!output) {
+        throw std::runtime_error("could not create test FLAC file");
+    }
+    const ldcompress::FlacStreamInfo stream_info {
+        .min_block_size = static_cast<unsigned>(samples.size()),
+        .max_block_size = static_cast<unsigned>(samples.size()),
+        .min_frame_size = 0,
+        .max_frame_size = 0,
+        .sample_rate = 40000,
+        .channels = 1,
+        .bits_per_sample = 16,
+        .total_samples = samples.size() + 1U,
+        .md5 = md5_samples_s16le(samples),
+    };
+    ldcompress::write_native_flac_streaminfo(output, stream_info);
+    const ldcompress::FlacFrameInfo frame_info {
+        .frame_number = 0,
+        .sample_rate = 40000,
+        .bits_per_sample = 16,
+    };
+    ldcompress::write_mono_verbatim_frame(output, samples, frame_info);
+    output.close();
+
+    bool threw = false;
+    std::ostringstream decoded;
+    try {
+        (void)ldcompress::decompress_flac_to_lds(flac_path.string(), decoded);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    require(threw, "native FLAC decode accepted a non-LDS STREAMINFO sample count");
+    require(decoded.str().empty(), "non-LDS STREAMINFO sample count wrote partial LDS output");
+
+    std::filesystem::remove_all(temp_dir);
+}
+
 }  // namespace
 
 int main()
@@ -1012,8 +1119,10 @@ int main()
         test_native_subframe_analysis_matches_writer();
         test_native_lpc_analysis_surface();
         test_native_streaminfo_and_frame_header_contract();
+        test_native_encoder_streaminfo_block_bounds_for_short_tail();
         test_native_streaminfo_md5_mismatch_is_rejected();
         test_native_streaminfo_total_samples_mismatch_is_rejected();
+        test_native_streaminfo_non_lds_sample_count_is_rejected_before_writing();
     } catch (const std::exception& ex) {
         std::cerr << "test_flac_native_writer: " << ex.what() << '\n';
         return 1;
