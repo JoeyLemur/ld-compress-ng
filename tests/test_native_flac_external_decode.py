@@ -12,6 +12,9 @@ from pathlib import Path
 
 
 SKIP_RETURN_CODE = 77
+DEFAULT_NATIVE_FRAME_SAMPLES = 4608
+# Two full native FLAC frames plus one LDS group, exercising a 4-sample final frame.
+DEFAULT_FIXTURE_GROUPS = 2305
 
 
 def skip(message):
@@ -48,7 +51,7 @@ def unpack_group(data):
     return [(word - 512) * 64 for word in words]
 
 
-def make_fixture(group_count=2304):
+def make_fixture(group_count=DEFAULT_FIXTURE_GROUPS):
     lds = bytearray()
     pcm = bytearray()
     for group in range(group_count):
@@ -316,6 +319,22 @@ def decode_with_ld_decode_pyav(args, flac_path):
     return decoded, None
 
 
+def require_ld_decode_pyav_pcm(decoded, expected_pcm):
+    if decoded == expected_pcm:
+        return
+    # The standalone ldf_reader.py writes whole PyAV plane buffers; a tiny final
+    # FLAC frame can expose zero padding past the true STREAMINFO sample count.
+    require(
+        decoded.startswith(expected_pcm),
+        "ld-decode-pyav changed native .flac.ldf PCM bytes",
+    )
+    padding = decoded[len(expected_pcm) :]
+    require(
+        len(padding) <= 64 and len(padding) % 2 == 0 and all(byte == 0 for byte in padding),
+        "ld-decode-pyav emitted unexpected trailing PCM bytes",
+    )
+
+
 def close_loader(loader):
     close = getattr(loader, "_close", None)
     if close is not None:
@@ -530,6 +549,10 @@ def main(argv):
         lds_path = temp_dir / "fixture.lds"
         flac_path = temp_dir / "fixture.flac.ldf"
         expected_lds, expected_pcm = make_fixture()
+        require(
+            ((len(expected_pcm) // 2) % DEFAULT_NATIVE_FRAME_SAMPLES) == 4,
+            "generated fixture does not exercise a short native FLAC tail frame",
+        )
         lds_path.write_bytes(expected_lds)
 
         if args.decoder == "ffmpeg":
@@ -544,10 +567,7 @@ def main(argv):
             compress_native_fixed(binary, lds_path, flac_path)
             decoded, skip_reason = decode_with_ld_decode_pyav(args, flac_path)
             if skip_reason is None:
-                require(
-                    decoded == expected_pcm,
-                    f"{args.decoder} changed native .flac.ldf PCM bytes",
-                )
+                require_ld_decode_pyav_pcm(decoded, expected_pcm)
         else:
             skip_reason = decode_with_ld_decode_loader(
                 args, binary, lds_path, temp_dir, expected_pcm)

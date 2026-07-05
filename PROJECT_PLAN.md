@@ -163,6 +163,11 @@ Implemented:
   CPU Ogg `.raw.oga`, native `.flac.ldf`, and native `.flac`; all available
   paths compare emitted signed 16-bit mono PCM against the expected
   LDS-unpacked samples.
+- The generated external native-FLAC decode fixture now includes a 4-sample
+  final short frame (`2 * 4608 + 4` samples), so FFmpeg and the reference
+  `ld-decode` loader cover the same short-tail STREAMINFO edge as the native
+  writer tests. The standalone `ldf_reader.py` check accepts only the exact
+  expected PCM prefix plus small zero padding from PyAV's final plane buffer.
 - Opt-in real-fixture `ld-decode` loader compatibility coverage that compresses
   ignored `.lds` captures to native `.flac.ldf`, verifies reference
   `make_loader()` dispatch for `.flac.ldf` and `.flac`, and compares decoded
