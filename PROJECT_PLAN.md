@@ -193,6 +193,14 @@ Immediate engineering focus:
 - Use `reference/FFmpeg/` as an additional read-only FLAC encoder heuristic
   reference when evaluating future Welch-window, coefficient refinement, or
   higher-order LPC experiments.
+- Bounded FFmpeg-style LPC coefficient perturbation was tested as a scalar-only
+  default-path experiment after reviewing FFmpeg `multi_dim_quant`. On the
+  two-fixture gate, refining the top two LPC orders improved native bytes from
+  `10,061,741` to `10,054,933` but raised elapsed time from `28.380` to
+  `56.515` seconds; refining only the top order reached `10,055,417` bytes at
+  `43.152` seconds. Do not enable it by default in this form; revisit only
+  behind an explicit higher-compression tuning mode or after changing the
+  OpenCL task shape.
 - Do not replace OpenCL generated-LPC independent coefficient rounding with
   error-feedback rounding wholesale. A two-fixture post-Tukey check regressed
   slightly; revisit it only as an additional exact-costed candidate or as part
