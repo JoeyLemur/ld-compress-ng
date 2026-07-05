@@ -17,6 +17,7 @@ namespace {
 constexpr unsigned kMaxRicePartitionOrder = 8;
 constexpr unsigned kMaxRiceParameter = 14;
 constexpr unsigned kMaxLpcOrder = 12;
+constexpr unsigned kWelchLpcCandidateTargetCount = 2;
 constexpr unsigned kMinLpcBlockSize = 256;
 constexpr double kPi = 3.14159265358979323846264338327950288;
 
@@ -670,6 +671,41 @@ std::vector<double> tukey_windowed_samples(
     return windowed;
 }
 
+std::vector<double> welch_windowed_samples(const std::vector<std::int32_t>& samples)
+{
+    std::vector<double> windowed;
+    windowed.reserve(samples.size());
+    for (const auto sample : samples) {
+        windowed.push_back(static_cast<double>(sample));
+    }
+
+    if (samples.size() <= 1) {
+        if (!windowed.empty()) {
+            windowed.front() = 0.0;
+        }
+        return windowed;
+    }
+
+    const auto endpoint = static_cast<double>(samples.size() - 1U);
+    const auto midpoint = endpoint / 2.0;
+    for (std::size_t n = 0; n < samples.size(); ++n) {
+        const auto k = (static_cast<double>(n) - midpoint) / midpoint;
+        windowed[n] *= 1.0 - (k * k);
+    }
+    return windowed;
+}
+
+bool should_consider_welch_lpc_order(unsigned order, unsigned max_order)
+{
+    if (order == 0 || max_order == 0) {
+        return false;
+    }
+
+    const auto welch_candidate_count =
+        std::min(kWelchLpcCandidateTargetCount, max_order);
+    return order > max_order - welch_candidate_count;
+}
+
 std::vector<double> levinson_durbin_coefficients(
     const std::vector<double>& autoc,
     unsigned order)
@@ -943,6 +979,7 @@ LpcRiceSubframe choose_lpc_rice_subframe_for_order(
     const std::vector<std::int32_t>& samples,
     unsigned bits_per_sample,
     unsigned lpc_order,
+    unsigned max_lpc_order,
     unsigned lpc_coefficient_precision,
     unsigned max_rice_partition_order)
 {
@@ -954,7 +991,13 @@ LpcRiceSubframe choose_lpc_rice_subframe_for_order(
     LpcRiceSubframe best;
     best.bits = std::numeric_limits<std::uint64_t>::max();
     if (samples.size() < kMinLpcBlockSize || lpc_order == 0 ||
-        lpc_order > kMaxLpcOrder || lpc_order >= samples.size()) {
+        max_lpc_order == 0) {
+        return best;
+    }
+
+    const auto max_order = std::min<std::size_t>(
+        std::min(max_lpc_order, kMaxLpcOrder), samples.size() - 1U);
+    if (lpc_order > max_order) {
         return best;
     }
 
@@ -969,6 +1012,16 @@ LpcRiceSubframe choose_lpc_rice_subframe_for_order(
     consider_lpc_rice_order(shifted_samples, autocorrelation_candidates, lpc_order,
         wasted_bits, effective_bits_per_sample, lpc_coefficient_precision,
         max_rice_partition_order, best);
+
+    if (should_consider_welch_lpc_order(lpc_order, static_cast<unsigned>(max_order))) {
+        std::vector<std::vector<double>> welch_autocorrelation_candidate;
+        welch_autocorrelation_candidate.reserve(1);
+        welch_autocorrelation_candidate.push_back(
+            autocorrelation(welch_windowed_samples(shifted_samples), lpc_order));
+        consider_lpc_rice_order(shifted_samples, welch_autocorrelation_candidate, lpc_order,
+            wasted_bits, effective_bits_per_sample, lpc_coefficient_precision,
+            max_rice_partition_order, best);
+    }
     return best;
 }
 
@@ -1003,10 +1056,21 @@ LpcRiceSubframe choose_lpc_rice_subframe(
         autocorrelation(tukey_windowed_samples(shifted_samples, 0.5),
             static_cast<unsigned>(max_order)));
 
+    std::vector<std::vector<double>> welch_autocorrelation_candidate;
+    welch_autocorrelation_candidate.reserve(1);
+    welch_autocorrelation_candidate.push_back(
+        autocorrelation(welch_windowed_samples(shifted_samples),
+            static_cast<unsigned>(max_order)));
+
     for (unsigned order = 1; order <= max_order; ++order) {
         consider_lpc_rice_order(shifted_samples, autocorrelation_candidates, order,
             wasted_bits, effective_bits_per_sample, lpc_coefficient_precision,
             max_rice_partition_order, best);
+        if (should_consider_welch_lpc_order(order, static_cast<unsigned>(max_order))) {
+            consider_lpc_rice_order(shifted_samples, welch_autocorrelation_candidate, order,
+                wasted_bits, effective_bits_per_sample, lpc_coefficient_precision,
+                max_rice_partition_order, best);
+        }
     }
 
     return best;
@@ -1410,7 +1474,8 @@ std::optional<FlacLpcSubframeAnalysis> analyze_mono_lpc_order(
 
     const auto lpc = choose_lpc_rice_subframe_for_order(
         samples, info.bits_per_sample, lpc_order,
-        info.lpc_coefficient_precision, info.max_rice_partition_order);
+        info.max_lpc_order, info.lpc_coefficient_precision,
+        info.max_rice_partition_order);
     if (lpc.bits == std::numeric_limits<std::uint64_t>::max()) {
         return std::nullopt;
     }

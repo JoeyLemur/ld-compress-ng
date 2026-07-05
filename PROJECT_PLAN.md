@@ -120,6 +120,9 @@ Implemented:
   for high-order Welch-windowed LPC candidates, keeping the default mixed task
   group at the 32-task OpenCL limit while improving exact-costed candidate
   coverage.
+- Scalar native LPC analysis now mirrors that high-order Welch candidate shape
+  for the top two configured LPC orders, preserving most of the all-order Welch
+  compression gain without the full scalar runtime cost.
 - Encoder-facing OpenCL generated frame analysis wrapper that builds mixed
   mono task plans from frame samples and maps best FLACCL tasks to native
   `FlacSubframeDecision` records for future writer integration.
@@ -162,18 +165,20 @@ Real-fixture sweep result:
 
 - Broad sweep artifact paths are under ignored `build/real-fixture-sweeps/`.
 - Current default target across the six local real fixtures:
-  `threads=8`, `frame=4608`, `lpc=12`, `prec=12`, `rice=5`.
-- Aggregate native-fixed size after Tukey-windowed LPC analysis and focused
-  retuning: `79,920,941` bytes, about `-0.21%` smaller than CPU/libFLAC for the
-  same fixtures.
+  `threads=1`, `frame=4608`, `lpc=12`, `prec=12`, `rice=5`.
+- Aggregate native-fixed size after Tukey plus top-two-order Welch-windowed LPC
+  candidates: `79,867,690` bytes, about `-0.27%` smaller than CPU/libFLAC for
+  the same fixtures. The broader scalar all-order Welch experiment reached
+  `79,865,754` bytes but took `274.760` sweep seconds; the top-two-order shape
+  keeps nearly the same size result at `210.633` sweep seconds.
 - Aggregate OpenCL size after adding Tukey plus two high-order Welch generated
-  LPC candidates: `79,952,094` bytes, about `-0.17%` smaller than CPU/libFLAC
+  LPC candidates: `79,952,087` bytes, about `-0.17%` smaller than CPU/libFLAC
   and down from the Tukey-only OpenCL aggregate of `80,443,214` bytes
   (`+0.44%`) and the pre-Tukey OpenCL aggregate of `81,217,362` bytes
   (`+1.41%`).
-- Rice partition order `6` produced a slightly smaller aggregate
-  (`79,914,216` bytes), but the byte gain was small enough that `5` remains the
-  default speed/size tradeoff.
+- Earlier Tukey-only retuning found Rice partition order `6` at `79,914,216`
+  bytes, but the current top-two-order Welch result with order `5` is smaller;
+  keep `5` as the default speed/size tradeoff.
 
 Immediate engineering focus:
 
