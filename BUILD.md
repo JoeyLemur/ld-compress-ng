@@ -192,11 +192,14 @@ The FLAC testbench lane uses `reference/flac-test-files/` by default and runs
 only the `flac-test-files` CTest label. The real-fixture lane uses the current
 local `reference/testdata/ld-decode-testdata-ci/...` fixture root by default and
 runs `real-fixtures` while excluding the OpenCL-labelled real-fixture test.
-Pass `--include-opencl-real-fixture` when you want that runtime device check; it
-implies the real-fixture lane and uses the first available OpenCL device unless
-`--opencl-device INDEX` is provided. Use `--dry-run` to inspect the generated
-commands, and `--strict-optional` to fail instead of skipping when a requested
-local fixture directory is missing.
+`--all-local` follows that same scalar-only real-fixture behavior. Pass
+`--include-opencl-real-fixture` when you want the runtime OpenCL real-fixture
+check; it implies the real-fixture lane and uses the first available OpenCL
+device unless `--opencl-device INDEX` is provided. Run that GPU lane from a
+context that can see the OpenCL runtime and devices; sandboxed executions may
+skip or report no available devices even when the system build can see them.
+Use `--dry-run` to inspect the generated commands, and `--strict-optional` to
+fail instead of skipping when a requested local fixture directory is missing.
 
 If the reference `ld-decode` dependencies live in a non-default Python
 environment, pass that interpreter through to CMake:
