@@ -256,6 +256,24 @@ if(BUILD_TESTING)
 
         add_test(NAME real_fixtures COMMAND test_real_fixtures "${LDCOMPRESS_REAL_FIXTURE_DIR}")
         set_tests_properties(real_fixtures PROPERTIES LABELS real-fixtures)
+
+        if(Python3_Interpreter_FOUND)
+            add_test(
+                NAME ld_decode_loader_real_fixture_compat
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_native_flac_external_decode.py
+                    --decoder ld-decode-loader
+                    --binary $<TARGET_FILE:ld-compress-ng>
+                    --ld-decode-dir ${CMAKE_CURRENT_SOURCE_DIR}/reference/ld-decode
+                    --fixture-dir ${LDCOMPRESS_REAL_FIXTURE_DIR}
+                    --fixture-limit 1
+            )
+            set_tests_properties(ld_decode_loader_real_fixture_compat PROPERTIES
+                LABELS "real-fixtures;external-decode-compat"
+                SKIP_RETURN_CODE 77
+            )
+        endif()
     endif()
 
     if(LDCOMPRESS_ENABLE_FLAC_TEST_FILE_TESTS)

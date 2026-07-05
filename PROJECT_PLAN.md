@@ -157,6 +157,12 @@ Implemented:
   CPU Ogg `.raw.oga`, native `.flac.ldf`, and native `.flac`; all available
   paths compare emitted signed 16-bit mono PCM against the expected
   LDS-unpacked samples.
+- Opt-in real-fixture `ld-decode` loader compatibility coverage that compresses
+  ignored `.lds` captures to native `.flac.ldf`, verifies reference
+  `make_loader()` dispatch for `.flac.ldf` and `.flac`, and compares decoded
+  PCM windows against LDS-unpacked samples without materializing whole captures
+  as PCM. The CTest path is bounded to one fixture; the helper mode can run the
+  full fixture tree and optionally include CPU Ogg `.ldf`/`.raw.oga` suffixes.
 - Generated test fixtures, opt-in real-fixture regression tests, and a
   real-fixture tuning sweep helper at `tools/sweep_real_fixtures.py`.
 
@@ -202,7 +208,10 @@ Immediate engineering focus:
   `/home/epowell/.pyenv/versions/3.13.13/envs/ld/bin/python`. With CMake
   configured using that `Python3_EXECUTABLE`, `ffmpeg_native_flac_compat`,
   `ld_decode_pyav_compat`, and `ld_decode_loader_compat` pass against
-  generated compatibility fixtures.
+  generated compatibility fixtures. The opt-in
+  `ld_decode_loader_real_fixture_compat` CTest passes against the first local
+  real fixture, and the helper mode has passed against all six local real
+  fixtures in native `.flac.ldf`/`.flac` mode.
 - Use `reference/FFmpeg/` as an additional read-only FLAC encoder heuristic
   reference when evaluating future Welch-window, coefficient refinement, or
   higher-order LPC experiments.
