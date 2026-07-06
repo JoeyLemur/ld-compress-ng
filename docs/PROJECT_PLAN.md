@@ -307,14 +307,16 @@ Implemented for the first 1.1 checkpoint:
 - A CMake-built GLSL-to-SPIR-V compute smoke shader and `test_vulkan_smoke`
   exercise Vulkan instance/device setup, storage buffers, descriptor binding,
   compute pipeline creation, command submission, and host readback.
+- The OpenCL native-FLAC backend now uses a shared accelerated native-FLAC host
+  flow for LDS scanning, STREAMINFO/PCM MD5 generation, frame batching, selected
+  native-subframe writing, scalar tail fallback, and native stats. OpenCL owns
+  only OpenCL validation/device selection and the batch analyzer callback, giving
+  Vulkan a matching plug-in point.
 - The local validation matrix helper has a `no-vulkan` lane for optional-build
   regression coverage.
 
 Remaining Vulkan work:
 
-- Factor the shared accelerator host flow currently embedded in the OpenCL
-  backend so OpenCL and Vulkan can both feed selected native-FLAC subframes into
-  the existing writer.
 - Port analysis in stages: fixed/constant costing, residual/Rice costing,
   selected-subframe handoff, LPC candidate evaluation, then generated LPC.
 - Add Vulkan real-fixture compatibility and matrix lanes after the backend can

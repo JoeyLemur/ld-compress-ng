@@ -62,6 +62,7 @@ if(LDCOMPRESS_ENABLE_VULKAN)
 endif()
 
 add_library(ldcompress_core
+    src/accelerated_native_backend.cpp
     src/compressor.cpp
     src/flac_codec.cpp
     src/flac_native_writer.cpp
