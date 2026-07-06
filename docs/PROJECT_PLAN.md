@@ -330,6 +330,11 @@ Implemented for the first 1.1 checkpoint:
 - Native `--stats` now reports coarse accelerated timing splits for backend
   total time, LDS scan, analyzer callback, selected-frame writing, Vulkan task
   plan generation, and Vulkan exact analysis.
+- Vulkan exact analysis now dispatches one workgroup per task and uses
+  workgroup reductions for wasted-bit scans, amplitude scans, constant checks,
+  and exact Rice bit sums. This keeps the task ABI, selected-task handoff, and
+  writer path unchanged while replacing the earlier one-lane-per-task shader
+  shape.
 - The local validation matrix helper has a `no-vulkan` lane for optional-build
   regression coverage.
 
@@ -337,17 +342,16 @@ Remaining Vulkan work:
 
 - Treat Vulkan/OpenCL throughput as an architecture problem before any
   shader-level micro-tuning. Current NVIDIA RTX 5070 Ti timings on
-  `ntsc/issue176.lds` after Vulkan session reuse show CPU/libFLAC at about
-  `0.136` seconds, scalar native-fixed at `1.684` seconds with `8` threads,
-  OpenCL at `10.119` seconds, and Vulkan at `74.770` seconds. Vulkan matches
-  scalar native size on that fixture, but the current implementation is not yet
-  an accelerator in wall-clock terms. A focused `compress --backend vulkan
-  --stats` run measured `46` batches with about `74.08` analyzer seconds:
-  `11.88` seconds in scalar Vulkan task-plan generation and `62.20` seconds in
-  Vulkan exact analysis. Shared selected-frame writing is only about `0.31`
-  seconds. A comparable OpenCL stats run spends about `9.75` seconds in the
-  analyzer and `0.30` seconds writing selected frames. Persistent Vulkan object
-  reuse did not address the dominant cost.
+  `ntsc/issue176.lds` after Vulkan workgroup-per-task exact analysis show
+  CPU/libFLAC at about `0.136` seconds, scalar native-fixed at `1.684` seconds
+  with `8` threads, OpenCL at `10.119` seconds, and Vulkan at `13.594` seconds.
+  Vulkan matches scalar native size on that fixture at `4,290,592` bytes, but
+  is still not yet a wall-clock accelerator. A focused `compress --backend
+  vulkan --stats` run measured `46` batches with about `12.94` analyzer
+  seconds: `11.91` seconds in scalar Vulkan task-plan generation and `1.03`
+  seconds in Vulkan exact analysis. Shared selected-frame writing is only about
+  `0.31` seconds. A comparable OpenCL stats run spends about `9.75` seconds in
+  the analyzer and `0.30` seconds writing selected frames.
 - Move generated LPC/window/autocorrelation work onto Vulkan instead of using
   scalar-generated LPC tasks, then compare broader compression quality against
   scalar/OpenCL.

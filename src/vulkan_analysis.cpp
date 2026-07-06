@@ -902,7 +902,7 @@ public:
             0,
             sizeof(push),
             &push);
-        vkCmdDispatch(command_buffer_, dispatch_groups(push.task_count), 1, 1);
+        vkCmdDispatch(command_buffer_, push.task_count, 1, 1);
 
         const VkMemoryBarrier analysis_barrier {
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
