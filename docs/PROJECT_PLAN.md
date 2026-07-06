@@ -327,6 +327,17 @@ Implemented for the first 1.1 checkpoint:
 
 Remaining Vulkan work:
 
+- Treat Vulkan/OpenCL throughput as an architecture problem before any
+  shader-level micro-tuning. Current NVIDIA timings on `ntsc/issue176.lds`
+  show CPU/libFLAC at about `0.140` seconds, scalar native-fixed at `1.381`
+  seconds with `16` threads, OpenCL at `10.654` seconds, and Vulkan at
+  `61.651` seconds. Vulkan matches scalar native size on that fixture, but the
+  current implementation is not yet an accelerator in wall-clock terms.
+- Add persistent accelerator analysis sessions so OpenCL and Vulkan reuse
+  device/context/queue/program/pipeline/buffer setup across all batches in a
+  compression run. This is the first performance architecture target because it
+  changes lifecycle overhead without changing compression heuristics or the
+  native FLAC writer contract.
 - Move generated LPC/window/autocorrelation work onto Vulkan instead of using
   scalar-generated LPC tasks, then compare broader compression quality against
   scalar/OpenCL.
@@ -409,7 +420,7 @@ ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl|vulka
 ld-compress-ng decompress INPUT [OUTPUT]
 ld-compress-ng verify INPUT [--source ORIGINAL.lds]
 ld-compress-ng convert --pack|--unpack INPUT [OUTPUT]
-ld-compress-ng bench [--threads 1,4,8] [--include-opencl] INPUT
+ld-compress-ng bench [--threads 1,4,8] [--include-opencl] [--include-vulkan] INPUT
 ld-compress-ng devices
 ```
 
@@ -429,7 +440,8 @@ Initial behavior:
   thread counts, using temporary outputs so performance and compression-ratio
   checks do not require hand-managed files. It supports native tuning sweeps over
   frame size, LPC order, LPC coefficient precision, Rice partition order, and
-  thread count, plus opt-in OpenCL rows with `--include-opencl`.
+  thread count, plus opt-in OpenCL and Vulkan rows with `--include-opencl`
+  and `--include-vulkan`.
 - `devices` lists available OpenCL and Vulkan devices when support is built and
   provides the backend-local indexes used by accelerated compression.
 

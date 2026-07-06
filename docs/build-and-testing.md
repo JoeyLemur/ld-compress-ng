@@ -308,6 +308,9 @@ check; it implies the real-fixture lane and uses the first available OpenCL
 device unless `--opencl-device INDEX` is provided. Run that GPU lane from a
 context that can see the OpenCL runtime and devices; sandboxed executions may
 skip or report no available devices even when the system build can see them.
+For Vulkan performance tests on mixed-GPU hosts, use an explicit discrete GPU
+index from `ld-compress-ng devices`; the integrated AMD device is suitable for
+functional smoke testing but should not be used for NVIDIA performance numbers.
 Use `--dry-run` to inspect the generated commands, and `--strict-optional` to
 fail instead of skipping when a requested local fixture directory is missing.
 
@@ -394,7 +397,9 @@ The default sweep is intentionally focused: frame size `4608`, LPC orders
 `10,12`, LPC coefficient precisions `10,12`, Rice partition order `5`, and one
 thread. Add `--include-opencl` and optionally `--opencl-device INDEX` to include
 OpenCL backend rows in the CSV/Markdown output when an OpenCL device is
-available. Expand the grid explicitly when doing a broader local
+available. For single-capture Vulkan comparisons, use `bench --include-vulkan`
+with `--vulkan-device INDEX` so the run targets the intended discrete GPU.
+Expand the grid explicitly when doing a broader local
 tuning pass:
 
 ```sh
