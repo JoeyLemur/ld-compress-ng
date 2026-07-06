@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ld-compress-ng
-    VERSION 0.1.0
+    VERSION 1.0.0
     LANGUAGES CXX
 )
 
@@ -10,6 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(CTest)
+include(GNUInstallDirs)
 
 option(LDCOMPRESS_ENABLE_OPENCL "Enable OpenCL device enumeration support" ON)
 option(LDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS "Enable opt-in tests against external real LDS fixtures" OFF)
@@ -91,6 +92,28 @@ target_link_libraries(ld-compress-ng
 target_compile_options(ld-compress-ng
     PRIVATE
         $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-Wall -Wextra -Wpedantic>
+)
+
+target_compile_definitions(ld-compress-ng
+    PRIVATE
+        LDCOMPRESS_VERSION="${PROJECT_VERSION}"
+)
+
+install(TARGETS ld-compress-ng
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+install(FILES
+    README.md
+    LICENSE
+    THIRD_PARTY_NOTICES.md
+    CHANGELOG.md
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}
+)
+
+install(DIRECTORY docs/
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}/docs
+    FILES_MATCHING PATTERN "*.md"
 )
 
 if(BUILD_TESTING)

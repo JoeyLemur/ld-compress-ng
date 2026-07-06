@@ -14,6 +14,10 @@ device.
 `ld-compress-ng` does not depend at runtime on Qt, ffmpeg, `.NET`, Mono, FlaLDF,
 OpenSSL, or `ld-lds-converter`.
 
+`ld-compress-ng` is licensed under LGPL-2.1-or-later. See
+[`LICENSE`](LICENSE) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for
+the project license and preserved third-party notices.
+
 ## Build
 
 Requirements:
@@ -77,6 +81,12 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLDCOMPRESS_ENABLE_OPENCL
 cmake --build build --parallel
 ```
 
+Install from a configured build:
+
+```sh
+cmake --install build --prefix /usr/local
+```
+
 ## Basic Usage
 
 Compress an `.lds` capture with the default CPU/libFLAC backend:
@@ -138,6 +148,12 @@ Show the command summary:
 build/ld-compress-ng --help
 ```
 
+Show the release version:
+
+```sh
+build/ld-compress-ng --version
+```
+
 Tune CPU/libFLAC compression level:
 
 ```sh
@@ -187,6 +203,10 @@ build/ld-compress-ng convert --pack capture.s16 capture.lds
   [`docs/build-and-testing.md`](docs/build-and-testing.md)
 - Current implementation plan and project history:
   [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md)
+- Release checklist:
+  [`docs/release-checklist.md`](docs/release-checklist.md)
+- Changelog:
+  [`CHANGELOG.md`](CHANGELOG.md)
 - Development host sync notes:
   [`docs/remote-sync.md`](docs/remote-sync.md)
 - Third-party license notices:

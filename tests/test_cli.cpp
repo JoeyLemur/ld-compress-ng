@@ -210,6 +210,7 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_opencl_device = temp_dir / "fixture.bad-opencl-device.flac.ldf";
     const auto bad_opencl_container = temp_dir / "fixture.bad-opencl-container.ldf";
     const auto help_output = temp_dir / "help.txt";
+    const auto version_output = temp_dir / "version.txt";
 
     const std::string fixture = make_lds_fixture();
     write_file(lds, fixture);
@@ -226,6 +227,12 @@ void test_cli(const std::filesystem::path& exe)
         "help output did not describe backends");
     require(help_text.find("More details: README.md and docs/build-and-testing.md") != std::string::npos,
         "help output did not point to documentation");
+    require(help_text.find("ld-compress-ng --version") != std::string::npos,
+        "help output did not mention --version");
+
+    run_ok(shell_quote(exe) + " --version > " + shell_quote(version_output));
+    require(read_file(version_output) == "ld-compress-ng 1.0.0\n",
+        "version output did not match project version");
 
     run_ok(shell_quote(exe) + " convert --unpack " + shell_quote(lds) + " " + shell_quote(pcm));
     run_ok(shell_quote(exe) + " convert --pack " + shell_quote(pcm) + " " + shell_quote(repacked));

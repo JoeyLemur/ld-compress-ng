@@ -1,5 +1,9 @@
 # Third-Party Notices
 
+`ld-compress-ng` is licensed under LGPL-2.1-or-later. The full license text is
+provided in `LICENSE`. The source tree also keeps a copy under
+`LICENSES/LGPL-2.1-or-later.txt` for third-party notice continuity.
+
 This project links against the system `libFLAC` and `libogg` libraries for the
 CPU/Ogg FLAC path. The native FLAC encoder is project code, but its FLAC
 analysis work is checked against the Xiph.org FLAC reference implementation
@@ -7,8 +11,7 @@ under `reference/flac/`.
 
 The OpenCL analysis path includes a reduced, locally modified kernel slice
 derived from CUETools.FLACCL. Preserve the LGPL notice in the kernel source and
-keep local modification notes when changing that code. A copy of the LGPL 2.1
-license text is provided at `LICENSES/LGPL-2.1-or-later.txt`.
+keep local modification notes when changing that code.
 
 ## CUETools.FLACCL OpenCL Kernels
 

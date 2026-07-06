@@ -45,6 +45,12 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
+Install from a configured build:
+
+```sh
+cmake --install build --prefix /usr/local
+```
+
 CPU-only configure:
 
 ```sh
@@ -154,6 +160,7 @@ Useful smoke commands:
 
 ```sh
 build/ld-compress-ng --help
+build/ld-compress-ng --version
 build/ld-compress-ng devices
 ctest --test-dir build --output-on-failure
 ```
@@ -162,6 +169,22 @@ ctest --test-dir build --output-on-failure
 `compress --backend opencl --device INDEX` or `--opencl-device INDEX`, plus
 platform-local `platform/device` coordinates. The OpenCL compression backend
 writes native FLAC and requires an available OpenCL device at runtime.
+
+## Install Layout
+
+The CMake install target installs:
+
+- `ld-compress-ng` under `${CMAKE_INSTALL_BINDIR}`.
+- `README.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, and `CHANGELOG.md` under
+  `${CMAKE_INSTALL_DOCDIR}`.
+- Markdown files from `docs/` under `${CMAKE_INSTALL_DOCDIR}/docs`.
+
+Use a temporary prefix for local install validation:
+
+```sh
+cmake --install build --prefix /tmp/ld-compress-ng-install
+/tmp/ld-compress-ng-install/bin/ld-compress-ng --version
+```
 
 ## Compatibility And Tuning CLI Notes
 

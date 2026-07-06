@@ -21,6 +21,10 @@
 #include <utility>
 #include <vector>
 
+#ifndef LDCOMPRESS_VERSION
+#define LDCOMPRESS_VERSION "unknown"
+#endif
+
 namespace {
 
 constexpr unsigned kDefaultNativeFrameSamples = 4608;
@@ -70,6 +74,7 @@ struct Options {
         << "  ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng bench [--threads 1,4,8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] [--lpc-precision N[,N...]] [--rice-partition-order N[,N...]] [--include-opencl] [--device INDEX|--opencl-device INDEX] INPUT\n"
         << "  ld-compress-ng devices\n"
+        << "  ld-compress-ng --version\n"
         << "  ld-compress-ng --help\n\n"
         << "Common examples:\n"
         << "  ld-compress-ng compress capture.lds\n"
@@ -105,6 +110,12 @@ struct Options {
         << "  --overwrite                  Replace an existing output path.\n\n"
         << "More details: README.md and docs/build-and-testing.md\n";
     std::exit(exit_code);
+}
+
+int version()
+{
+    std::cout << "ld-compress-ng " << LDCOMPRESS_VERSION << '\n';
+    return 0;
 }
 
 bool ends_with(std::string_view value, std::string_view suffix)
@@ -1252,6 +1263,9 @@ int main(int argc, char** argv)
         const std::string_view command(argv[1]);
         if (command == "--help" || command == "-h") {
             usage(0);
+        }
+        if (command == "--version") {
+            return version();
         }
         if (command == "compress") {
             return run_compress(parse_compress(argc, argv));
