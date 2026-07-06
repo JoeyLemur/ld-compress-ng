@@ -19,6 +19,7 @@ option(LDCOMPRESS_ENABLE_FLAC_TEST_FILE_TESTS "Enable opt-in tests against exter
 set(LDCOMPRESS_REAL_FIXTURE_DIR "" CACHE PATH "Directory containing external .lds fixtures for opt-in real-fixture tests")
 set(LDCOMPRESS_FLAC_TEST_FILE_DIR "" CACHE PATH "Directory containing external FLAC decoder testbench files")
 set(LDCOMPRESS_OPENCL_TEST_DEVICE "" CACHE STRING "Flattened OpenCL device index for opt-in OpenCL compatibility tests")
+set(LDCOMPRESS_VULKAN_TEST_DEVICE "" CACHE STRING "Vulkan device index for opt-in Vulkan smoke tests")
 set(LDCOMPRESS_GLSLANG_VALIDATOR "" CACHE FILEPATH "glslangValidator executable for Vulkan shader builds")
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
@@ -42,13 +43,12 @@ endif()
 
 set(LDCOMPRESS_HAVE_VULKAN 0)
 if(LDCOMPRESS_ENABLE_VULKAN)
-    find_package(Vulkan QUIET COMPONENTS glslangValidator)
+    find_package(Vulkan QUIET)
     if(NOT LDCOMPRESS_GLSLANG_VALIDATOR)
-        if(Vulkan_GLSLANG_VALIDATOR_EXECUTABLE)
-            set(LDCOMPRESS_GLSLANG_VALIDATOR "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}"
+        find_program(LDCOMPRESS_FOUND_GLSLANG_VALIDATOR glslangValidator)
+        if(LDCOMPRESS_FOUND_GLSLANG_VALIDATOR)
+            set(LDCOMPRESS_GLSLANG_VALIDATOR "${LDCOMPRESS_FOUND_GLSLANG_VALIDATOR}"
                 CACHE FILEPATH "glslangValidator executable for Vulkan shader builds" FORCE)
-        else()
-            find_program(LDCOMPRESS_GLSLANG_VALIDATOR glslangValidator)
         endif()
     endif()
     if(Vulkan_FOUND AND LDCOMPRESS_GLSLANG_VALIDATOR)
@@ -73,6 +73,7 @@ add_library(ldcompress_core
     src/opencl_backend.cpp
     src/opencl_devices.cpp
     src/vulkan_devices.cpp
+    src/vulkan_smoke.cpp
 )
 
 target_include_directories(ldcompress_core
@@ -109,6 +110,22 @@ if(LDCOMPRESS_HAVE_VULKAN)
     target_link_libraries(ldcompress_core
         PRIVATE
             Vulkan::Vulkan
+    )
+
+    set(LDCOMPRESS_VULKAN_SMOKE_SHADER
+        "${CMAKE_CURRENT_BINARY_DIR}/shaders/vulkan_smoke.comp.spv")
+    add_custom_command(
+        OUTPUT "${LDCOMPRESS_VULKAN_SMOKE_SHADER}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${CMAKE_CURRENT_BINARY_DIR}/shaders"
+        COMMAND "${LDCOMPRESS_GLSLANG_VALIDATOR}" -V
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan_smoke.comp"
+            -o "${LDCOMPRESS_VULKAN_SMOKE_SHADER}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan_smoke.comp"
+        VERBATIM
+    )
+    add_custom_target(vulkan_smoke_shader
+        DEPENDS "${LDCOMPRESS_VULKAN_SMOKE_SHADER}"
     )
 endif()
 
@@ -228,6 +245,29 @@ if(BUILD_TESTING)
 
     add_test(NAME vulkan_devices COMMAND test_vulkan_devices)
     set_tests_properties(vulkan_devices PROPERTIES LABELS vulkan)
+
+    add_executable(test_vulkan_smoke
+        tests/test_vulkan_smoke.cpp
+    )
+
+    target_link_libraries(test_vulkan_smoke
+        PRIVATE
+            ldcompress_core
+    )
+
+    set(vulkan_smoke_command test_vulkan_smoke)
+    if(LDCOMPRESS_HAVE_VULKAN)
+        add_dependencies(test_vulkan_smoke vulkan_smoke_shader)
+        list(APPEND vulkan_smoke_command "${LDCOMPRESS_VULKAN_SMOKE_SHADER}")
+        if(NOT "${LDCOMPRESS_VULKAN_TEST_DEVICE}" STREQUAL "")
+            list(APPEND vulkan_smoke_command
+                --device "${LDCOMPRESS_VULKAN_TEST_DEVICE}"
+            )
+        endif()
+    endif()
+
+    add_test(NAME vulkan_smoke COMMAND ${vulkan_smoke_command})
+    set_tests_properties(vulkan_smoke PROPERTIES LABELS vulkan)
 
     add_executable(compare_opencl_scalar_frames
         tests/compare_opencl_scalar_frames.cpp

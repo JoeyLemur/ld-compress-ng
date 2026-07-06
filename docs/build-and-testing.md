@@ -116,6 +116,11 @@ package, `glslangValidator`, and a vendor runtime. Common package names:
 both Vulkan development files and `glslangValidator` are found. Without them,
 `ld-compress-ng devices` reports `Vulkan support: not built`.
 
+When Vulkan is enabled, CMake compiles the checked-in GLSL smoke shader to
+SPIR-V with `glslangValidator` and the `vulkan_smoke` CTest dispatches it
+against the first available compute device. Set `LDCOMPRESS_VULKAN_TEST_DEVICE`
+at configure time to force a specific backend-local Vulkan device index.
+
 ### Linux OpenCL Validation Record
 
 The current OpenCL analysis smoke tests were validated on `smaug`:
@@ -143,6 +148,31 @@ Observed result: `build/test_opencl_analysis` exited successfully without skip
 messages, and the non-real-fixture CTest suite passed. The test currently
 selects the first available OpenCL device, so this validates device `[0]` unless
 future tests add explicit multi-device coverage.
+
+### Linux Vulkan Development Validation Record
+
+The current Vulkan device enumeration and smoke shader were validated on
+`smaug` with Vulkan development files and `glslangValidator` installed. Devices
+reported by `ld-compress-ng devices` from a GPU-visible context:
+
+- `[0] AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO)`, integrated GPU.
+- `[1] NVIDIA GeForce RTX 5070 Ti`, discrete GPU.
+- `[2] NVIDIA GeForce RTX 4070 SUPER`, discrete GPU.
+- `[3] llvmpipe (LLVM 19.1.7, 256 bits)`, CPU Vulkan implementation.
+
+Validation commands:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLDCOMPRESS_ENABLE_VULKAN=ON
+cmake --build build --parallel
+build/ld-compress-ng devices
+ctest --test-dir build -L vulkan --output-on-failure
+build/test_vulkan_smoke build/shaders/vulkan_smoke.comp.spv --device 1
+```
+
+Observed result: the Vulkan-labelled CTests passed, and direct smoke runs passed
+on the AMD integrated GPU plus both NVIDIA GPUs. Sandboxed runs may expose only
+llvmpipe; use a GPU-visible context for NVIDIA/AMD runtime validation.
 
 CPU-only configure on Linux is the same as macOS:
 

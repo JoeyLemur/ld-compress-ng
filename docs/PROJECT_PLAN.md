@@ -304,12 +304,14 @@ Implemented for the first 1.1 checkpoint:
   writing output until the backend is implemented.
 - `test_vulkan_devices` covers disabled-build behavior and runtime device
   selection when Vulkan support is built.
+- A CMake-built GLSL-to-SPIR-V compute smoke shader and `test_vulkan_smoke`
+  exercise Vulkan instance/device setup, storage buffers, descriptor binding,
+  compute pipeline creation, command submission, and host readback.
 - The local validation matrix helper has a `no-vulkan` lane for optional-build
   regression coverage.
 
 Remaining Vulkan work:
 
-- Add a minimal Vulkan compute smoke path and shader build rule.
 - Factor the shared accelerator host flow currently embedded in the OpenCL
   backend so OpenCL and Vulkan can both feed selected native-FLAC subframes into
   the existing writer.
