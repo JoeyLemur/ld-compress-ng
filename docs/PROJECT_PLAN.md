@@ -283,12 +283,47 @@ Real-fixture sweep result:
   now; stop OpenCL LPC parity tuning unless a future task explicitly chooses a
   higher-compression or higher-precision OpenCL design.
 
+## 1.1 Vulkan Acceleration Checkpoint
+
+The 1.1 development branch targets Linux-first Vulkan compute acceleration for
+native FLAC compression. NVIDIA is the local validation target; AMD support is a
+design requirement through standard Vulkan compute features, but is not a
+release-blocking hardware validation requirement until AMD hardware is
+available.
+
+Implemented for the first 1.1 checkpoint:
+
+- Optional `LDCOMPRESS_ENABLE_VULKAN` CMake plumbing. Vulkan support is enabled
+  only when Vulkan development files and `glslangValidator` are found; otherwise
+  the build keeps working and reports `Vulkan support: not built`.
+- `vulkan_devices` enumeration and selection APIs with no-Vulkan stubs, matching
+  the OpenCL device-selection pattern.
+- `ld-compress-ng devices` now reports grouped OpenCL and Vulkan sections.
+- The CLI recognizes `--backend vulkan`, `--device`, and `--vulkan-device` for
+  the future Vulkan backend, but Vulkan compression intentionally fails before
+  writing output until the backend is implemented.
+- `test_vulkan_devices` covers disabled-build behavior and runtime device
+  selection when Vulkan support is built.
+- The local validation matrix helper has a `no-vulkan` lane for optional-build
+  regression coverage.
+
+Remaining Vulkan work:
+
+- Add a minimal Vulkan compute smoke path and shader build rule.
+- Factor the shared accelerator host flow currently embedded in the OpenCL
+  backend so OpenCL and Vulkan can both feed selected native-FLAC subframes into
+  the existing writer.
+- Port analysis in stages: fixed/constant costing, residual/Rice costing,
+  selected-subframe handoff, LPC candidate evaluation, then generated LPC.
+- Add Vulkan real-fixture compatibility and matrix lanes after the backend can
+  produce valid `.flac.ldf` output.
+
 Immediate engineering focus:
 
 - Move on from OpenCL LPC parity tuning. Keep the Linux/NVIDIA OpenCL path under
-  regression coverage, treat Metal for macOS as a later optional backend, and
-  reopen OpenCL tuning only for an explicit higher-compression or higher-speed
-  design pass.
+  regression coverage, continue the Linux-first Vulkan 1.1 backend, treat Metal
+  for macOS as a later optional backend, and reopen OpenCL tuning only for an
+  explicit higher-compression or higher-speed design pass.
 - Continue native FLAC compatibility hardening using `reference/rfc9639.txt`
   and `reference/flac/` as read-only references.
 - Use `reference/ld-decode/` as the direct compatibility target for compressed
@@ -351,7 +386,7 @@ compressor or the OpenCL backend.
 The CLI should use explicit subcommands rather than mirroring the old option soup.
 
 ```text
-ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl] INPUT [OUTPUT]
+ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl|vulkan] INPUT [OUTPUT]
 ld-compress-ng decompress INPUT [OUTPUT]
 ld-compress-ng verify INPUT [--source ORIGINAL.lds]
 ld-compress-ng convert --pack|--unpack INPUT [OUTPUT]
@@ -362,9 +397,9 @@ ld-compress-ng devices
 Initial behavior:
 
 - `compress` defaults to CPU compression using Ogg FLAC-compatible `.ldf` output.
-- `compress --backend cpu|native-verbatim|native-fixed|opencl` should select
-  between the implemented CPU path, native FLAC writer paths, and the
-  OpenCL-native FLAC encoder.
+- `compress --backend cpu|native-verbatim|native-fixed|opencl|vulkan` should
+  select between the implemented CPU path, native FLAC writer paths, the
+  OpenCL-native FLAC encoder, and the in-development Vulkan encoder.
 - `decompress` accepts existing `.ldf`, `.raw.oga`, and `.flac.ldf` inputs where
   supported by the implemented decoder path.
 - `verify` reports hashes for the compressed input and the decompressed/repacked
@@ -376,8 +411,8 @@ Initial behavior:
   checks do not require hand-managed files. It supports native tuning sweeps over
   frame size, LPC order, LPC coefficient precision, Rice partition order, and
   thread count, plus opt-in OpenCL rows with `--include-opencl`.
-- `devices` lists available OpenCL platforms/devices when OpenCL support is
-  built and provides the flattened indexes used by OpenCL compression.
+- `devices` lists available OpenCL and Vulkan devices when support is built and
+  provides the backend-local indexes used by accelerated compression.
 
 Default output naming should preserve existing conventions unless explicitly
 overridden:

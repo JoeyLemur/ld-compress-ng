@@ -3,6 +3,7 @@
 #include "hash.h"
 #include "lds_codec.h"
 #include "opencl_devices.h"
+#include "vulkan_devices.h"
 
 #include <array>
 #include <chrono>
@@ -44,13 +45,18 @@ struct Options {
     bool native_max_lpc_order_explicit = false;
     bool native_lpc_precision_explicit = false;
     bool native_max_rice_partition_order_explicit = false;
+    bool device_index_explicit = false;
+    bool opencl_device_index_explicit = false;
+    bool vulkan_device_index_explicit = false;
     unsigned level = 11;
     unsigned threads = 1;
     unsigned native_frame_samples = kDefaultNativeFrameSamples;
     unsigned native_max_lpc_order = kDefaultNativeMaxLpcOrder;
     unsigned native_lpc_precision = kDefaultNativeLpcPrecision;
     unsigned native_max_rice_partition_order = kDefaultNativeMaxRicePartitionOrder;
+    std::optional<std::size_t> device_index;
     std::optional<std::size_t> opencl_device_index;
+    std::optional<std::size_t> vulkan_device_index;
     std::vector<unsigned> bench_threads;
     std::vector<unsigned> bench_frame_samples;
     std::vector<unsigned> bench_lpc_orders;
@@ -89,22 +95,24 @@ struct Options {
         << "  verify        Print compressed and decoded MD5; compare with --source when set.\n"
         << "  convert       Convert between packed LDS and signed 16-bit little-endian PCM.\n"
         << "  bench         Compare backend size/speed using temporary output files.\n"
-        << "  devices       List OpenCL devices and flattened --device indexes.\n\n"
+        << "  devices       List OpenCL and Vulkan devices with --device indexes.\n\n"
         << "Compression backends:\n"
         << "  cpu              Default portable Ogg FLAC .ldf backend using libFLAC/libogg.\n"
         << "  native-fixed     Native FLAC .flac.ldf backend with scalar fixed/LPC prediction.\n"
         << "  opencl           Native FLAC .flac.ldf backend using the selected OpenCL device.\n"
+        << "  vulkan           Native FLAC .flac.ldf backend using the selected Vulkan device.\n"
         << "  native-verbatim  Native FLAC .flac.ldf compatibility/debug backend.\n\n"
         << "Compress options:\n"
-        << "  --backend cpu|native-verbatim|native-fixed|opencl\n"
+        << "  --backend cpu|native-verbatim|native-fixed|opencl|vulkan\n"
         << "  --level N                    CPU/libFLAC level, 1..12; default 11.\n"
         << "  --threads N                  Native scalar frame threads; default 1. OpenCL requires 1.\n"
         << "  --frame-samples N            Native FLAC block size, 16..4608; default 4608.\n"
         << "  --lpc-order N                Predictive native max LPC order, 0..12; default 12.\n"
         << "  --lpc-precision N            Predictive native LPC precision, 1..15; default 12.\n"
         << "  --rice-partition-order N     Predictive native max Rice partition order, 0..8; default 5.\n"
-        << "  --device INDEX               OpenCL device index from the devices command.\n"
-        << "  --opencl-device INDEX        Alias for --device.\n"
+        << "  --device INDEX               Backend-local OpenCL/Vulkan device index.\n"
+        << "  --opencl-device INDEX        Explicit OpenCL device index.\n"
+        << "  --vulkan-device INDEX        Explicit Vulkan device index.\n"
         << "  --stats                      Print native backend frame-decision statistics.\n"
         << "  --container ogg|flac         cpu can write Ogg or native FLAC; native/opencl write flac.\n"
         << "  --overwrite                  Replace an existing output path.\n\n"
@@ -128,7 +136,28 @@ bool is_native_flac_backend(ldcompress::CompressionBackend backend)
 {
     return backend == ldcompress::CompressionBackend::NativeVerbatimFlac ||
         backend == ldcompress::CompressionBackend::NativeFixedFlac ||
-        backend == ldcompress::CompressionBackend::OpenClNativeFlac;
+        backend == ldcompress::CompressionBackend::OpenClNativeFlac ||
+        backend == ldcompress::CompressionBackend::VulkanNativeFlac;
+}
+
+bool is_accelerated_native_backend(ldcompress::CompressionBackend backend)
+{
+    return backend == ldcompress::CompressionBackend::OpenClNativeFlac ||
+        backend == ldcompress::CompressionBackend::VulkanNativeFlac;
+}
+
+std::optional<std::size_t> effective_opencl_device_index(const Options& options)
+{
+    return options.opencl_device_index.has_value()
+        ? options.opencl_device_index
+        : options.device_index;
+}
+
+std::optional<std::size_t> effective_vulkan_device_index(const Options& options)
+{
+    return options.vulkan_device_index.has_value()
+        ? options.vulkan_device_index
+        : options.device_index;
 }
 
 std::optional<std::size_t> available_opencl_device_index(
@@ -310,15 +339,15 @@ std::size_t parse_device_index(std::string_view text)
 {
     std::size_t value = 0;
     if (text.empty()) {
-        throw std::runtime_error("empty OpenCL device index");
+        throw std::runtime_error("empty device index");
     }
     for (const char ch : text) {
         if (ch < '0' || ch > '9') {
-            throw std::runtime_error("invalid OpenCL device index: " + std::string(text));
+            throw std::runtime_error("invalid device index: " + std::string(text));
         }
         const auto digit = static_cast<std::size_t>(ch - '0');
         if (value > (std::numeric_limits<std::size_t>::max() - digit) / 10U) {
-            throw std::runtime_error("OpenCL device index is too large: " + std::string(text));
+            throw std::runtime_error("device index is too large: " + std::string(text));
         }
         value = (value * 10U) + digit;
     }
@@ -389,6 +418,8 @@ Options parse_compress(int argc, char** argv)
                 options.backend = ldcompress::CompressionBackend::NativeFixedFlac;
             } else if (backend == "opencl" || backend == "gpu") {
                 options.backend = ldcompress::CompressionBackend::OpenClNativeFlac;
+            } else if (backend == "vulkan") {
+                options.backend = ldcompress::CompressionBackend::VulkanNativeFlac;
             } else {
                 throw std::runtime_error("unknown backend: " + std::string(backend));
             }
@@ -431,11 +462,24 @@ Options parse_compress(int argc, char** argv)
             options.native_max_rice_partition_order_explicit = true;
             options.native_max_rice_partition_order = parse_bounded_unsigned(
                 argv[i], "native FLAC max Rice partition order", 0, 8);
-        } else if (arg == "--device" || arg == "--opencl-device") {
+        } else if (arg == "--device") {
             if (++i >= argc) {
                 throw std::runtime_error(std::string(arg) + " requires a value");
             }
+            options.device_index_explicit = true;
+            options.device_index = parse_device_index(argv[i]);
+        } else if (arg == "--opencl-device") {
+            if (++i >= argc) {
+                throw std::runtime_error(std::string(arg) + " requires a value");
+            }
+            options.opencl_device_index_explicit = true;
             options.opencl_device_index = parse_device_index(argv[i]);
+        } else if (arg == "--vulkan-device") {
+            if (++i >= argc) {
+                throw std::runtime_error(std::string(arg) + " requires a value");
+            }
+            options.vulkan_device_index_explicit = true;
+            options.vulkan_device_index = parse_device_index(argv[i]);
         } else if (arg == "--container") {
             if (++i >= argc) {
                 throw std::runtime_error("--container requires a value");
@@ -485,9 +529,24 @@ Options parse_compress(int argc, char** argv)
         options.backend == ldcompress::CompressionBackend::CpuLibFlac) {
         throw std::runtime_error("--stats is currently supported only by native FLAC backends");
     }
-    if (options.opencl_device_index.has_value() &&
+    if (options.device_index_explicit && !is_accelerated_native_backend(options.backend)) {
+        throw std::runtime_error("--device is currently supported only by opencl and vulkan backends");
+    }
+    if (options.opencl_device_index_explicit &&
         options.backend != ldcompress::CompressionBackend::OpenClNativeFlac) {
-        throw std::runtime_error("--device is currently supported only by the opencl backend");
+        throw std::runtime_error("--opencl-device is currently supported only by the opencl backend");
+    }
+    if (options.vulkan_device_index_explicit &&
+        options.backend != ldcompress::CompressionBackend::VulkanNativeFlac) {
+        throw std::runtime_error("--vulkan-device is currently supported only by the vulkan backend");
+    }
+    if (options.backend == ldcompress::CompressionBackend::OpenClNativeFlac &&
+        options.vulkan_device_index_explicit) {
+        throw std::runtime_error("--vulkan-device cannot be used with the opencl backend");
+    }
+    if (options.backend == ldcompress::CompressionBackend::VulkanNativeFlac &&
+        options.opencl_device_index_explicit) {
+        throw std::runtime_error("--opencl-device cannot be used with the vulkan backend");
     }
     if (options.backend == ldcompress::CompressionBackend::CpuLibFlac &&
         native_tuning_options_explicit) {
@@ -637,10 +696,17 @@ Options parse_bench(int argc, char** argv)
                 argv[i], "native FLAC max Rice partition order", 0, 8);
         } else if (arg == "--include-opencl") {
             options.bench_include_opencl = true;
-        } else if (arg == "--device" || arg == "--opencl-device") {
+        } else if (arg == "--device") {
             if (++i >= argc) {
                 throw std::runtime_error(std::string(arg) + " requires a value");
             }
+            options.device_index_explicit = true;
+            options.device_index = parse_device_index(argv[i]);
+        } else if (arg == "--opencl-device") {
+            if (++i >= argc) {
+                throw std::runtime_error(std::string(arg) + " requires a value");
+            }
+            options.opencl_device_index_explicit = true;
             options.opencl_device_index = parse_device_index(argv[i]);
         } else if (arg == "--help" || arg == "-h") {
             usage(0);
@@ -669,7 +735,8 @@ Options parse_bench(int argc, char** argv)
     if (options.bench_rice_partition_orders.empty()) {
         options.bench_rice_partition_orders.push_back(options.native_max_rice_partition_order);
     }
-    if (options.opencl_device_index.has_value() && !options.bench_include_opencl) {
+    if ((options.device_index_explicit || options.opencl_device_index_explicit) &&
+        !options.bench_include_opencl) {
         throw std::runtime_error("--device is supported by bench only with --include-opencl");
     }
 
@@ -811,7 +878,8 @@ int run_compress(const Options& options)
         .native_lpc_precision = options.native_lpc_precision,
         .native_max_rice_partition_order = options.native_max_rice_partition_order,
         .native_stats = options.show_stats ? &native_stats : nullptr,
-        .opencl_device_index = options.opencl_device_index,
+        .opencl_device_index = effective_opencl_device_index(options),
+        .vulkan_device_index = effective_vulkan_device_index(options),
     };
     const auto stats = ldcompress::compress_lds(input, options.output, compress_options);
     std::cerr << "compressed " << stats.input_bytes << " bytes to "
@@ -984,6 +1052,7 @@ BenchResult run_bench_case(
         .native_max_rice_partition_order = bench_case.native_max_rice_partition_order,
         .native_stats = collect_native_stats ? &native_stats : nullptr,
         .opencl_device_index = bench_case.opencl_device_index,
+        .vulkan_device_index = std::nullopt,
     };
 
     const auto started = std::chrono::steady_clock::now();
@@ -1114,7 +1183,7 @@ int run_bench(const Options& options)
 
     if (options.bench_include_opencl) {
         const auto opencl_device_index =
-            available_opencl_device_index(options.opencl_device_index);
+            available_opencl_device_index(effective_opencl_device_index(options));
         if (opencl_device_index.has_value()) {
             for (const unsigned frame_samples : options.bench_frame_samples) {
                 for (const unsigned lpc_order : options.bench_lpc_orders) {
@@ -1139,9 +1208,10 @@ int run_bench(const Options& options)
                 }
             }
         } else {
-            if (options.opencl_device_index.has_value()) {
+            const auto requested_opencl_device_index = effective_opencl_device_index(options);
+            if (requested_opencl_device_index.has_value()) {
                 std::cerr << "bench: requested OpenCL device "
-                          << *options.opencl_device_index
+                          << *requested_opencl_device_index
                           << " is not available; omitting opencl rows\n";
             } else {
                 std::cerr << "bench: OpenCL requested but no available device was found; omitting opencl rows\n";
@@ -1221,31 +1291,64 @@ int run_devices(int argc, char** argv)
 
     if (!ldcompress::opencl_support_built()) {
         std::cout << "OpenCL support: not built\n";
-        return 0;
+    } else {
+        std::cout << "OpenCL support: built\n";
+        const auto devices = ldcompress::list_opencl_devices();
+        if (devices.empty()) {
+            std::cout << "No OpenCL devices found\n";
+        } else {
+            for (std::size_t i = 0; i < devices.size(); ++i) {
+                const auto& device = devices[i];
+                std::cout << '[' << device.flat_index << "] " << device.device_name << '\n'
+                          << "    platform/device index: " << device.platform_index << '/'
+                          << device.device_index << '\n'
+                          << "    type: " << device.type << '\n'
+                          << "    available: " << (device.available ? "yes" : "no") << '\n'
+                          << "    compute units: " << device.compute_units << '\n'
+                          << "    global memory: " << device.global_memory_bytes << " bytes\n"
+                          << "    vendor: " << device.device_vendor << '\n'
+                          << "    device version: " << device.device_version << '\n'
+                          << "    driver version: " << device.driver_version << '\n'
+                          << "    platform: " << device.platform_name << '\n'
+                          << "    platform vendor: " << device.platform_vendor << '\n'
+                          << "    platform version: " << device.platform_version << '\n';
+            }
+        }
     }
 
-    std::cout << "OpenCL support: built\n";
-    const auto devices = ldcompress::list_opencl_devices();
-    if (devices.empty()) {
-        std::cout << "No OpenCL devices found\n";
-        return 0;
-    }
-
-    for (std::size_t i = 0; i < devices.size(); ++i) {
-        const auto& device = devices[i];
-        std::cout << '[' << device.flat_index << "] " << device.device_name << '\n'
-                  << "    platform/device index: " << device.platform_index << '/'
-                  << device.device_index << '\n'
-                  << "    type: " << device.type << '\n'
-                  << "    available: " << (device.available ? "yes" : "no") << '\n'
-                  << "    compute units: " << device.compute_units << '\n'
-                  << "    global memory: " << device.global_memory_bytes << " bytes\n"
-                  << "    vendor: " << device.device_vendor << '\n'
-                  << "    device version: " << device.device_version << '\n'
-                  << "    driver version: " << device.driver_version << '\n'
-                  << "    platform: " << device.platform_name << '\n'
-                  << "    platform vendor: " << device.platform_vendor << '\n'
-                  << "    platform version: " << device.platform_version << '\n';
+    std::cout << '\n';
+    if (!ldcompress::vulkan_support_built()) {
+        std::cout << "Vulkan support: not built\n";
+    } else {
+        std::cout << "Vulkan support: built\n";
+        const auto devices = ldcompress::list_vulkan_devices();
+        if (devices.empty()) {
+            std::cout << "No Vulkan devices found\n";
+        } else {
+            for (std::size_t i = 0; i < devices.size(); ++i) {
+                const auto& device = devices[i];
+                std::cout << '[' << device.index << "] " << device.device_name << '\n'
+                          << "    type: " << device.device_type << '\n'
+                          << "    available: " << (device.available ? "yes" : "no") << '\n'
+                          << "    compute queue family: " << device.compute_queue_family_index << '\n'
+                          << "    compute queues: " << device.compute_queue_count << '\n'
+                          << "    max workgroup invocations: "
+                          << device.max_compute_work_group_invocations << '\n'
+                          << "    max compute shared memory: "
+                          << device.max_compute_shared_memory_bytes << " bytes\n"
+                          << "    device-local memory: "
+                          << device.device_local_memory_bytes << " bytes\n"
+                          << "    vendor: " << device.vendor_name << '\n'
+                          << "    vendor id: 0x" << std::hex << std::setw(4)
+                          << std::setfill('0') << device.vendor_id
+                          << std::dec << std::setfill(' ') << '\n'
+                          << "    device id: 0x" << std::hex << std::setw(4)
+                          << std::setfill('0') << device.device_id
+                          << std::dec << std::setfill(' ') << '\n'
+                          << "    api version: " << device.api_version << '\n'
+                          << "    driver version: " << device.driver_version << '\n';
+            }
+        }
     }
 
     return 0;

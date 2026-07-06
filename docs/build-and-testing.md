@@ -16,6 +16,7 @@ tools when they are available and skip cleanly when they are not.
 | `libFLAC` development files | Yes | CPU FLAC encode/decode | Requires pkg-config module `flac`. |
 | `libogg` development files | Yes | Ogg FLAC container support | Requires pkg-config module `ogg`. |
 | OpenCL headers + loader/framework | Optional | `devices` enumeration and OpenCL compression backend | Disable with `-DLDCOMPRESS_ENABLE_OPENCL=OFF`. |
+| Vulkan headers + loader + `glslangValidator` | Optional | Vulkan `devices` enumeration and in-development Vulkan backend | Disable with `-DLDCOMPRESS_ENABLE_VULKAN=OFF`; compression is not implemented yet. |
 | Python 3 interpreter | Optional | Skip-safe external decode compatibility CTests and helper scripts | CMake adds Python-based tests only when an interpreter is found. |
 | `ffmpeg`/`ffprobe` | Optional | External native-FLAC decode compatibility CTest and legacy fixture regeneration | The compatibility test skips if `ffmpeg` is unavailable. |
 | PyAV and reference `ld-decode` dependencies | Optional | External `ld-decode` loader compatibility CTests | Tests skip if the local reference tree or imports are unavailable. |
@@ -102,6 +103,19 @@ Common optional package names:
 | Fedora/RHEL-family | `ocl-icd-devel`, `opencl-headers`, optional `clinfo` |
 | Arch Linux | `ocl-icd`, `opencl-headers`, optional `clinfo` |
 
+For Vulkan 1.1 development, install Vulkan headers, the loader development
+package, `glslangValidator`, and a vendor runtime. Common package names:
+
+| Distribution | Vulkan development packages |
+| --- | --- |
+| Debian/Ubuntu | `libvulkan-dev`, `glslang-tools`, optional `vulkan-tools` |
+| Fedora/RHEL-family | `vulkan-headers`, `vulkan-loader-devel`, `glslang`, optional `vulkan-tools` |
+| Arch Linux | `vulkan-headers`, `vulkan-icd-loader`, `glslang`, optional `vulkan-tools` |
+
+`LDCOMPRESS_ENABLE_VULKAN=ON` is opportunistic: CMake enables Vulkan only when
+both Vulkan development files and `glslangValidator` are found. Without them,
+`ld-compress-ng devices` reports `Vulkan support: not built`.
+
 ### Linux OpenCL Validation Record
 
 The current OpenCL analysis smoke tests were validated on `smaug`:
@@ -153,8 +167,8 @@ ldd build/ld-compress-ng
 ```
 
 Expected required runtime libraries for the CPU build are the C++ runtime,
-system C library, `libFLAC`, and `libogg`. OpenCL appears only when the optional
-OpenCL path is enabled and found by CMake.
+system C library, `libFLAC`, and `libogg`. OpenCL and Vulkan appear only when
+the corresponding optional paths are enabled and found by CMake.
 
 Useful smoke commands:
 
@@ -165,10 +179,13 @@ build/ld-compress-ng devices
 ctest --test-dir build --output-on-failure
 ```
 
-`ld-compress-ng devices` prints flattened OpenCL device indexes for
-`compress --backend opencl --device INDEX` or `--opencl-device INDEX`, plus
-platform-local `platform/device` coordinates. The OpenCL compression backend
-writes native FLAC and requires an available OpenCL device at runtime.
+`ld-compress-ng devices` prints grouped OpenCL and Vulkan device indexes.
+OpenCL indexes are used by `compress --backend opencl --device INDEX` or
+`--opencl-device INDEX`, plus platform-local `platform/device` coordinates. The
+OpenCL compression backend writes native FLAC and requires an available OpenCL
+device at runtime. Vulkan indexes are backend-local and reserved for
+`compress --backend vulkan --device INDEX`; Vulkan compression is still a 1.1
+development path and currently fails cleanly before writing output.
 
 ## Install Layout
 
@@ -215,7 +232,9 @@ build/ld-compress-ng compress --backend native-fixed \
 The current recommended native defaults are frame size `4608`, maximum LPC
 order `12`, LPC coefficient precision `12`, maximum Rice partition order `5`,
 and one thread unless `--threads` is specified. OpenCL uses the same native
-tuning options, but currently requires `--threads 1`.
+tuning options, but currently requires `--threads 1`. The Vulkan backend is
+recognized by the CLI for 1.1 development, but compression is not implemented
+yet.
 
 ## Local Validation Matrix
 
@@ -226,9 +245,10 @@ without remembering the exact command pile:
 python3 tools/check_local_matrix.py
 ```
 
-By default, the helper configures isolated `build/local-check/default` and
-`build/local-check/no-opencl` trees, builds both, runs their CTest suites, and
-runs `ld-compress-ng devices` from each tree. The default lane keeps opt-in
+By default, the helper configures isolated `build/local-check/default`,
+`build/local-check/no-opencl`, and `build/local-check/no-vulkan` trees, builds
+them, runs their CTest suites, and runs `ld-compress-ng devices` from each tree.
+The default lane keeps opt-in
 fixture suites disabled so an existing CMake cache cannot accidentally turn a
 quick check into a real-fixture run.
 

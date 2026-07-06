@@ -29,6 +29,8 @@ Requirements:
 - `libogg` development files.
 - Optional OpenCL headers and loader/framework for `devices` and
   `--backend opencl`.
+- Optional Vulkan headers, loader, and `glslangValidator` for Vulkan device
+  enumeration and the in-development Vulkan backend.
 
 ### Linux
 
@@ -61,6 +63,11 @@ development package, and a vendor runtime for your GPU or accelerator. Common
 package names include `ocl-icd-opencl-dev`/`opencl-headers` on Debian/Ubuntu,
 `ocl-icd-devel`/`opencl-headers` on Fedora, and `ocl-icd`/`opencl-headers` on
 Arch.
+
+For the in-development Vulkan backend, install Vulkan development headers, the
+loader, `glslangValidator`, and a vendor Vulkan runtime. Current 1.1 work uses
+Vulkan for Linux-first compute acceleration; compression support is not complete
+yet.
 
 ### macOS
 
@@ -125,6 +132,7 @@ build/ld-compress-ng decompress --overwrite capture.ldf capture.lds
 | `cpu` | Ogg FLAC `.ldf` | Default, portable, uses system `libFLAC`/`libogg`; supports `--level`. |
 | `native-fixed` | Native FLAC `.flac.ldf` | Scalar native encoder with fixed/LPC prediction, Rice coding, threading, and tuning controls. |
 | `opencl` | Native FLAC `.flac.ldf` | GPU-assisted native encoder; list devices with `devices`, select one with `--device INDEX`. |
+| `vulkan` | Native FLAC `.flac.ldf` | 1.1 development backend; device enumeration is wired, compression is not implemented yet. |
 | `native-verbatim` | Native FLAC `.flac.ldf` | Compatibility/debug path using verbatim FLAC frames. |
 
 Use the scalar native backend:

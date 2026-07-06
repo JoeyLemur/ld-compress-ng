@@ -155,6 +155,26 @@ def build_steps(args: argparse.Namespace) -> list[Step]:
             Step("no-opencl: devices", [str(no_opencl_build / "ld-compress-ng"), "devices"])
         )
 
+    if not args.skip_no_vulkan:
+        no_vulkan_build = build_root / "no-vulkan"
+        add_configured_suite(
+            steps,
+            "no-vulkan",
+            no_vulkan_build,
+            args.build_type,
+            args.jobs,
+            [
+                "-DLDCOMPRESS_ENABLE_VULKAN=OFF",
+                "-DLDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS=OFF",
+                "-DLDCOMPRESS_ENABLE_FLAC_TEST_FILE_TESTS=OFF",
+                *common_cache_args,
+            ],
+            [],
+        )
+        steps.append(
+            Step("no-vulkan: devices", [str(no_vulkan_build / "ld-compress-ng"), "devices"])
+        )
+
     include_flac = args.all_local or args.include_flac_test_files
     flac_dir = optional_dir(
         root,
@@ -234,6 +254,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="do not run the default configure/build/test lane")
     parser.add_argument("--skip-no-opencl", action="store_true",
         help="do not run the LDCOMPRESS_ENABLE_OPENCL=OFF lane")
+    parser.add_argument("--skip-no-vulkan", action="store_true",
+        help="do not run the LDCOMPRESS_ENABLE_VULKAN=OFF lane")
     parser.add_argument("--include-flac-test-files", action="store_true")
     parser.add_argument("--include-real-fixtures", action="store_true")
     parser.add_argument(

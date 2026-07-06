@@ -18,6 +18,8 @@ const char* backend_name(CompressionBackend backend)
         return "native-fixed";
     case CompressionBackend::OpenClNativeFlac:
         return "opencl";
+    case CompressionBackend::VulkanNativeFlac:
+        return "vulkan";
     }
     return "unknown";
 }
@@ -68,6 +70,8 @@ ConversionStats compress_lds(
             .device_index = options.opencl_device_index,
             .native_stats = options.native_stats,
         });
+    case CompressionBackend::VulkanNativeFlac:
+        throw std::runtime_error("vulkan backend is not implemented yet");
     }
 
     throw std::runtime_error("unknown compression backend");

@@ -188,6 +188,7 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_cpu_device = temp_dir / "fixture.bad-cpu-device.ldf";
     const auto bad_native_device = temp_dir / "fixture.bad-native-device.ldf";
     const auto bad_native_opencl_device = temp_dir / "fixture.bad-native-opencl-device.ldf";
+    const auto bad_native_vulkan_device = temp_dir / "fixture.bad-native-vulkan-device.ldf";
     const auto bad_opencl_threads = temp_dir / "fixture.bad-opencl-threads.flac.ldf";
     const auto bad_opencl_level = temp_dir / "fixture.bad-opencl-level.flac.ldf";
     const auto empty_lds = temp_dir / "empty.lds";
@@ -209,6 +210,10 @@ void test_cli(const std::filesystem::path& exe)
     const auto empty_opencl_out = temp_dir / "empty.opencl.out.lds";
     const auto bad_opencl_device = temp_dir / "fixture.bad-opencl-device.flac.ldf";
     const auto bad_opencl_container = temp_dir / "fixture.bad-opencl-container.ldf";
+    const auto vulkan_output = temp_dir / "fixture.vulkan.flac.ldf";
+    const auto bad_vulkan_opencl_device = temp_dir / "fixture.bad-vulkan-opencl-device.flac.ldf";
+    const auto bad_vulkan_device = temp_dir / "fixture.bad-vulkan-device.flac.ldf";
+    const auto bad_vulkan_container = temp_dir / "fixture.bad-vulkan-container.ldf";
     const auto help_output = temp_dir / "help.txt";
     const auto version_output = temp_dir / "version.txt";
 
@@ -225,6 +230,8 @@ void test_cli(const std::filesystem::path& exe)
         "help output did not include examples");
     require(help_text.find("Compression backends:") != std::string::npos,
         "help output did not describe backends");
+    require(help_text.find("vulkan") != std::string::npos,
+        "help output did not mention the Vulkan backend");
     require(help_text.find("More details: README.md and docs/build-and-testing.md") != std::string::npos,
         "help output did not point to documentation");
     require(help_text.find("ld-compress-ng --version") != std::string::npos,
@@ -345,6 +352,8 @@ void test_cli(const std::filesystem::path& exe)
     require(!std::filesystem::exists(bad_native_device), "native --device rejection wrote output");
     run_fails(shell_quote(exe) + " compress --backend native-fixed --opencl-device 0 " + shell_quote(lds) + " " + shell_quote(bad_native_opencl_device));
     require(!std::filesystem::exists(bad_native_opencl_device), "native --opencl-device rejection wrote output");
+    run_fails(shell_quote(exe) + " compress --backend native-fixed --vulkan-device 0 " + shell_quote(lds) + " " + shell_quote(bad_native_vulkan_device));
+    require(!std::filesystem::exists(bad_native_vulkan_device), "native --vulkan-device rejection wrote output");
     run_ok("cd " + shell_quote(temp_dir) + " && " + shell_quote(exe) + " compress --backend native-fixed default-name.lds");
     require(std::filesystem::exists(default_native_fixed), "native-fixed default output name was not .flac.ldf");
     run_ok("cd " + shell_quote(temp_dir) + " && " + shell_quote(exe) + " compress --backend fixed-rice alias-name.lds");
@@ -408,6 +417,14 @@ void test_cli(const std::filesystem::path& exe)
     require(!std::filesystem::exists(bad_opencl_device), "invalid OpenCL device index wrote output");
     run_fails(shell_quote(exe) + " compress --backend opencl --container ogg " + shell_quote(lds) + " " + shell_quote(bad_opencl_container));
     require(!std::filesystem::exists(bad_opencl_container), "OpenCL Ogg rejection wrote output");
+    run_fails(shell_quote(exe) + " compress --backend vulkan --device 0 " + shell_quote(lds) + " " + shell_quote(vulkan_output));
+    require(!std::filesystem::exists(vulkan_output), "unimplemented Vulkan backend wrote output");
+    run_fails(shell_quote(exe) + " compress --backend vulkan --opencl-device 0 " + shell_quote(lds) + " " + shell_quote(bad_vulkan_opencl_device));
+    require(!std::filesystem::exists(bad_vulkan_opencl_device), "Vulkan --opencl-device rejection wrote output");
+    run_fails(shell_quote(exe) + " compress --backend vulkan --vulkan-device nope " + shell_quote(lds) + " " + shell_quote(bad_vulkan_device));
+    require(!std::filesystem::exists(bad_vulkan_device), "invalid Vulkan device index wrote output");
+    run_fails(shell_quote(exe) + " compress --backend vulkan --container ogg " + shell_quote(lds) + " " + shell_quote(bad_vulkan_container));
+    require(!std::filesystem::exists(bad_vulkan_container), "Vulkan Ogg rejection wrote output");
     run_ok(shell_quote(exe) + " bench --threads 1,2 " + shell_quote(lds));
     run_ok(shell_quote(exe) + " bench --threads 1 --frame-samples 2048 --lpc-order 12 --lpc-precision 12 --rice-partition-order 5 " + shell_quote(lds));
     run_ok(shell_quote(exe) + " bench --threads 1,2 --frame-samples 1024,2048 --lpc-order 0,8 --lpc-precision 10,12 --rice-partition-order 0,4 " + shell_quote(lds));

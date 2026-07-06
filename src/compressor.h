@@ -17,6 +17,7 @@ enum class CompressionBackend {
     NativeVerbatimFlac,
     NativeFixedFlac,
     OpenClNativeFlac,
+    VulkanNativeFlac,
 };
 
 struct NativeCompressionStats {
@@ -44,6 +45,7 @@ struct CompressionOptions {
     unsigned native_max_rice_partition_order = 5;
     NativeCompressionStats* native_stats = nullptr;
     std::optional<std::size_t> opencl_device_index;
+    std::optional<std::size_t> vulkan_device_index;
 };
 
 const char* backend_name(CompressionBackend backend);

@@ -13,11 +13,13 @@ include(CTest)
 include(GNUInstallDirs)
 
 option(LDCOMPRESS_ENABLE_OPENCL "Enable OpenCL device enumeration support" ON)
+option(LDCOMPRESS_ENABLE_VULKAN "Enable Vulkan compute device enumeration support" ON)
 option(LDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS "Enable opt-in tests against external real LDS fixtures" OFF)
 option(LDCOMPRESS_ENABLE_FLAC_TEST_FILE_TESTS "Enable opt-in tests against external FLAC decoder testbench files" OFF)
 set(LDCOMPRESS_REAL_FIXTURE_DIR "" CACHE PATH "Directory containing external .lds fixtures for opt-in real-fixture tests")
 set(LDCOMPRESS_FLAC_TEST_FILE_DIR "" CACHE PATH "Directory containing external FLAC decoder testbench files")
 set(LDCOMPRESS_OPENCL_TEST_DEVICE "" CACHE STRING "Flattened OpenCL device index for opt-in OpenCL compatibility tests")
+set(LDCOMPRESS_GLSLANG_VALIDATOR "" CACHE FILEPATH "glslangValidator executable for Vulkan shader builds")
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 find_program(FFMPEG_EXECUTABLE ffmpeg)
@@ -38,6 +40,27 @@ if(LDCOMPRESS_ENABLE_OPENCL)
     endif()
 endif()
 
+set(LDCOMPRESS_HAVE_VULKAN 0)
+if(LDCOMPRESS_ENABLE_VULKAN)
+    find_package(Vulkan QUIET COMPONENTS glslangValidator)
+    if(NOT LDCOMPRESS_GLSLANG_VALIDATOR)
+        if(Vulkan_GLSLANG_VALIDATOR_EXECUTABLE)
+            set(LDCOMPRESS_GLSLANG_VALIDATOR "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}"
+                CACHE FILEPATH "glslangValidator executable for Vulkan shader builds" FORCE)
+        else()
+            find_program(LDCOMPRESS_GLSLANG_VALIDATOR glslangValidator)
+        endif()
+    endif()
+    if(Vulkan_FOUND AND LDCOMPRESS_GLSLANG_VALIDATOR)
+        set(LDCOMPRESS_HAVE_VULKAN 1)
+        message(STATUS "Vulkan compute support enabled")
+    elseif(NOT Vulkan_FOUND)
+        message(STATUS "Vulkan not found; devices command will report unavailable")
+    else()
+        message(STATUS "glslangValidator not found; Vulkan support disabled")
+    endif()
+endif()
+
 add_library(ldcompress_core
     src/compressor.cpp
     src/flac_codec.cpp
@@ -49,6 +72,7 @@ add_library(ldcompress_core
     src/opencl_analysis.cpp
     src/opencl_backend.cpp
     src/opencl_devices.cpp
+    src/vulkan_devices.cpp
 )
 
 target_include_directories(ldcompress_core
@@ -64,6 +88,7 @@ target_compile_options(ldcompress_core
 target_compile_definitions(ldcompress_core
     PRIVATE
         LDCOMPRESS_HAVE_OPENCL=${LDCOMPRESS_HAVE_OPENCL}
+        LDCOMPRESS_HAVE_VULKAN=${LDCOMPRESS_HAVE_VULKAN}
 )
 
 target_link_libraries(ldcompress_core
@@ -77,6 +102,13 @@ if(LDCOMPRESS_HAVE_OPENCL)
     target_link_libraries(ldcompress_core
         PRIVATE
             OpenCL::OpenCL
+    )
+endif()
+
+if(LDCOMPRESS_HAVE_VULKAN)
+    target_link_libraries(ldcompress_core
+        PRIVATE
+            Vulkan::Vulkan
     )
 endif()
 
@@ -184,6 +216,18 @@ if(BUILD_TESTING)
 
     add_test(NAME opencl_devices COMMAND test_opencl_devices)
     set_tests_properties(opencl_devices PROPERTIES LABELS opencl)
+
+    add_executable(test_vulkan_devices
+        tests/test_vulkan_devices.cpp
+    )
+
+    target_link_libraries(test_vulkan_devices
+        PRIVATE
+            ldcompress_core
+    )
+
+    add_test(NAME vulkan_devices COMMAND test_vulkan_devices)
+    set_tests_properties(vulkan_devices PROPERTIES LABELS vulkan)
 
     add_executable(compare_opencl_scalar_frames
         tests/compare_opencl_scalar_frames.cpp
