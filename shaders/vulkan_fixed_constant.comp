@@ -4,6 +4,13 @@
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 const uint kWorkgroupSize = 64u;
+const uint kMaxLpcOrder = 32u;
+const uint kModeAnalyzeExact = 0u;
+const uint kModeChooseBest = 1u;
+const uint kModePrepareGeneratedFrames = 2u;
+const uint kModeComputeAutocorrelation = 3u;
+const uint kModeComputeLpc = 4u;
+const uint kModeQuantizeLpc = 5u;
 const int kSubframeConstant = 0;
 const int kSubframeVerbatim = 1;
 const int kSubframeFixed = 8;
@@ -51,6 +58,18 @@ layout(std430, set = 0, binding = 3) writeonly buffer BestTasks {
     FlacClSubframeTask best_tasks[];
 };
 
+layout(std430, set = 0, binding = 4) readonly buffer Windows {
+    float windows[];
+};
+
+layout(std430, set = 0, binding = 5) buffer Autocorrelations {
+    float autocorrelations[];
+};
+
+layout(std430, set = 0, binding = 6) buffer Lpcs {
+    float lpcs[];
+};
+
 layout(push_constant) uniform PushConstants {
     uint mode;
     uint task_count;
@@ -58,11 +77,16 @@ layout(push_constant) uniform PushConstants {
     uint selected_tasks_per_frame;
     uint residual_tasks_per_frame;
     uint max_rice_partition_order;
+    uint lpc_coefficient_precision;
+    uint lpc_tasks_per_window;
+    uint total_lpc_tasks;
+    uint generated_window_count;
 } pc;
 
 shared int shared_ints[64];
 shared uint shared_uints[64];
 shared uint64_t shared_u64s[64];
+shared float shared_floats[64];
 
 uint bit_width_u32(uint value)
 {
@@ -148,6 +172,20 @@ uint64_t reduce_sum_u64(uint64_t value)
     return shared_u64s[0];
 }
 
+float reduce_sum_float(float value)
+{
+    const uint lane = gl_LocalInvocationID.x;
+    shared_floats[lane] = value;
+    barrier();
+    for (uint stride = kWorkgroupSize >> 1u; stride > 0u; stride >>= 1u) {
+        if (lane < stride) {
+            shared_floats[lane] += shared_floats[lane + stride];
+        }
+        barrier();
+    }
+    return shared_floats[0];
+}
+
 int cooperative_common_wasted_bits(FlacClSubframeTask task)
 {
     int wasted_bits = task.data.obits;
@@ -192,6 +230,21 @@ int cooperative_frame_amplitude_bits(FlacClSubframeTask task, int wasted_bits)
     return max(1, bits - wasted_bits);
 }
 
+void prepare_generated_frame(uint frame)
+{
+    const uint task_base = frame * pc.residual_tasks_per_frame;
+    FlacClSubframeTask first_task = tasks[task_base];
+    const int wasted_bits = cooperative_common_wasted_bits(first_task);
+    const int amplitude_bits = cooperative_frame_amplitude_bits(first_task, wasted_bits);
+
+    for (uint i = gl_LocalInvocationID.x; i < pc.residual_tasks_per_frame; i += kWorkgroupSize) {
+        FlacClSubframeTask task = tasks[task_base + i];
+        task.data.wbits = wasted_bits;
+        task.data.abits = amplitude_bits;
+        tasks[task_base + i] = task;
+    }
+}
+
 bool all_frame_samples_equal(FlacClSubframeTask task)
 {
     const int first = samples[task.data.samplesOffs];
@@ -224,6 +277,32 @@ int shifted_sample(int samples_offset, int index, int wasted_bits)
         return smp;
     }
     return smp / (1 << wasted_bits);
+}
+
+void compute_generated_autocorrelation(uint frame, uint window, uint lag)
+{
+    const uint task_base = frame * pc.residual_tasks_per_frame;
+    FlacClSubframeTask task = tasks[task_base];
+    const uint block_size = uint(task.data.blocksize);
+    const uint window_offset = window * block_size;
+    float sum = 0.0f;
+
+    for (uint pos = lag + gl_LocalInvocationID.x; pos < block_size; pos += kWorkgroupSize) {
+        const float sample0 =
+            float(shifted_sample(task.data.samplesOffs, int(pos), task.data.wbits)) *
+            windows[window_offset + pos];
+        const float sample1 =
+            float(shifted_sample(task.data.samplesOffs, int(pos - lag), task.data.wbits)) *
+            windows[window_offset + pos - lag];
+        sum += sample0 * sample1;
+    }
+
+    const uint output_offset =
+        ((frame * pc.generated_window_count + window) * (kMaxLpcOrder + 1u)) + lag;
+    const float total = reduce_sum_float(sum);
+    if (gl_LocalInvocationID.x == 0u) {
+        autocorrelations[output_offset] = total;
+    }
 }
 
 int64_t fixed_residual(FlacClSubframeTask task, int index, int wasted_bits)
@@ -634,6 +713,142 @@ void cooperative_analyze_task(uint task_index)
     }
 }
 
+bool finite_float(float value)
+{
+    return !isnan(value) && !isinf(value);
+}
+
+int leading_zero_count(uint value)
+{
+    return value == 0u ? 32 : 31 - findMSB(value);
+}
+
+void compute_generated_lpc(uint frame, uint window)
+{
+    if (gl_LocalInvocationID.x != 0u) {
+        return;
+    }
+
+    const uint lpc_offset =
+        (frame * pc.generated_window_count + window) * (kMaxLpcOrder + 1u) * kMaxLpcOrder;
+    const uint autocor_offset =
+        (frame * pc.generated_window_count + window) * (kMaxLpcOrder + 1u);
+
+    float ldr[32];
+    float gen0[32];
+    float gen1[32];
+    float err[32];
+
+    for (int i = 0; i < 32; ++i) {
+        gen0[i] = autocorrelations[autocor_offset + uint(i + 1)];
+        gen1[i] = autocorrelations[autocor_offset + uint(i + 1)];
+        ldr[i] = 0.0f;
+        err[i] = 0.0f;
+    }
+
+    float error = autocorrelations[autocor_offset];
+    for (int order = 0; order < 32; ++order) {
+        float reflection = 0.0f;
+        if (error > 0.0f) {
+            reflection = -gen1[0] / error;
+        }
+        if (!finite_float(reflection)) {
+            reflection = 0.0f;
+        }
+
+        error *= 1.0f - (reflection * reflection);
+        if (!finite_float(error) || error < 0.0f) {
+            error = 0.0f;
+        }
+
+        for (int j = 0; j < 32 - 1 - order; ++j) {
+            const float next_gen1 = gen1[j + 1] + (reflection * gen0[j]);
+            gen0[j] = (gen1[j + 1] * reflection) + gen0[j];
+            gen1[j] = next_gen1;
+        }
+
+        err[order] = error;
+
+        ldr[order] = reflection;
+        for (int j = 0; j < order / 2; ++j) {
+            const float tmp = ldr[j];
+            ldr[j] += reflection * ldr[order - 1 - j];
+            ldr[order - 1 - j] += reflection * tmp;
+        }
+        if ((order & 1) != 0) {
+            ldr[order / 2] += ldr[order / 2] * reflection;
+        }
+
+        for (int j = 0; j <= order; ++j) {
+            lpcs[lpc_offset + uint(order * 32 + j)] = -ldr[order - j];
+        }
+    }
+
+    for (int j = 0; j < 32; ++j) {
+        lpcs[lpc_offset + (kMaxLpcOrder * kMaxLpcOrder) + uint(j)] = err[j];
+    }
+}
+
+void quantize_generated_lpc(uint frame, uint window)
+{
+    if (gl_LocalInvocationID.x != 0u) {
+        return;
+    }
+
+    const uint window_task_offset = window * pc.lpc_tasks_per_window;
+    if (window_task_offset >= pc.total_lpc_tasks) {
+        return;
+    }
+
+    const uint slots_this_window =
+        min(pc.lpc_tasks_per_window, pc.total_lpc_tasks - window_task_offset);
+    const uint lpc_offset =
+        (frame * pc.generated_window_count + window) * (kMaxLpcOrder + 1u) * kMaxLpcOrder;
+
+    for (uint slot = 0u; slot < slots_this_window; ++slot) {
+        const uint task_index =
+            (frame * pc.residual_tasks_per_frame) + window_task_offset + slot;
+        FlacClSubframeTask task = tasks[task_index];
+        const int order = task.data.residualOrder;
+
+        int max_coefficient = 0;
+        for (int i = 0; i < order; ++i) {
+            const float lpc = lpcs[lpc_offset + uint((order - 1) * 32 + i)];
+            const int coefficient = int(roundEven(lpc * float(1 << 15)));
+            max_coefficient |= coefficient ^ (coefficient >> 31);
+        }
+
+        const int desired_bits = clamp(int(pc.lpc_coefficient_precision), 1, 15);
+        int shift = 0;
+        if (max_coefficient != 0) {
+            shift = clamp(
+                leading_zero_count(uint(max_coefficient)) - 18 + desired_bits,
+                0,
+                15);
+        }
+        const int limit = (1 << (desired_bits - 1)) - 1;
+
+        int actual_max_coefficient = 0;
+        for (int i = 0; i < 32; ++i) {
+            task.coefs[i] = 0;
+        }
+        for (int i = 0; i < order; ++i) {
+            const float lpc = lpcs[lpc_offset + uint((order - 1) * 32 + i)];
+            const int coefficient = clamp(
+                int(roundEven(lpc * float(1 << shift))), -limit, limit);
+            actual_max_coefficient |= coefficient ^ (coefficient >> 31);
+            task.coefs[i] = coefficient;
+        }
+
+        task.data.residualOrder = order;
+        task.data.shift = shift;
+        task.data.cbits = actual_max_coefficient == 0
+            ? 1
+            : 1 + 32 - leading_zero_count(uint(actual_max_coefficient));
+        tasks[task_index] = task;
+    }
+}
+
 void choose_best(uint frame)
 {
     const uint selected_base = frame * pc.selected_tasks_per_frame;
@@ -653,12 +868,38 @@ void choose_best(uint frame)
 void main()
 {
     const uint id = gl_GlobalInvocationID.x;
-    if (pc.mode == 0u) {
+    if (pc.mode == kModeAnalyzeExact) {
         const uint task_index = gl_WorkGroupID.x;
         if (task_index < pc.task_count) {
             cooperative_analyze_task(task_index);
         }
-    } else if (id < pc.frame_count) {
+    } else if (pc.mode == kModeChooseBest && id < pc.frame_count) {
         choose_best(id);
+    } else if (pc.mode == kModePrepareGeneratedFrames) {
+        const uint frame = gl_WorkGroupID.x;
+        if (frame < pc.frame_count) {
+            prepare_generated_frame(frame);
+        }
+    } else if (pc.mode == kModeComputeAutocorrelation) {
+        const uint frame = gl_WorkGroupID.x;
+        const uint window = gl_WorkGroupID.y;
+        const uint lag = gl_WorkGroupID.z;
+        if (frame < pc.frame_count &&
+            window < pc.generated_window_count &&
+            lag <= kMaxLpcOrder) {
+            compute_generated_autocorrelation(frame, window, lag);
+        }
+    } else if (pc.mode == kModeComputeLpc) {
+        const uint frame = gl_WorkGroupID.x;
+        const uint window = gl_WorkGroupID.y;
+        if (frame < pc.frame_count && window < pc.generated_window_count) {
+            compute_generated_lpc(frame, window);
+        }
+    } else if (pc.mode == kModeQuantizeLpc) {
+        const uint frame = gl_WorkGroupID.x;
+        const uint window = gl_WorkGroupID.y;
+        if (frame < pc.frame_count && window < pc.generated_window_count) {
+            quantize_generated_lpc(frame, window);
+        }
     }
 }

@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -35,6 +36,15 @@ constexpr std::size_t kVulkanAnalysisMaxBlockSize = 8192;
 constexpr std::size_t kVulkanAnalysisBitsPerSample = 16;
 constexpr unsigned kVulkanExactMaxRicePartitionOrder = 8;
 constexpr std::uint32_t kWorkGroupSize = 64;
+constexpr double kPi = 3.14159265358979323846;
+constexpr double kGeneratedTukeyTaperFraction = 0.5;
+
+struct GeneratedLpcConfig {
+    std::size_t lpc_tasks_per_window = 0;
+    std::size_t window_count = 0;
+    std::size_t total_lpc_tasks = 0;
+    unsigned coefficient_precision = 0;
+};
 
 [[maybe_unused]] std::uint64_t checked_buffer_bytes(
     std::size_t count,
@@ -127,6 +137,106 @@ bool signed_value_fits_bits(std::int32_t value, unsigned bits)
     return value >= min_value && value <= max_value;
 }
 
+[[maybe_unused]] std::vector<float> make_generated_lpc_windows(
+    std::size_t blocksize,
+    std::size_t window_count)
+{
+    std::vector<float> windows(blocksize * window_count, 1.0F);
+    if (window_count < 2 || blocksize <= 1) {
+        return windows;
+    }
+
+    auto* tukey = windows.data() + blocksize;
+    const auto edge_width = static_cast<std::size_t>(
+        (kGeneratedTukeyTaperFraction / 2.0) * static_cast<double>(blocksize));
+    if (edge_width != 0) {
+        const auto np = edge_width - 1U;
+        if (np == 0) {
+            tukey[0] = 0.0F;
+            tukey[blocksize - 1U] = 0.0F;
+        } else {
+            for (std::size_t n = 0; n <= np; ++n) {
+                const auto left_weight =
+                    0.5 - (0.5 * std::cos(kPi * static_cast<double>(n) / static_cast<double>(np)));
+                const auto right_weight =
+                    0.5 - (0.5 * std::cos(kPi * static_cast<double>(n + np) / static_cast<double>(np)));
+                tukey[n] = static_cast<float>(left_weight);
+                tukey[blocksize - np - 1U + n] = static_cast<float>(right_weight);
+            }
+        }
+    }
+    if (window_count < 3) {
+        return windows;
+    }
+
+    auto* welch = windows.data() + (2U * blocksize);
+    const auto endpoint = static_cast<double>(blocksize - 1U);
+    const auto midpoint = endpoint / 2.0;
+    for (std::size_t n = 0; n < blocksize; ++n) {
+        const auto k = (static_cast<double>(n) - midpoint) / midpoint;
+        welch[n] = static_cast<float>(1.0 - (k * k));
+    }
+    return windows;
+}
+
+GeneratedLpcConfig generated_lpc_prefix_shape(
+    const OpenClMonoAnalysisTaskPlan& plan,
+    std::size_t frame,
+    unsigned coefficient_precision)
+{
+    const auto task_base = frame * plan.residual_tasks_per_frame;
+    std::size_t total_lpc_tasks = 0;
+    while (total_lpc_tasks < plan.residual_tasks_per_frame &&
+        plan.residual_tasks[task_base + total_lpc_tasks].data.type ==
+            opencl_detail::kFlacClSubframeLpc) {
+        ++total_lpc_tasks;
+    }
+
+    if (total_lpc_tasks == 0) {
+        throw std::runtime_error("Vulkan generated analysis requires an LPC task prefix");
+    }
+
+    std::size_t lpc_tasks_per_window = 0;
+    while (lpc_tasks_per_window < total_lpc_tasks &&
+        plan.residual_tasks[task_base + lpc_tasks_per_window].data.residualOrder ==
+            static_cast<std::int32_t>(lpc_tasks_per_window + 1U)) {
+        ++lpc_tasks_per_window;
+    }
+    if (lpc_tasks_per_window == 0 ||
+        lpc_tasks_per_window > opencl_detail::kFlacClMaxOrder) {
+        throw std::runtime_error("Vulkan generated analysis has invalid LPC tasks per window");
+    }
+
+    const auto window_count =
+        (total_lpc_tasks + lpc_tasks_per_window - 1U) / lpc_tasks_per_window;
+    for (std::size_t window = 0; window < window_count; ++window) {
+        const auto window_base = task_base + window * lpc_tasks_per_window;
+        const auto remaining = total_lpc_tasks - (window * lpc_tasks_per_window);
+        const auto slots_this_window = std::min(lpc_tasks_per_window, remaining);
+        for (std::size_t slot = 0; slot < slots_this_window; ++slot) {
+            const auto& task = plan.residual_tasks[window_base + slot];
+            if (task.data.type != opencl_detail::kFlacClSubframeLpc ||
+                task.data.residualOrder <= 0 ||
+                task.data.residualOrder >
+                    static_cast<std::int32_t>(opencl_detail::kFlacClMaxOrder)) {
+                throw std::runtime_error("Vulkan generated analysis LPC window group is invalid");
+            }
+            if (slots_this_window == lpc_tasks_per_window &&
+                task.data.residualOrder != static_cast<std::int32_t>(slot + 1U)) {
+                throw std::runtime_error(
+                    "Vulkan generated analysis full LPC window group is not sequential");
+            }
+        }
+    }
+
+    return GeneratedLpcConfig {
+        .lpc_tasks_per_window = lpc_tasks_per_window,
+        .window_count = window_count,
+        .total_lpc_tasks = total_lpc_tasks,
+        .coefficient_precision = coefficient_precision,
+    };
+}
+
 void validate_vulkan_exact_analysis_inputs(
     const std::vector<std::int32_t>& samples,
     const OpenClMonoAnalysisTaskPlan& plan,
@@ -195,6 +305,89 @@ void validate_vulkan_exact_analysis_inputs(
             throw std::runtime_error("Vulkan mono analysis task shift is unsupported");
         }
     }
+}
+
+GeneratedLpcConfig validate_vulkan_generated_analysis_inputs(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    unsigned lpc_coefficient_precision,
+    unsigned max_rice_partition_order)
+{
+    validate_best_method_plan(plan);
+    if (max_rice_partition_order > kVulkanExactMaxRicePartitionOrder) {
+        throw std::runtime_error("Vulkan generated analysis max Rice partition order must be 0..8");
+    }
+    if (lpc_coefficient_precision == 0 || lpc_coefficient_precision > 15) {
+        throw std::runtime_error("Vulkan generated analysis coefficient precision must be 1..15");
+    }
+
+    for (const auto sample : samples) {
+        validate_sample_range(sample, kVulkanAnalysisBitsPerSample);
+    }
+
+    std::optional<GeneratedLpcConfig> lpc_shape;
+    std::optional<std::int32_t> blocksize;
+    const auto frame_count = plan.selected_tasks.size() / plan.estimate_tasks_per_frame;
+    for (std::size_t frame = 0; frame < frame_count; ++frame) {
+        const auto task_base = frame * plan.residual_tasks_per_frame;
+        const auto frame_lpc_shape =
+            generated_lpc_prefix_shape(plan, frame, lpc_coefficient_precision);
+        if (!lpc_shape.has_value()) {
+            lpc_shape = frame_lpc_shape;
+        } else if (
+            lpc_shape->lpc_tasks_per_window != frame_lpc_shape.lpc_tasks_per_window ||
+            lpc_shape->window_count != frame_lpc_shape.window_count ||
+            lpc_shape->total_lpc_tasks != frame_lpc_shape.total_lpc_tasks) {
+            throw std::runtime_error("Vulkan generated analysis LPC prefix differs by frame");
+        }
+
+        for (std::size_t i = 0; i < plan.residual_tasks_per_frame; ++i) {
+            const auto& task = plan.residual_tasks[task_base + i];
+            if (task.data.obits != static_cast<std::int32_t>(kVulkanAnalysisBitsPerSample)) {
+                throw std::runtime_error("Vulkan generated analysis currently supports 16-bit tasks only");
+            }
+            if (task.data.blocksize <= 0 ||
+                static_cast<std::size_t>(task.data.blocksize) > kVulkanAnalysisMaxBlockSize) {
+                throw std::runtime_error("Vulkan generated analysis block size is unsupported");
+            }
+            if (task.data.samplesOffs < 0 ||
+                static_cast<std::size_t>(task.data.samplesOffs) > samples.size() ||
+                static_cast<std::size_t>(task.data.blocksize) >
+                    samples.size() - static_cast<std::size_t>(task.data.samplesOffs)) {
+                throw std::runtime_error("Vulkan generated analysis task samples are out of range");
+            }
+            if (!blocksize.has_value()) {
+                blocksize = task.data.blocksize;
+            } else if (*blocksize != task.data.blocksize) {
+                throw std::runtime_error("Vulkan generated analysis requires one block size per launch");
+            }
+
+            if (i < frame_lpc_shape.total_lpc_tasks) {
+                if (task.data.type != opencl_detail::kFlacClSubframeLpc) {
+                    throw std::runtime_error("Vulkan generated analysis received non-LPC prefix task");
+                }
+                if (task.data.residualOrder >= task.data.blocksize) {
+                    throw std::runtime_error("Vulkan generated analysis LPC order exceeds block size");
+                }
+            } else if (task.data.type == opencl_detail::kFlacClSubframeLpc) {
+                throw std::runtime_error("Vulkan generated analysis received non-prefix LPC task");
+            } else if (task.data.type == opencl_detail::kFlacClSubframeFixed) {
+                if (task.data.residualOrder < 0 || task.data.residualOrder > 4) {
+                    throw std::runtime_error("Vulkan generated analysis received invalid fixed order");
+                }
+                if (task.data.residualOrder >= task.data.blocksize) {
+                    throw std::runtime_error("Vulkan generated analysis fixed order exceeds block size");
+                }
+                if (task.data.shift < 0 || task.data.shift > 30) {
+                    throw std::runtime_error("Vulkan generated analysis fixed task shift is unsupported");
+                }
+            } else if (task.data.type != opencl_detail::kFlacClSubframeConstant) {
+                throw std::runtime_error("Vulkan generated analysis received unsupported task type");
+            }
+        }
+    }
+
+    return *lpc_shape;
 }
 
 #if LDCOMPRESS_HAVE_VULKAN
@@ -565,6 +758,10 @@ struct PushConstants {
     std::uint32_t selected_tasks_per_frame = 0;
     std::uint32_t residual_tasks_per_frame = 0;
     std::uint32_t max_rice_partition_order = 0;
+    std::uint32_t lpc_coefficient_precision = 0;
+    std::uint32_t lpc_tasks_per_window = 0;
+    std::uint32_t total_lpc_tasks = 0;
+    std::uint32_t generated_window_count = 0;
 };
 
 std::uint32_t dispatch_groups(std::uint32_t items)
@@ -634,36 +831,16 @@ public:
                 vkCreateShaderModule(device_, &shader_module_info, nullptr, &shader_module_),
                 "vkCreateShaderModule");
 
-            const std::array<VkDescriptorSetLayoutBinding, 4> layout_bindings {{
-                VkDescriptorSetLayoutBinding {
-                    .binding = 0,
+            std::array<VkDescriptorSetLayoutBinding, 7> layout_bindings {};
+            for (std::uint32_t i = 0; i < layout_bindings.size(); ++i) {
+                layout_bindings[i] = VkDescriptorSetLayoutBinding {
+                    .binding = i,
                     .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                     .descriptorCount = 1,
                     .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
                     .pImmutableSamplers = nullptr,
-                },
-                VkDescriptorSetLayoutBinding {
-                    .binding = 1,
-                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                    .descriptorCount = 1,
-                    .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-                    .pImmutableSamplers = nullptr,
-                },
-                VkDescriptorSetLayoutBinding {
-                    .binding = 2,
-                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                    .descriptorCount = 1,
-                    .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-                    .pImmutableSamplers = nullptr,
-                },
-                VkDescriptorSetLayoutBinding {
-                    .binding = 3,
-                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                    .descriptorCount = 1,
-                    .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-                    .pImmutableSamplers = nullptr,
-                },
-            }};
+                };
+            }
             const VkDescriptorSetLayoutCreateInfo descriptor_layout_info {
                 .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                 .pNext = nullptr,
@@ -717,7 +894,7 @@ public:
 
             const VkDescriptorPoolSize pool_size {
                 .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .descriptorCount = 4,
+                .descriptorCount = static_cast<std::uint32_t>(layout_bindings.size()),
             };
             const VkDescriptorPoolCreateInfo descriptor_pool_info {
                 .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -785,7 +962,8 @@ public:
         const std::vector<std::int32_t>& samples,
         const OpenClMonoAnalysisTaskPlan& plan,
         unsigned max_rice_partition_order,
-        bool allow_lpc)
+        bool allow_lpc,
+        std::optional<GeneratedLpcConfig> generated_lpc = std::nullopt)
     {
         (void)allow_lpc;
 
@@ -801,10 +979,40 @@ public:
                 plan.residual_tasks_per_frame, "residual task count"),
             .max_rice_partition_order = checked_u32(
                 max_rice_partition_order, "max Rice partition order"),
+            .lpc_coefficient_precision = generated_lpc.has_value()
+                ? checked_u32(generated_lpc->coefficient_precision, "LPC coefficient precision")
+                : 0,
+            .lpc_tasks_per_window = generated_lpc.has_value()
+                ? checked_u32(generated_lpc->lpc_tasks_per_window, "LPC tasks per window")
+                : 0,
+            .total_lpc_tasks = generated_lpc.has_value()
+                ? checked_u32(generated_lpc->total_lpc_tasks, "total LPC task count")
+                : 0,
+            .generated_window_count = generated_lpc.has_value()
+                ? checked_u32(generated_lpc->window_count, "generated LPC window count")
+                : 0,
         };
 
         std::vector<FlacClSubframeTask> analyzed_tasks = plan.residual_tasks;
         std::vector<FlacClSubframeTask> best_tasks(frame_count);
+        std::vector<float> dummy_floats(1, 0.0F);
+        std::vector<float> generated_windows;
+        const auto* window_values = &dummy_floats;
+        std::size_t autocor_count = 1;
+        std::size_t lpc_count = 1;
+        if (generated_lpc.has_value()) {
+            const auto blocksize =
+                static_cast<std::size_t>(plan.residual_tasks.front().data.blocksize);
+            generated_windows = make_generated_lpc_windows(blocksize, generated_lpc->window_count);
+            window_values = &generated_windows;
+            autocor_count =
+                frame_count * generated_lpc->window_count * (opencl_detail::kFlacClMaxOrder + 1U);
+            lpc_count =
+                frame_count *
+                generated_lpc->window_count *
+                (opencl_detail::kFlacClMaxOrder + 1U) *
+                opencl_detail::kFlacClMaxOrder;
+        }
 
         HostBuffer& samples_buffer = ensure_buffer(
             samples_buffer_,
@@ -822,15 +1030,29 @@ public:
             best_buffer_,
             checked_buffer_bytes(best_tasks.size(), sizeof(FlacClSubframeTask), "best tasks"),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        HostBuffer& window_buffer = ensure_buffer(
+            window_buffer_,
+            checked_buffer_bytes(window_values->size(), sizeof(float), "generated windows"),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        HostBuffer& autocor_buffer = ensure_buffer(
+            autocor_buffer_,
+            checked_buffer_bytes(autocor_count, sizeof(float), "generated autocorrelations"),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        HostBuffer& lpc_buffer = ensure_buffer(
+            lpc_buffer_,
+            checked_buffer_bytes(lpc_count, sizeof(float), "generated LPC coefficients"),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
         samples_buffer.copy_from(samples);
         tasks_buffer.copy_from(analyzed_tasks);
         selected_buffer.copy_from(plan.selected_tasks);
+        window_buffer.copy_from(*window_values);
         samples_buffer.flush();
         tasks_buffer.flush();
         selected_buffer.flush();
+        window_buffer.flush();
 
-        const std::array<VkDescriptorBufferInfo, 4> descriptor_buffers {{
+        const std::array<VkDescriptorBufferInfo, 7> descriptor_buffers {{
             VkDescriptorBufferInfo {
                 .buffer = samples_buffer.get(),
                 .offset = 0,
@@ -851,8 +1073,23 @@ public:
                 .offset = 0,
                 .range = best_buffer.size(),
             },
+            VkDescriptorBufferInfo {
+                .buffer = window_buffer.get(),
+                .offset = 0,
+                .range = window_buffer.size(),
+            },
+            VkDescriptorBufferInfo {
+                .buffer = autocor_buffer.get(),
+                .offset = 0,
+                .range = autocor_buffer.size(),
+            },
+            VkDescriptorBufferInfo {
+                .buffer = lpc_buffer.get(),
+                .offset = 0,
+                .range = lpc_buffer.size(),
+            },
         }};
-        std::array<VkWriteDescriptorSet, 4> descriptor_writes {};
+        std::array<VkWriteDescriptorSet, 7> descriptor_writes {};
         for (std::uint32_t i = 0; i < descriptor_writes.size(); ++i) {
             descriptor_writes[i] = VkWriteDescriptorSet {
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -893,44 +1130,59 @@ public:
             0,
             nullptr);
 
-        auto push = base_push;
-        push.mode = 0;
-        vkCmdPushConstants(
-            command_buffer_,
-            pipeline_layout_,
-            VK_SHADER_STAGE_COMPUTE_BIT,
-            0,
-            sizeof(push),
-            &push);
-        vkCmdDispatch(command_buffer_, push.task_count, 1, 1);
-
-        const VkMemoryBarrier analysis_barrier {
-            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-            .pNext = nullptr,
-            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        auto dispatch_mode = [&](std::uint32_t mode,
+                                 std::uint32_t groups_x,
+                                 std::uint32_t groups_y = 1,
+                                 std::uint32_t groups_z = 1) {
+            auto push = base_push;
+            push.mode = mode;
+            vkCmdPushConstants(
+                command_buffer_,
+                pipeline_layout_,
+                VK_SHADER_STAGE_COMPUTE_BIT,
+                0,
+                sizeof(push),
+                &push);
+            vkCmdDispatch(command_buffer_, groups_x, groups_y, groups_z);
         };
-        vkCmdPipelineBarrier(
-            command_buffer_,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            0,
-            1,
-            &analysis_barrier,
-            0,
-            nullptr,
-            0,
-            nullptr);
+        auto shader_write_to_read_barrier = [&]() {
+            const VkMemoryBarrier barrier {
+                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+            };
+            vkCmdPipelineBarrier(
+                command_buffer_,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0,
+                1,
+                &barrier,
+                0,
+                nullptr,
+                0,
+                nullptr);
+        };
 
-        push.mode = 1;
-        vkCmdPushConstants(
-            command_buffer_,
-            pipeline_layout_,
-            VK_SHADER_STAGE_COMPUTE_BIT,
-            0,
-            sizeof(push),
-            &push);
-        vkCmdDispatch(command_buffer_, dispatch_groups(push.frame_count), 1, 1);
+        if (generated_lpc.has_value()) {
+            dispatch_mode(2, base_push.frame_count);
+            shader_write_to_read_barrier();
+            dispatch_mode(
+                3,
+                base_push.frame_count,
+                base_push.generated_window_count,
+                checked_u32(opencl_detail::kFlacClMaxOrder + 1U, "autocorrelation lag count"));
+            shader_write_to_read_barrier();
+            dispatch_mode(4, base_push.frame_count, base_push.generated_window_count);
+            shader_write_to_read_barrier();
+            dispatch_mode(5, base_push.frame_count, base_push.generated_window_count);
+            shader_write_to_read_barrier();
+        }
+
+        dispatch_mode(0, base_push.task_count);
+        shader_write_to_read_barrier();
+        dispatch_mode(1, dispatch_groups(base_push.frame_count));
 
         const VkMemoryBarrier host_barrier {
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
@@ -1000,6 +1252,9 @@ private:
             tasks_buffer_.reset();
             selected_buffer_.reset();
             best_buffer_.reset();
+            window_buffer_.reset();
+            autocor_buffer_.reset();
+            lpc_buffer_.reset();
             if (fence_ != VK_NULL_HANDLE) {
                 vkDestroyFence(device_, fence_, nullptr);
                 fence_ = VK_NULL_HANDLE;
@@ -1055,6 +1310,9 @@ private:
     std::unique_ptr<HostBuffer> tasks_buffer_;
     std::unique_ptr<HostBuffer> selected_buffer_;
     std::unique_ptr<HostBuffer> best_buffer_;
+    std::unique_ptr<HostBuffer> window_buffer_;
+    std::unique_ptr<HostBuffer> autocor_buffer_;
+    std::unique_ptr<HostBuffer> lpc_buffer_;
 };
 
 #else
@@ -1102,6 +1360,22 @@ OpenClMonoFixedConstantAnalysisResult VulkanMonoExactAnalysisSession::run_lpc_an
 #endif
 }
 
+OpenClMonoFixedConstantAnalysisResult VulkanMonoExactAnalysisSession::run_generated_analysis(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    unsigned lpc_coefficient_precision,
+    unsigned max_rice_partition_order)
+{
+    const auto generated_lpc = validate_vulkan_generated_analysis_inputs(
+        samples, plan, lpc_coefficient_precision, max_rice_partition_order);
+#if LDCOMPRESS_HAVE_VULKAN
+    return impl_->run_validated(samples, plan, max_rice_partition_order, true, generated_lpc);
+#else
+    (void)generated_lpc;
+    throw std::runtime_error("Vulkan support was not built");
+#endif
+}
+
 OpenClMonoFixedConstantAnalysisResult run_vulkan_mono_exact_analysis(
     const std::vector<std::int32_t>& samples,
     const OpenClMonoAnalysisTaskPlan& plan,
@@ -1135,6 +1409,21 @@ OpenClMonoFixedConstantAnalysisResult run_vulkan_mono_lpc_analysis(
 {
     return run_vulkan_mono_exact_analysis(
         samples, plan, requested_device_index, max_rice_partition_order, true);
+}
+
+OpenClMonoFixedConstantAnalysisResult run_vulkan_mono_generated_analysis(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    std::optional<std::size_t> requested_device_index,
+    unsigned lpc_coefficient_precision,
+    unsigned max_rice_partition_order)
+{
+    validate_vulkan_generated_analysis_inputs(
+        samples, plan, lpc_coefficient_precision, max_rice_partition_order);
+
+    VulkanMonoExactAnalysisSession session(requested_device_index);
+    return session.run_generated_analysis(
+        samples, plan, lpc_coefficient_precision, max_rice_partition_order);
 }
 
 }  // namespace ldcompress::vulkan_detail

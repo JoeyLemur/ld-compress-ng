@@ -114,6 +114,16 @@ void require_lpc_task_matches(
     }
 }
 
+bool signed_value_fits_bits(std::int32_t value, unsigned bits)
+{
+    if (bits == 0 || bits > 31) {
+        return false;
+    }
+    const auto min_value = -(std::int64_t {1} << (bits - 1U));
+    const auto max_value = (std::int64_t {1} << (bits - 1U)) - 1;
+    return value >= min_value && value <= max_value;
+}
+
 void require_analysis_matches(
     const ldcompress::opencl_detail::OpenClMonoFixedConstantAnalysisResult& actual,
     const ldcompress::opencl_detail::OpenClMonoFixedConstantAnalysisResult& expected,
@@ -175,6 +185,21 @@ std::vector<std::int32_t> make_fixed_constant_samples()
         32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
     };
     samples.insert(samples.end(), partitioned.begin(), partitioned.end());
+    return samples;
+}
+
+std::vector<std::int32_t> make_generated_mixed_samples()
+{
+    std::vector<std::int32_t> samples;
+    samples.reserve(512 * 3);
+    for (int i = 0; i < 512; ++i) {
+        samples.push_back(1024);
+    }
+    for (int i = 0; i < 512; ++i) {
+        samples.push_back(static_cast<std::int32_t>((i * 64) - 16384));
+    }
+    auto lpc_friendly = make_lpc_friendly_samples();
+    samples.insert(samples.end(), lpc_friendly.begin(), lpc_friendly.end());
     return samples;
 }
 
@@ -387,6 +412,98 @@ void test_vulkan_lpc_analysis(const Options& options)
     }
 }
 
+void test_vulkan_generated_lpc_analysis(const Options& options)
+{
+    using namespace ldcompress::opencl_detail;
+
+    if (!ldcompress::vulkan_support_built()) {
+        std::cout << "Vulkan generated LPC analysis skipped: Vulkan support was not built\n";
+        return;
+    }
+
+    const auto device_index =
+        first_available_vulkan_analysis_device_index(options.device_index);
+    if (!device_index.has_value()) {
+        std::cout << "Vulkan generated LPC analysis skipped: no suitable Vulkan device\n";
+        return;
+    }
+
+    OpenClMonoAnalysisTaskOptions task_options;
+    task_options.frame_samples = 512;
+    task_options.max_lpc_order = 12;
+    task_options.include_constant = true;
+    task_options.min_fixed_order = 0;
+    task_options.max_fixed_order = 4;
+
+    const auto plan = build_mono_analysis_task_plan(3, task_options);
+    require(plan.residual_tasks_per_frame == 32,
+        "unexpected generated Vulkan task count per frame");
+    const auto samples = make_generated_mixed_samples();
+
+    const auto result = ldcompress::vulkan_detail::run_vulkan_mono_generated_analysis(
+        samples, plan, device_index, 12, 5);
+    require(!result.device_name.empty(),
+        "Vulkan generated LPC result did not report a device");
+    require(result.analyzed_tasks.size() == plan.residual_tasks.size(),
+        "Vulkan generated LPC analyzed task count mismatch");
+    require(result.best_tasks.size() == 3,
+        "Vulkan generated LPC best task count mismatch");
+
+    for (std::size_t frame = 0; frame < 3; ++frame) {
+        const auto task_base = frame * plan.residual_tasks_per_frame;
+        for (std::size_t task_offset = 0; task_offset < 26; ++task_offset) {
+            const auto& task = result.analyzed_tasks[task_base + task_offset];
+            require(task.data.type == kFlacClSubframeLpc,
+                "Vulkan generated LPC prefix task changed type");
+            require(task.data.shift >= 0 && task.data.shift <= 15,
+                "Vulkan generated LPC task shift is invalid");
+            require(task.data.cbits > 0 && task.data.cbits <= 15,
+                "Vulkan generated LPC task coefficient precision is invalid");
+            require(task.data.size > 0 && task.data.size < std::numeric_limits<std::int32_t>::max(),
+                "Vulkan generated LPC exact size is invalid");
+            require(task.data.porder >= 0 && task.data.porder <= 5,
+                "Vulkan generated LPC partition order is invalid");
+            for (int i = 0; i < task.data.residualOrder; ++i) {
+                require(signed_value_fits_bits(
+                            task.coefs[static_cast<std::size_t>(i)],
+                            static_cast<unsigned>(task.data.cbits)),
+                    "Vulkan generated LPC coefficient does not fit cbits");
+            }
+        }
+    }
+
+    require(result.best_tasks[0].data.type == kFlacClSubframeConstant,
+        "Vulkan generated constant frame did not select constant");
+    require(result.best_tasks[1].data.type == kFlacClSubframeFixed,
+        "Vulkan generated linear frame did not select fixed");
+    require(result.best_tasks[2].data.type == kFlacClSubframeLpc ||
+            result.best_tasks[2].data.type == kFlacClSubframeFixed,
+        "Vulkan generated mixed frame selected an unexpected task type");
+    require(result.best_tasks[2].data.size > 0 &&
+            result.best_tasks[2].data.size < std::numeric_limits<std::int32_t>::max(),
+        "Vulkan generated mixed frame selected an invalid task size");
+
+    OpenClMonoAnalysisTaskPlan exact_plan = plan;
+    exact_plan.residual_tasks = result.analyzed_tasks;
+    const auto exact_result = ldcompress::vulkan_detail::run_vulkan_mono_lpc_analysis(
+        samples, exact_plan, device_index, 5);
+    for (std::size_t i = 0; i < result.analyzed_tasks.size(); ++i) {
+        require_lpc_task_matches(exact_result.analyzed_tasks[i], result.analyzed_tasks[i],
+            "Vulkan generated LPC exact re-analysis changed a task");
+    }
+    for (std::size_t i = 0; i < result.best_tasks.size(); ++i) {
+        require_lpc_task_matches(exact_result.best_tasks[i], result.best_tasks[i],
+            "Vulkan generated LPC exact re-analysis changed a best task");
+    }
+
+    const auto unpartitioned = ldcompress::vulkan_detail::run_vulkan_mono_generated_analysis(
+        samples, plan, device_index, 12, 0);
+    for (const auto& task : unpartitioned.best_tasks) {
+        require(task.data.porder == 0,
+            "Vulkan generated LPC did not honor max partition order 0");
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -395,6 +512,7 @@ int main(int argc, char** argv)
         const auto options = parse_args(argc, argv);
         test_vulkan_fixed_constant_analysis(options);
         test_vulkan_lpc_analysis(options);
+        test_vulkan_generated_lpc_analysis(options);
     } catch (const std::exception& ex) {
         std::cerr << "test_vulkan_analysis: " << ex.what() << '\n';
         return 1;

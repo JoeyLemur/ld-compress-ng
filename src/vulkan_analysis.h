@@ -29,6 +29,12 @@ public:
         const opencl_detail::OpenClMonoAnalysisTaskPlan& plan,
         unsigned max_rice_partition_order = 5);
 
+    opencl_detail::OpenClMonoFixedConstantAnalysisResult run_generated_analysis(
+        const std::vector<std::int32_t>& samples,
+        const opencl_detail::OpenClMonoAnalysisTaskPlan& plan,
+        unsigned lpc_coefficient_precision = 12,
+        unsigned max_rice_partition_order = 5);
+
 private:
     class Impl;
     std::unique_ptr<Impl> impl_;
@@ -44,6 +50,13 @@ opencl_detail::OpenClMonoFixedConstantAnalysisResult run_vulkan_mono_lpc_analysi
     const std::vector<std::int32_t>& samples,
     const opencl_detail::OpenClMonoAnalysisTaskPlan& plan,
     std::optional<std::size_t> requested_device_index = std::nullopt,
+    unsigned max_rice_partition_order = 5);
+
+opencl_detail::OpenClMonoFixedConstantAnalysisResult run_vulkan_mono_generated_analysis(
+    const std::vector<std::int32_t>& samples,
+    const opencl_detail::OpenClMonoAnalysisTaskPlan& plan,
+    std::optional<std::size_t> requested_device_index = std::nullopt,
+    unsigned lpc_coefficient_precision = 12,
     unsigned max_rice_partition_order = 5);
 
 }  // namespace ldcompress::vulkan_detail

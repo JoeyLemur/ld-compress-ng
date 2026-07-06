@@ -10,11 +10,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <istream>
-#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <utility>
 #include <vector>
 
 namespace ldcompress {
@@ -51,81 +49,25 @@ opencl_detail::OpenClMonoAnalysisTaskPlan build_vulkan_fixed_constant_task_plan(
     return opencl_detail::build_mono_analysis_task_plan(frame_count, task_options);
 }
 
-opencl_detail::FlacClSubframeTask make_invalid_placeholder_task(
-    const opencl_detail::FlacClSubframeTask& frame_template)
-{
-    auto task = frame_template;
-    task.data.type = opencl_detail::kFlacClSubframeVerbatim;
-    task.data.residualOrder = 0;
-    task.data.shift = 0;
-    task.data.cbits = 0;
-    task.data.size = std::numeric_limits<std::int32_t>::max();
-    task.data.porder = 0;
-    task.coefs.fill(0);
-    return task;
-}
-
 opencl_detail::OpenClMonoAnalysisTaskPlan build_vulkan_mixed_lpc_task_plan(
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& frame_info,
     unsigned frame_samples)
 {
     const auto frame_count = samples.size() / frame_samples;
-    auto fixed_plan = build_vulkan_fixed_constant_task_plan(
-        frame_count, frame_info, frame_samples);
     if (frame_info.max_lpc_order == 0 || frame_samples < 256) {
-        return fixed_plan;
+        return build_vulkan_fixed_constant_task_plan(frame_count, frame_info, frame_samples);
     }
 
-    opencl_detail::OpenClMonoAnalysisTaskOptions lpc_options;
-    lpc_options.frame_samples = frame_samples;
-    lpc_options.bits_per_sample = frame_info.bits_per_sample;
-    lpc_options.max_lpc_order = frame_info.max_lpc_order;
-    lpc_options.include_constant = false;
-    lpc_options.min_fixed_order = 0;
-    lpc_options.max_fixed_order = 0;
+    opencl_detail::OpenClMonoAnalysisTaskOptions task_options;
+    task_options.frame_samples = frame_samples;
+    task_options.bits_per_sample = frame_info.bits_per_sample;
+    task_options.max_lpc_order = frame_info.max_lpc_order;
+    task_options.include_constant = true;
+    task_options.min_fixed_order = 0;
+    task_options.max_fixed_order = 4;
 
-    opencl_detail::OpenClMonoAnalysisTaskPlan plan;
-    plan.residual_tasks_per_frame =
-        fixed_plan.residual_tasks_per_frame + frame_info.max_lpc_order;
-    plan.estimate_tasks_per_frame = plan.residual_tasks_per_frame;
-    plan.residual_tasks.reserve(plan.residual_tasks_per_frame * frame_count);
-    plan.selected_tasks.reserve(plan.estimate_tasks_per_frame * frame_count);
-
-    for (std::size_t frame = 0; frame < frame_count; ++frame) {
-        const auto output_base = plan.residual_tasks.size();
-        const auto fixed_base = frame * fixed_plan.residual_tasks_per_frame;
-        for (std::size_t i = 0; i < fixed_plan.residual_tasks_per_frame; ++i) {
-            plan.residual_tasks.push_back(fixed_plan.residual_tasks.at(fixed_base + i));
-        }
-
-        const auto placeholder_template = fixed_plan.residual_tasks.at(fixed_base);
-        for (unsigned order = 1; order <= frame_info.max_lpc_order; ++order) {
-            auto task = opencl_detail::analyze_mono_lpc_exact_task(
-                samples,
-                frame,
-                lpc_options,
-                order,
-                frame_info.lpc_coefficient_precision,
-                frame_info.max_rice_partition_order);
-            if (task.has_value()) {
-                task->data.size = static_cast<std::int32_t>(
-                    frame_info.bits_per_sample * frame_samples);
-                task->data.abits = 0;
-                task->data.porder = 0;
-                plan.residual_tasks.push_back(*task);
-            } else {
-                plan.residual_tasks.push_back(make_invalid_placeholder_task(
-                    placeholder_template));
-            }
-        }
-
-        for (std::size_t i = 0; i < plan.estimate_tasks_per_frame; ++i) {
-            plan.selected_tasks.push_back(static_cast<std::int32_t>(output_base + i));
-        }
-    }
-
-    return plan;
+    return opencl_detail::build_mono_analysis_task_plan(frame_count, task_options);
 }
 
 AcceleratedSelectedFrameAnalysis analyze_vulkan_selected_frames(
@@ -148,8 +90,11 @@ AcceleratedSelectedFrameAnalysis analyze_vulkan_selected_frames(
     auto result = frame_info.max_lpc_order == 0
         ? session.run_fixed_constant_analysis(
             samples, plan, frame_info.max_rice_partition_order)
-        : session.run_lpc_analysis(
-            samples, plan, frame_info.max_rice_partition_order);
+        : session.run_generated_analysis(
+            samples,
+            plan,
+            frame_info.lpc_coefficient_precision,
+            frame_info.max_rice_partition_order);
     if (stats != nullptr) {
         add_elapsed_ns(stats->accelerated_exact_analysis_ns, analysis_started);
     }

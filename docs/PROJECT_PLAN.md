@@ -302,9 +302,10 @@ Implemented for the first 1.1 checkpoint:
   including `shaderInt64` availability for the exact-cost Vulkan analysis path.
 - The CLI recognizes `--backend vulkan`, `--device`, and `--vulkan-device`.
   Vulkan compression now writes compatible native FLAC. `--lpc-order 0` runs
-  fixed/Rice analysis on Vulkan compute, and the default path exact-costs
-  scalar-generated LPC tasks on Vulkan before writing selected subframes through
-  the shared accelerated host flow.
+  fixed/Rice analysis on Vulkan compute, and the default path generates
+  OpenCL-shaped LPC/window/autocorrelation candidates on Vulkan before exact
+  costing and writing selected subframes through the shared accelerated host
+  flow.
 - `test_vulkan_devices` covers disabled-build behavior and runtime device
   selection when Vulkan support is built.
 - A CMake-built GLSL-to-SPIR-V compute smoke shader and `test_vulkan_smoke`
@@ -335,6 +336,12 @@ Implemented for the first 1.1 checkpoint:
   and exact Rice bit sums. This keeps the task ABI, selected-task handoff, and
   writer path unchanged while replacing the earlier one-lane-per-task shader
   shape.
+- Vulkan generated-LPC analysis now runs on the Vulkan shader path before exact
+  costing. The backend builds the same generated-task shape as OpenCL
+  (rectangular, Tukey, and spare high-order Welch LPC slots plus
+  fixed/constant tasks), fills LPC coefficients on the GPU, and then feeds those
+  tasks through the existing exact analyzer. `test_vulkan_analysis` covers
+  generated task population, exact-cost stability, and partition-order limits.
 - The local validation matrix helper has a `no-vulkan` lane for optional-build
   regression coverage.
 
@@ -342,23 +349,22 @@ Remaining Vulkan work:
 
 - Treat Vulkan/OpenCL throughput as an architecture problem before any
   shader-level micro-tuning. Current NVIDIA RTX 5070 Ti timings on
-  `ntsc/issue176.lds` after Vulkan workgroup-per-task exact analysis show
+  `ntsc/issue176.lds` after Vulkan generated-LPC analysis show
   CPU/libFLAC at about `0.136` seconds, scalar native-fixed at `1.684` seconds
-  with `8` threads, OpenCL at `10.119` seconds, and Vulkan at `13.594` seconds.
-  Vulkan matches scalar native size on that fixture at `4,290,592` bytes, but
-  is still not yet a wall-clock accelerator. A focused `compress --backend
-  vulkan --stats` run measured `46` batches with about `12.94` analyzer
-  seconds: `11.91` seconds in scalar Vulkan task-plan generation and `1.03`
-  seconds in Vulkan exact analysis. Shared selected-frame writing is only about
-  `0.31` seconds. A comparable OpenCL stats run spends about `9.75` seconds in
-  the analyzer and `0.30` seconds writing selected frames.
-- Move generated LPC/window/autocorrelation work onto Vulkan instead of using
-  scalar-generated LPC tasks, then compare broader compression quality against
-  scalar/OpenCL.
+  with `8` threads, OpenCL at `10.329` seconds, and Vulkan at `2.639` seconds.
+  Vulkan output on that fixture is `4,292,100` bytes: `1,508` bytes larger than
+  scalar native-fixed's `4,290,592` bytes, `22,033` bytes smaller than
+  CPU/libFLAC's `4,314,133` bytes, and `6,134` bytes smaller than OpenCL's
+  `4,298,234` bytes. A focused `compress --backend vulkan --stats` run measured
+  `46` batches with about `1.63` analyzer seconds: `0.0009` seconds in Vulkan
+  task-plan generation and `1.63` seconds in generated LPC plus exact analysis.
+  Shared selected-frame writing is still about `0.31` seconds.
+- Run the broader real-fixture sweep with Vulkan and compare aggregate size and
+  time against CPU/libFLAC, scalar native-fixed, and OpenCL before calling the
+  Vulkan path production-ready.
 - Improve Vulkan buffer placement and batching after correctness is in place;
-  the current exact path uses host-visible buffers and one simple analysis
-  invocation per task as a correctness milestone, not the final throughput
-  design.
+  the current path still uses host-visible buffers and per-batch readback as a
+  correctness milestone, not the final throughput design.
 - Add Vulkan real-fixture compatibility and matrix lanes now that the backend
   can produce valid `.flac.ldf` output.
 
