@@ -148,22 +148,42 @@ def run_checked(args, **kwargs):
     return result
 
 
-def available_opencl_device(binary, requested_device):
+def available_backend_device(binary, backend, requested_device):
+    section_labels = {
+        "opencl": "OpenCL",
+        "vulkan": "Vulkan",
+    }
+    label = section_labels[backend]
     result = run_checked([str(binary), "devices"])
-    if "OpenCL support: not built" in result.stdout:
-        return None, "OpenCL support is not built"
+    if f"{label} support: not built" in result.stdout:
+        return None, f"{label} support is not built"
 
+    in_section = False
     current_index = None
     for line in result.stdout.splitlines():
-        if line.startswith("[") and "]" in line:
+        if line.startswith("OpenCL support:"):
+            in_section = backend == "opencl"
+            current_index = None
+        elif line.startswith("Vulkan support:"):
+            in_section = backend == "vulkan"
+            current_index = None
+        elif in_section and line.startswith("[") and "]" in line:
             current_index = line.split("]", 1)[0][1:]
-        elif current_index is not None and line.strip() == "available: yes":
+        elif in_section and current_index is not None and line.strip() == "available: yes":
             if requested_device is None or current_index == requested_device:
                 return current_index, None
 
     if requested_device is not None:
-        return None, f"requested OpenCL device {requested_device} is not available"
-    return None, "no available OpenCL device"
+        return None, f"requested {label} device {requested_device} is not available"
+    return None, f"no available {label} device"
+
+
+def available_opencl_device(binary, requested_device):
+    return available_backend_device(binary, "opencl", requested_device)
+
+
+def available_vulkan_device(binary, requested_device):
+    return available_backend_device(binary, "vulkan", requested_device)
 
 
 def run_binary_decode(args):
@@ -259,6 +279,16 @@ def compress_opencl_native(binary, lds_path, flac_path, opencl_device):
         lds_path,
         flac_path,
         opencl_device=opencl_device,
+    )
+
+
+def compress_vulkan_native(binary, lds_path, flac_path, vulkan_device):
+    compress_native_flac_backend(
+        binary,
+        "vulkan",
+        lds_path,
+        flac_path,
+        opencl_device=vulkan_device,
     )
 
 
@@ -428,8 +458,9 @@ def decode_real_fixtures_with_ld_decode_loader(args, binary, temp_dir):
     if args.real_fixture_threads is not None:
         require(args.real_fixture_threads > 0, "real fixture thread count must be positive")
     require(
-        args.real_fixture_backend != "opencl" or args.real_fixture_threads is None,
-        "OpenCL real fixture mode does not accept --real-fixture-threads",
+        args.real_fixture_backend not in ("opencl", "vulkan") or
+        args.real_fixture_threads is None,
+        "accelerated real fixture mode does not accept --real-fixture-threads",
     )
 
     utils, skip_reason = import_ld_decode_utils(args, temp_dir)
@@ -437,8 +468,13 @@ def decode_real_fixtures_with_ld_decode_loader(args, binary, temp_dir):
         return skip_reason
 
     opencl_device = args.opencl_device
+    vulkan_device = args.vulkan_device
     if args.real_fixture_backend == "opencl":
         opencl_device, skip_reason = available_opencl_device(binary, opencl_device)
+        if skip_reason is not None:
+            return skip_reason
+    elif args.real_fixture_backend == "vulkan":
+        vulkan_device, skip_reason = available_vulkan_device(binary, vulkan_device)
         if skip_reason is not None:
             return skip_reason
 
@@ -468,8 +504,10 @@ def decode_real_fixtures_with_ld_decode_loader(args, binary, temp_dir):
                 native_flac_ldf,
                 threads=args.real_fixture_threads or 8,
             )
-        else:
+        elif args.real_fixture_backend == "opencl":
             compress_opencl_native(binary, lds_path, native_flac_ldf, opencl_device)
+        else:
+            compress_vulkan_native(binary, lds_path, native_flac_ldf, vulkan_device)
         duplicate_file(native_flac_ldf, native_flac)
         compressed_paths.extend([native_flac_ldf, native_flac])
 
@@ -519,11 +557,12 @@ def parse_args(argv):
     )
     parser.add_argument(
         "--real-fixture-backend",
-        choices=("native-fixed", "opencl"),
+        choices=("native-fixed", "opencl", "vulkan"),
         default="native-fixed",
     )
     parser.add_argument("--real-fixture-threads", type=int)
     parser.add_argument("--opencl-device")
+    parser.add_argument("--vulkan-device")
     return parser.parse_args(argv)
 
 

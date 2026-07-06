@@ -54,7 +54,8 @@ Confirm the installed files include:
 ## Optional Full Local Gate
 
 When local ignored fixtures and GPU access are available, run the full matrix
-from a context that can see the OpenCL runtime:
+from a context that can see the OpenCL and Vulkan runtimes. Use explicit device
+indexes from `ld-compress-ng devices` on mixed-GPU hosts:
 
 ```sh
 python3 tools/check_local_matrix.py \
@@ -62,6 +63,8 @@ python3 tools/check_local_matrix.py \
     --all-local \
     --include-opencl-real-fixture \
     --opencl-device 0 \
+    --include-vulkan-real-fixture \
+    --vulkan-device 1 \
     --python-executable /home/epowell/.pyenv/versions/3.13.13/envs/ld/bin/python \
     --jobs 2
 ```

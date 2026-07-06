@@ -310,12 +310,15 @@ runs `real-fixtures` while excluding the OpenCL-labelled real-fixture test.
 `--all-local` follows that same scalar-only real-fixture behavior. Pass
 `--include-opencl-real-fixture` when you want the runtime OpenCL real-fixture
 check; it implies the real-fixture lane and uses the first available OpenCL
-device unless `--opencl-device INDEX` is provided. Run that GPU lane from a
-context that can see the OpenCL runtime and devices; sandboxed executions may
-skip or report no available devices even when the system build can see them.
-For Vulkan performance tests on mixed-GPU hosts, use an explicit discrete GPU
-index from `ld-compress-ng devices`; the integrated AMD device is suitable for
-functional smoke testing but should not be used for NVIDIA performance numbers.
+device unless `--opencl-device INDEX` is provided. Pass
+`--include-vulkan-real-fixture` for the Vulkan-labelled compatibility test; it
+uses the first available Vulkan compute device unless `--vulkan-device INDEX`
+is provided. Run GPU lanes from a context that can see the accelerator runtime
+and devices; sandboxed executions may skip or report no available devices even
+when the system build can see them. For Vulkan performance tests on mixed-GPU
+hosts, use an explicit discrete GPU index from `ld-compress-ng devices`; the
+integrated AMD device is suitable for functional smoke testing but should not
+be used for NVIDIA performance numbers.
 Use `--dry-run` to inspect the generated commands, and `--strict-optional` to
 fail instead of skipping when a requested local fixture directory is missing.
 
@@ -402,10 +405,10 @@ The default sweep is intentionally focused: frame size `4608`, LPC orders
 `10,12`, LPC coefficient precisions `10,12`, Rice partition order `5`, and `8`
 native threads. Add `--include-opencl` and optionally `--opencl-device INDEX` to include
 OpenCL backend rows in the CSV/Markdown output when an OpenCL device is
-available. For single-capture Vulkan comparisons, use `bench --include-vulkan`
-with `--vulkan-device INDEX` so the run targets the intended discrete GPU.
-Expand the grid explicitly when doing a broader local
-tuning pass:
+available. Add `--include-vulkan` and optionally `--vulkan-device INDEX` to
+include Vulkan backend rows; on mixed-GPU hosts, pass the discrete GPU index so
+the run does not land on an integrated GPU. Expand the grid explicitly when
+doing a broader local tuning pass:
 
 ```sh
 python3 tools/sweep_real_fixtures.py \
@@ -426,10 +429,12 @@ size `4608`, LPC order `12`, LPC coefficient precision `12`, and Rice partition
 order `5` are the current default native-fixed settings. In the latest pinned
 sweep, raw LDS inputs total `149,954,560` bytes, CPU/libFLAC outputs total
 `80,086,984` bytes, scalar native-fixed outputs total `79,867,690` bytes, and
-OpenCL outputs total `79,952,087` bytes. That leaves scalar native-fixed about
-`-0.27%` smaller than CPU/libFLAC and OpenCL about `-0.17%` smaller than
-CPU/libFLAC on the current fixture set; keep Rice partition order `5` as the
-default speed/size tradeoff unless a future sweep justifies changing it.
+OpenCL outputs total `79,952,087` bytes. The latest Vulkan sweep on NVIDIA
+device `1` outputs `79,892,217` bytes. That leaves scalar native-fixed about
+`-0.27%` smaller than CPU/libFLAC, OpenCL about `-0.17%` smaller than
+CPU/libFLAC, and Vulkan about `-0.24%` smaller than CPU/libFLAC on the current
+fixture set; keep Rice partition order `5` as the default speed/size tradeoff
+unless a future sweep justifies changing it.
 
 ## Legacy Fixture Regeneration
 

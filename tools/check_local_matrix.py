@@ -200,7 +200,12 @@ def build_steps(args: argparse.Namespace) -> list[Step]:
             ["-L", "flac-test-files"],
         )
 
-    include_real = args.all_local or args.include_real_fixtures or args.include_opencl_real_fixture
+    include_real = (
+        args.all_local or
+        args.include_real_fixtures or
+        args.include_opencl_real_fixture or
+        args.include_vulkan_real_fixture
+    )
     real_dir = optional_dir(
         root,
         include_real,
@@ -211,8 +216,13 @@ def build_steps(args: argparse.Namespace) -> list[Step]:
     if include_real and real_dir is not None:
         real_build = build_root / "real-fixtures"
         real_ctest_args = ["-L", "real-fixtures"]
+        excluded_labels = []
         if not args.include_opencl_real_fixture:
-            real_ctest_args.extend(["-LE", "opencl"])
+            excluded_labels.append("opencl")
+        if not args.include_vulkan_real_fixture:
+            excluded_labels.append("vulkan")
+        if excluded_labels:
+            real_ctest_args.extend(["-LE", "|".join(excluded_labels)])
         real_cache_args = [
             "-DLDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS=ON",
             f"-DLDCOMPRESS_REAL_FIXTURE_DIR={real_dir}",
@@ -221,6 +231,8 @@ def build_steps(args: argparse.Namespace) -> list[Step]:
         ]
         if args.opencl_device is not None:
             real_cache_args.append(f"-DLDCOMPRESS_OPENCL_TEST_DEVICE={args.opencl_device}")
+        if args.vulkan_device is not None:
+            real_cache_args.append(f"-DLDCOMPRESS_VULKAN_TEST_DEVICE={args.vulkan_device}")
         add_configured_suite(
             steps,
             "real-fixtures",
@@ -264,8 +276,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="include the real-fixture lane and its OpenCL-labelled compatibility test",
     )
     parser.add_argument(
+        "--include-vulkan-real-fixture",
+        action="store_true",
+        help="include the real-fixture lane and its Vulkan-labelled compatibility test",
+    )
+    parser.add_argument(
         "--opencl-device",
         help="flattened OpenCL device index for the OpenCL real-fixture compatibility test",
+    )
+    parser.add_argument(
+        "--vulkan-device",
+        help="Vulkan device index for the Vulkan real-fixture compatibility test",
     )
     parser.add_argument(
         "--python-executable",
@@ -300,6 +321,8 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     if args.opencl_device is not None and not args.include_opencl_real_fixture:
         raise RuntimeError("--opencl-device requires --include-opencl-real-fixture")
+    if args.vulkan_device is not None and not args.include_vulkan_real_fixture:
+        raise RuntimeError("--vulkan-device requires --include-vulkan-real-fixture")
     root = project_root()
     steps = build_steps(args)
     if not steps:

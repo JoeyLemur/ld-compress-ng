@@ -344,6 +344,13 @@ Implemented for the first 1.1 checkpoint:
   generated task population, exact-cost stability, and partition-order limits.
 - The local validation matrix helper has a `no-vulkan` lane for optional-build
   regression coverage.
+- The real-fixture sweep helper can include Vulkan rows with `--include-vulkan`
+  and `--vulkan-device`, and its Markdown report now includes per-fixture and
+  aggregate Vulkan sections alongside CPU/native/OpenCL.
+- The real-fixture external loader compatibility suite and local matrix helper
+  now have an opt-in Vulkan lane through `--include-vulkan-real-fixture` and
+  `--vulkan-device`. The lane passed locally with the PyAV/ld-decode Python
+  interpreter and NVIDIA Vulkan device `1`.
 
 Remaining Vulkan work:
 
@@ -359,14 +366,17 @@ Remaining Vulkan work:
   `46` batches with about `1.63` analyzer seconds: `0.0009` seconds in Vulkan
   task-plan generation and `1.63` seconds in generated LPC plus exact analysis.
   Shared selected-frame writing is still about `0.31` seconds.
-- Run the broader real-fixture sweep with Vulkan and compare aggregate size and
-  time against CPU/libFLAC, scalar native-fixed, and OpenCL before calling the
-  Vulkan path production-ready.
+- The latest six-fixture sweep at frame size `4608`, LPC order `12`,
+  coefficient precision `12`, Rice partition order `5`, native-fixed `8`
+  threads, OpenCL device `1`, and Vulkan device `1` produced aggregate sizes:
+  CPU/libFLAC `80,086,984` bytes, scalar native-fixed `79,867,690` bytes in
+  `30.168` seconds, OpenCL `79,952,087` bytes in `180.523` seconds, and Vulkan
+  `79,892,217` bytes in `37.469` seconds. Vulkan is `24,527` bytes larger than
+  scalar native-fixed, `59,870` bytes smaller than OpenCL, and much faster than
+  OpenCL on the NVIDIA validation device.
 - Improve Vulkan buffer placement and batching after correctness is in place;
   the current path still uses host-visible buffers and per-batch readback as a
   correctness milestone, not the final throughput design.
-- Add Vulkan real-fixture compatibility and matrix lanes now that the backend
-  can produce valid `.flac.ldf` output.
 
 Immediate engineering focus:
 
