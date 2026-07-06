@@ -209,6 +209,7 @@ void test_cli(const std::filesystem::path& exe)
     const auto empty_opencl_out = temp_dir / "empty.opencl.out.lds";
     const auto bad_opencl_device = temp_dir / "fixture.bad-opencl-device.flac.ldf";
     const auto bad_opencl_container = temp_dir / "fixture.bad-opencl-container.ldf";
+    const auto help_output = temp_dir / "help.txt";
 
     const std::string fixture = make_lds_fixture();
     write_file(lds, fixture);
@@ -216,6 +217,15 @@ void test_cli(const std::filesystem::path& exe)
     write_file(alias_lds, fixture);
     write_file(opencl_default_lds, fixture);
     write_file(empty_lds, "");
+
+    run_ok(shell_quote(exe) + " --help > " + shell_quote(help_output));
+    const auto help_text = read_file(help_output);
+    require(help_text.find("Common examples:") != std::string::npos,
+        "help output did not include examples");
+    require(help_text.find("Compression backends:") != std::string::npos,
+        "help output did not describe backends");
+    require(help_text.find("More details: README.md and docs/build-and-testing.md") != std::string::npos,
+        "help output did not point to documentation");
 
     run_ok(shell_quote(exe) + " convert --unpack " + shell_quote(lds) + " " + shell_quote(pcm));
     run_ok(shell_quote(exe) + " convert --pack " + shell_quote(pcm) + " " + shell_quote(repacked));
