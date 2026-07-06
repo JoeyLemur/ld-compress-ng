@@ -1,9 +1,11 @@
 #include "opencl_backend.h"
 
 #include "accelerated_native_backend.h"
+#include "compressor.h"
 #include "opencl_analysis.h"
 #include "opencl_devices.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <istream>
@@ -23,6 +25,13 @@ constexpr unsigned kMaxOpenClLpcOrder = 12;
 constexpr unsigned kMinOpenClLpcPrecision = 1;
 constexpr unsigned kMaxOpenClLpcPrecision = 15;
 constexpr unsigned kMaxOpenClRicePartitionOrder = 8;
+using Clock = std::chrono::steady_clock;
+
+void add_elapsed_ns(std::uint64_t& counter, Clock::time_point start)
+{
+    counter += static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count());
+}
 
 AcceleratedSelectedFrameAnalysis analyze_opencl_selected_frames(
     const std::vector<std::int32_t>& samples,
@@ -93,6 +102,7 @@ ConversionStats compress_lds_to_opencl_native_flac(
     const std::string& output_path,
     const OpenClCompressionOptions& options)
 {
+    const auto total_started = Clock::now();
     validate_opencl_options(options);
     const auto selected_device = select_opencl_device(options.device_index);
     const auto device_index = std::optional<std::size_t>(selected_device.flat_index);
@@ -110,7 +120,7 @@ ConversionStats compress_lds_to_opencl_native_flac(
         .native_stats = options.native_stats,
     };
 
-    return compress_lds_to_accelerated_native_flac(
+    auto stats = compress_lds_to_accelerated_native_flac(
         lds_input,
         output_path,
         accelerated_options,
@@ -121,6 +131,10 @@ ConversionStats compress_lds_to_opencl_native_flac(
             return analyze_opencl_selected_frames(
                 samples, frame_info, frame_samples, device_index);
         });
+    if (options.native_stats != nullptr) {
+        add_elapsed_ns(options.native_stats->accelerated_total_ns, total_started);
+    }
+    return stats;
 }
 
 }  // namespace ldcompress

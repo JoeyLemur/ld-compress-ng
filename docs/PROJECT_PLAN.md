@@ -327,6 +327,9 @@ Implemented for the first 1.1 checkpoint:
   module, pipeline, descriptor set, command buffer, fence, and grow-only host
   buffers across batches. The old one-shot analysis functions remain as
   compatibility wrappers for tests and diagnostics.
+- Native `--stats` now reports coarse accelerated timing splits for backend
+  total time, LDS scan, analyzer callback, selected-frame writing, Vulkan task
+  plan generation, and Vulkan exact analysis.
 - The local validation matrix helper has a `no-vulkan` lane for optional-build
   regression coverage.
 
@@ -338,8 +341,13 @@ Remaining Vulkan work:
   `0.136` seconds, scalar native-fixed at `1.684` seconds with `8` threads,
   OpenCL at `10.119` seconds, and Vulkan at `74.770` seconds. Vulkan matches
   scalar native size on that fixture, but the current implementation is not yet
-  an accelerator in wall-clock terms; persistent Vulkan object reuse did not
-  address the dominant cost.
+  an accelerator in wall-clock terms. A focused `compress --backend vulkan
+  --stats` run measured `46` batches with about `74.08` analyzer seconds:
+  `11.88` seconds in scalar Vulkan task-plan generation and `62.20` seconds in
+  Vulkan exact analysis. Shared selected-frame writing is only about `0.31`
+  seconds. A comparable OpenCL stats run spends about `9.75` seconds in the
+  analyzer and `0.30` seconds writing selected frames. Persistent Vulkan object
+  reuse did not address the dominant cost.
 - Move generated LPC/window/autocorrelation work onto Vulkan instead of using
   scalar-generated LPC tasks, then compare broader compression quality against
   scalar/OpenCL.

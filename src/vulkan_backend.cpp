@@ -1,10 +1,12 @@
 #include "vulkan_backend.h"
 
 #include "accelerated_native_backend.h"
+#include "compressor.h"
 #include "opencl_analysis.h"
 #include "vulkan_analysis.h"
 #include "vulkan_devices.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <istream>
@@ -25,6 +27,13 @@ constexpr unsigned kMaxVulkanLpcOrder = 12;
 constexpr unsigned kMinVulkanLpcPrecision = 1;
 constexpr unsigned kMaxVulkanLpcPrecision = 15;
 constexpr unsigned kMaxVulkanRicePartitionOrder = 8;
+using Clock = std::chrono::steady_clock;
+
+void add_elapsed_ns(std::uint64_t& counter, Clock::time_point start)
+{
+    counter += static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count());
+}
 
 opencl_detail::OpenClMonoAnalysisTaskPlan build_vulkan_fixed_constant_task_plan(
     std::size_t frame_count,
@@ -123,17 +132,27 @@ AcceleratedSelectedFrameAnalysis analyze_vulkan_selected_frames(
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& frame_info,
     unsigned frame_samples,
-    vulkan_detail::VulkanMonoExactAnalysisSession& session)
+    vulkan_detail::VulkanMonoExactAnalysisSession& session,
+    NativeCompressionStats* stats)
 {
     const auto frame_count = samples.size() / frame_samples;
+    const auto plan_started = Clock::now();
     const auto plan = frame_info.max_lpc_order == 0
         ? build_vulkan_fixed_constant_task_plan(frame_count, frame_info, frame_samples)
         : build_vulkan_mixed_lpc_task_plan(samples, frame_info, frame_samples);
+    if (stats != nullptr) {
+        add_elapsed_ns(stats->accelerated_task_plan_ns, plan_started);
+    }
+
+    const auto analysis_started = Clock::now();
     auto result = frame_info.max_lpc_order == 0
         ? session.run_fixed_constant_analysis(
             samples, plan, frame_info.max_rice_partition_order)
         : session.run_lpc_analysis(
             samples, plan, frame_info.max_rice_partition_order);
+    if (stats != nullptr) {
+        add_elapsed_ns(stats->accelerated_exact_analysis_ns, analysis_started);
+    }
 
     AcceleratedSelectedFrameAnalysis selected;
     selected.decisions.reserve(result.best_tasks.size());
@@ -199,6 +218,7 @@ ConversionStats compress_lds_to_vulkan_native_flac(
     const std::string& output_path,
     const VulkanCompressionOptions& options)
 {
+    const auto total_started = Clock::now();
     validate_vulkan_options(options);
     const auto selected_device = select_vulkan_analysis_device(options.device_index);
     const auto device_index = std::optional<std::size_t>(selected_device.index);
@@ -217,17 +237,21 @@ ConversionStats compress_lds_to_vulkan_native_flac(
         .native_stats = options.native_stats,
     };
 
-    return compress_lds_to_accelerated_native_flac(
+    auto stats = compress_lds_to_accelerated_native_flac(
         lds_input,
         output_path,
         accelerated_options,
-        [&session](
+        [&session, native_stats = options.native_stats](
             const std::vector<std::int32_t>& samples,
             const FlacFrameInfo& frame_info,
             unsigned frame_samples) {
             return analyze_vulkan_selected_frames(
-                samples, frame_info, frame_samples, session);
+                samples, frame_info, frame_samples, session, native_stats);
         });
+    if (options.native_stats != nullptr) {
+        add_elapsed_ns(options.native_stats->accelerated_total_ns, total_started);
+    }
+    return stats;
 }
 
 }  // namespace ldcompress

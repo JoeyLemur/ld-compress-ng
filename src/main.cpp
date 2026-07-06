@@ -114,7 +114,7 @@ struct Options {
         << "  --device INDEX               Backend-local OpenCL/Vulkan device index.\n"
         << "  --opencl-device INDEX        Explicit OpenCL device index.\n"
         << "  --vulkan-device INDEX        Explicit Vulkan device index.\n"
-        << "  --stats                      Print native backend frame-decision statistics.\n"
+        << "  --stats                      Print native backend decision stats and timings.\n"
         << "  --container ogg|flac         cpu can write Ogg or native FLAC; native/opencl write flac.\n"
         << "  --overwrite                  Replace an existing output path.\n\n"
         << "More details: README.md and docs/build-and-testing.md\n";
@@ -894,6 +894,11 @@ std::string summarize_subframes(const ldcompress::NativeCompressionStats& stats)
     return out.str();
 }
 
+double seconds_from_ns(std::uint64_t ns)
+{
+    return static_cast<double>(ns) / 1'000'000'000.0;
+}
+
 void print_native_stats(const ldcompress::NativeCompressionStats& stats)
 {
     std::cerr << "native stats: frames=" << stats.frames
@@ -907,6 +912,32 @@ void print_native_stats(const ldcompress::NativeCompressionStats& stats)
     print_nonzero_counts(std::cerr, "lpc orders", stats.lpc_order_counts);
     print_nonzero_counts(std::cerr, "partition orders", stats.partition_order_counts);
     print_nonzero_counts(std::cerr, "wasted bits", stats.wasted_bits_counts);
+    if (stats.accelerated_batches != 0 || stats.accelerated_total_ns != 0) {
+        const auto measured_analyzer_parts =
+            stats.accelerated_task_plan_ns + stats.accelerated_exact_analysis_ns;
+        const auto analyzer_other_ns = stats.accelerated_analyzer_ns > measured_analyzer_parts
+            ? stats.accelerated_analyzer_ns - measured_analyzer_parts
+            : 0;
+        std::cerr << std::fixed << std::setprecision(6)
+                  << "accelerated timings: batches=" << stats.accelerated_batches
+                  << " total=" << seconds_from_ns(stats.accelerated_total_ns) << "s"
+                  << " scan=" << seconds_from_ns(stats.accelerated_scan_ns) << "s"
+                  << " analyzer=" << seconds_from_ns(stats.accelerated_analyzer_ns) << "s"
+                  << " selected-write="
+                  << seconds_from_ns(stats.accelerated_selected_write_ns) << "s"
+                  << " tail-write=" << seconds_from_ns(stats.accelerated_tail_write_ns) << "s"
+                  << '\n';
+        if (stats.accelerated_task_plan_ns != 0 ||
+            stats.accelerated_exact_analysis_ns != 0) {
+            std::cerr << "accelerator timings: task-plan="
+                      << seconds_from_ns(stats.accelerated_task_plan_ns) << "s"
+                      << " exact-analysis="
+                      << seconds_from_ns(stats.accelerated_exact_analysis_ns) << "s"
+                      << " analyzer-other=" << seconds_from_ns(analyzer_other_ns) << "s"
+                      << '\n';
+        }
+        std::cerr.unsetf(std::ios::floatfield);
+    }
 }
 
 int run_compress(const Options& options)

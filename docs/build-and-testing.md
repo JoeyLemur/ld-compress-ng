@@ -274,6 +274,9 @@ use the same native tuning options, but currently require `--threads 1`.
 Vulkan exact-costs
 fixed/Rice and scalar-generated LPC candidates; generated-LPC-on-GPU and
 throughput tuning are still future 1.1 work.
+Use `--stats` on native/OpenCL/Vulkan compression when investigating backend
+behavior; accelerated backends also print coarse timing splits for scan,
+analyzer, selected-frame writing, and accelerator plan/exact-analysis stages.
 
 ## Local Validation Matrix
 

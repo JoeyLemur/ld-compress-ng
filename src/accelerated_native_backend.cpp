@@ -4,6 +4,7 @@
 #include "hash.h"
 
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -17,6 +18,18 @@ namespace {
 
 constexpr std::size_t kGroupsPerChunk = 8192;
 constexpr unsigned kMinimumStreamInfoBlockSize = 16;
+using Clock = std::chrono::steady_clock;
+
+std::uint64_t elapsed_ns(Clock::time_point start, Clock::time_point finish)
+{
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(finish - start).count());
+}
+
+void add_elapsed_ns(std::uint64_t& counter, Clock::time_point start)
+{
+    counter += elapsed_ns(start, Clock::now());
+}
 
 void update_md5_s16le(Md5& md5, std::int16_t sample)
 {
@@ -181,7 +194,14 @@ void write_accelerated_selected_batch(
 
     const auto frame_count = batch_samples.size() / options.frame_samples;
     auto base_frame_info = make_frame_info(first_frame_number, options);
+    if (options.native_stats != nullptr) {
+        ++options.native_stats->accelerated_batches;
+    }
+    const auto analyzer_started = Clock::now();
     const auto analysis = analyzer(batch_samples, base_frame_info, options.frame_samples);
+    if (options.native_stats != nullptr) {
+        add_elapsed_ns(options.native_stats->accelerated_analyzer_ns, analyzer_started);
+    }
     if (analysis.selected_subframes.size() != frame_count ||
         analysis.decisions.size() != frame_count) {
         throw std::runtime_error(
@@ -189,6 +209,7 @@ void write_accelerated_selected_batch(
             " selected frame count did not match input batch");
     }
 
+    const auto write_started = Clock::now();
     for (std::size_t frame = 0; frame < frame_count; ++frame) {
         const auto offset = frame * static_cast<std::size_t>(options.frame_samples);
         const std::vector<std::int32_t> frame_samples(
@@ -198,6 +219,9 @@ void write_accelerated_selected_batch(
         const auto decision = write_mono_selected_frame(
             output, frame_samples, frame_info, analysis.selected_subframes[frame]);
         record_native_stats(options.native_stats, decision);
+    }
+    if (options.native_stats != nullptr) {
+        add_elapsed_ns(options.native_stats->accelerated_selected_write_ns, write_started);
     }
 }
 
@@ -211,9 +235,13 @@ void write_native_tail_frame(
         return;
     }
 
+    const auto write_started = Clock::now();
     const auto decision = write_mono_best_frame(
         output, samples, make_frame_info(frame_number, options));
     record_native_stats(options.native_stats, decision);
+    if (options.native_stats != nullptr) {
+        add_elapsed_ns(options.native_stats->accelerated_tail_write_ns, write_started);
+    }
 }
 
 }  // namespace
@@ -232,9 +260,13 @@ ConversionStats compress_lds_to_accelerated_native_flac(
     }
 
     Md5 pcm_md5;
+    const auto scan_started = Clock::now();
     auto stats = process_lds_samples(lds_input, [&pcm_md5](std::int16_t sample) {
         update_md5_s16le(pcm_md5, sample);
     });
+    if (options.native_stats != nullptr) {
+        add_elapsed_ns(options.native_stats->accelerated_scan_ns, scan_started);
+    }
     const auto streaminfo = make_streaminfo(
         stats, options.frame_samples, options.sample_rate, pcm_md5.digest());
 

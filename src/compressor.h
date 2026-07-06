@@ -31,6 +31,14 @@ struct NativeCompressionStats {
     std::array<std::uint64_t, 33> lpc_order_counts {};
     std::array<std::uint64_t, 16> partition_order_counts {};
     std::array<std::uint64_t, 33> wasted_bits_counts {};
+    std::uint64_t accelerated_batches = 0;
+    std::uint64_t accelerated_total_ns = 0;
+    std::uint64_t accelerated_scan_ns = 0;
+    std::uint64_t accelerated_analyzer_ns = 0;
+    std::uint64_t accelerated_selected_write_ns = 0;
+    std::uint64_t accelerated_tail_write_ns = 0;
+    std::uint64_t accelerated_task_plan_ns = 0;
+    std::uint64_t accelerated_exact_analysis_ns = 0;
 };
 
 struct CompressionOptions {
