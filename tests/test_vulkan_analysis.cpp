@@ -296,6 +296,14 @@ void test_vulkan_fixed_constant_analysis(const Options& options)
     require(!result.device_name.empty(), "Vulkan fixed/constant result did not report a device");
     require_analysis_matches(
         result, expected, "Vulkan exact fixed/constant analysis diverged from scalar oracle");
+    ldcompress::vulkan_detail::VulkanMonoExactAnalysisSession session(device_index);
+    const auto best_only = session.run_fixed_constant_best_analysis(samples, plan, 4);
+    require(best_only.best_tasks.size() == result.best_tasks.size(),
+        "Vulkan fixed/constant best-only task count mismatch");
+    for (std::size_t i = 0; i < result.best_tasks.size(); ++i) {
+        require_task_matches_task(best_only.best_tasks[i], result.best_tasks[i],
+            "Vulkan fixed/constant best-only task diverged from full result");
+    }
 
     require(result.best_tasks[0].data.type == kFlacClSubframeConstant,
         "constant frame did not select constant task");
@@ -448,6 +456,14 @@ void test_vulkan_generated_lpc_analysis(const Options& options)
         "Vulkan generated LPC analyzed task count mismatch");
     require(result.best_tasks.size() == 3,
         "Vulkan generated LPC best task count mismatch");
+    ldcompress::vulkan_detail::VulkanMonoExactAnalysisSession session(device_index);
+    const auto best_only = session.run_generated_best_analysis(samples, plan, 12, 5);
+    require(best_only.best_tasks.size() == result.best_tasks.size(),
+        "Vulkan generated LPC best-only task count mismatch");
+    for (std::size_t i = 0; i < result.best_tasks.size(); ++i) {
+        require_lpc_task_matches(best_only.best_tasks[i], result.best_tasks[i],
+            "Vulkan generated LPC best-only task diverged from full result");
+    }
 
     for (std::size_t frame = 0; frame < 3; ++frame) {
         const auto task_base = frame * plan.residual_tasks_per_frame;

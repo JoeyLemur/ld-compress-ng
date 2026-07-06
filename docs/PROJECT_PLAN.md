@@ -342,6 +342,11 @@ Implemented for the first 1.1 checkpoint:
   fixed/constant tasks), fills LPC coefficients on the GPU, and then feeds those
   tasks through the existing exact analyzer. `test_vulkan_analysis` covers
   generated task population, exact-cost stability, and partition-order limits.
+- Vulkan compression now uses a best-task-only analyzer path, leaving the full
+  analyzed-task readback available for tests and diagnostics but avoiding that
+  host transfer in the normal writer path. Vulkan compression batches now use
+  `128` frames per analysis submission instead of `32`; the full-result tests
+  cover that best-only results still match the compatibility path.
 - The local validation matrix helper has a `no-vulkan` lane for optional-build
   regression coverage.
 - The real-fixture sweep helper can include Vulkan rows with `--include-vulkan`
@@ -356,16 +361,17 @@ Remaining Vulkan work:
 
 - Treat Vulkan/OpenCL throughput as an architecture problem before any
   shader-level micro-tuning. Current NVIDIA RTX 5070 Ti timings on
-  `ntsc/issue176.lds` after Vulkan generated-LPC analysis show
-  CPU/libFLAC at about `0.136` seconds, scalar native-fixed at `1.684` seconds
-  with `8` threads, OpenCL at `10.329` seconds, and Vulkan at `2.639` seconds.
+  `ntsc/issue176.lds` after the Vulkan best-task-only readback and 128-frame
+  batching pass show CPU/libFLAC at about `0.139` seconds, scalar native-fixed
+  at `1.682` seconds with `8` threads, OpenCL at `10.139` seconds, and Vulkan
+  at `2.014` seconds.
   Vulkan output on that fixture is `4,292,100` bytes: `1,508` bytes larger than
   scalar native-fixed's `4,290,592` bytes, `22,033` bytes smaller than
   CPU/libFLAC's `4,314,133` bytes, and `6,134` bytes smaller than OpenCL's
   `4,298,234` bytes. A focused `compress --backend vulkan --stats` run measured
-  `46` batches with about `1.63` analyzer seconds: `0.0009` seconds in Vulkan
-  task-plan generation and `1.63` seconds in generated LPC plus exact analysis.
-  Shared selected-frame writing is still about `0.31` seconds.
+  `12` batches with about `1.42` analyzer seconds: `0.0008` seconds in Vulkan
+  task-plan generation and `1.42` seconds in generated LPC plus exact analysis.
+  Shared selected-frame writing is still about `0.30` seconds.
 - The latest six-fixture sweep at frame size `4608`, LPC order `12`,
   coefficient precision `12`, Rice partition order `5`, native-fixed `8`
   threads, OpenCL device `1`, and Vulkan device `1` produced aggregate sizes:
@@ -374,9 +380,12 @@ Remaining Vulkan work:
   `79,892,217` bytes in `37.469` seconds. Vulkan is `24,527` bytes larger than
   scalar native-fixed, `59,870` bytes smaller than OpenCL, and much faster than
   OpenCL on the NVIDIA validation device.
-- Improve Vulkan buffer placement and batching after correctness is in place;
-  the current path still uses host-visible buffers and per-batch readback as a
-  correctness milestone, not the final throughput design.
+- Improve Vulkan buffer placement after correctness is in place; the current
+  path still uses host-visible buffers as a correctness milestone, not the final
+  throughput design. The readback split is also useful for OpenCL: normal
+  OpenCL compression discards full analyzed tasks too, so a future OpenCL
+  best-only analyzer path could skip the `tasks_buffer` readback while keeping
+  the current full-result APIs for parity diagnostics.
 
 Immediate engineering focus:
 

@@ -29,6 +29,7 @@ namespace {
 
 using opencl_detail::FlacClSubframeTask;
 using opencl_detail::OpenClMonoAnalysisTaskPlan;
+using opencl_detail::OpenClMonoBestMethodResult;
 using opencl_detail::OpenClMonoFixedConstantAnalysisResult;
 
 constexpr std::uint64_t kFenceTimeoutNs = 10'000'000'000ULL;
@@ -963,7 +964,8 @@ public:
         const OpenClMonoAnalysisTaskPlan& plan,
         unsigned max_rice_partition_order,
         bool allow_lpc,
-        std::optional<GeneratedLpcConfig> generated_lpc = std::nullopt)
+        std::optional<GeneratedLpcConfig> generated_lpc = std::nullopt,
+        bool read_analyzed_tasks = true)
     {
         (void)allow_lpc;
 
@@ -993,7 +995,6 @@ public:
                 : 0,
         };
 
-        std::vector<FlacClSubframeTask> analyzed_tasks = plan.residual_tasks;
         std::vector<FlacClSubframeTask> best_tasks(frame_count);
         std::vector<float> dummy_floats(1, 0.0F);
         std::vector<float> generated_windows;
@@ -1020,7 +1021,7 @@ public:
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         HostBuffer& tasks_buffer = ensure_buffer(
             tasks_buffer_,
-            checked_buffer_bytes(analyzed_tasks.size(), sizeof(FlacClSubframeTask), "tasks"),
+            checked_buffer_bytes(plan.residual_tasks.size(), sizeof(FlacClSubframeTask), "tasks"),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         HostBuffer& selected_buffer = ensure_buffer(
             selected_buffer_,
@@ -1044,7 +1045,7 @@ public:
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
         samples_buffer.copy_from(samples);
-        tasks_buffer.copy_from(analyzed_tasks);
+        tasks_buffer.copy_from(plan.residual_tasks);
         selected_buffer.copy_from(plan.selected_tasks);
         window_buffer.copy_from(*window_values);
         samples_buffer.flush();
@@ -1220,10 +1221,14 @@ public:
         require_vk(vkWaitForFences(device_, 1, &fence_, VK_TRUE, kFenceTimeoutNs),
             "vkWaitForFences");
 
-        tasks_buffer.invalidate();
         best_buffer.invalidate();
-        tasks_buffer.copy_to(analyzed_tasks);
         best_buffer.copy_to(best_tasks);
+        std::vector<FlacClSubframeTask> analyzed_tasks;
+        if (read_analyzed_tasks) {
+            analyzed_tasks.resize(plan.residual_tasks.size());
+            tasks_buffer.invalidate();
+            tasks_buffer.copy_to(analyzed_tasks);
+        }
 
         return OpenClMonoFixedConstantAnalysisResult {
             .analyzed_tasks = std::move(analyzed_tasks),
@@ -1347,6 +1352,24 @@ OpenClMonoFixedConstantAnalysisResult VulkanMonoExactAnalysisSession::run_fixed_
 #endif
 }
 
+OpenClMonoBestMethodResult VulkanMonoExactAnalysisSession::run_fixed_constant_best_analysis(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    unsigned max_rice_partition_order)
+{
+    validate_vulkan_exact_analysis_inputs(samples, plan, max_rice_partition_order, false);
+#if LDCOMPRESS_HAVE_VULKAN
+    auto result = impl_->run_validated(
+        samples, plan, max_rice_partition_order, false, std::nullopt, false);
+    return OpenClMonoBestMethodResult {
+        .best_tasks = std::move(result.best_tasks),
+        .device_name = std::move(result.device_name),
+    };
+#else
+    throw std::runtime_error("Vulkan support was not built");
+#endif
+}
+
 OpenClMonoFixedConstantAnalysisResult VulkanMonoExactAnalysisSession::run_lpc_analysis(
     const std::vector<std::int32_t>& samples,
     const OpenClMonoAnalysisTaskPlan& plan,
@@ -1370,6 +1393,27 @@ OpenClMonoFixedConstantAnalysisResult VulkanMonoExactAnalysisSession::run_genera
         samples, plan, lpc_coefficient_precision, max_rice_partition_order);
 #if LDCOMPRESS_HAVE_VULKAN
     return impl_->run_validated(samples, plan, max_rice_partition_order, true, generated_lpc);
+#else
+    (void)generated_lpc;
+    throw std::runtime_error("Vulkan support was not built");
+#endif
+}
+
+OpenClMonoBestMethodResult VulkanMonoExactAnalysisSession::run_generated_best_analysis(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    unsigned lpc_coefficient_precision,
+    unsigned max_rice_partition_order)
+{
+    const auto generated_lpc = validate_vulkan_generated_analysis_inputs(
+        samples, plan, lpc_coefficient_precision, max_rice_partition_order);
+#if LDCOMPRESS_HAVE_VULKAN
+    auto result = impl_->run_validated(
+        samples, plan, max_rice_partition_order, true, generated_lpc, false);
+    return OpenClMonoBestMethodResult {
+        .best_tasks = std::move(result.best_tasks),
+        .device_name = std::move(result.device_name),
+    };
 #else
     (void)generated_lpc;
     throw std::runtime_error("Vulkan support was not built");

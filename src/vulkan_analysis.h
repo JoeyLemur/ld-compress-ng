@@ -24,12 +24,23 @@ public:
         const opencl_detail::OpenClMonoAnalysisTaskPlan& plan,
         unsigned max_rice_partition_order = 5);
 
+    opencl_detail::OpenClMonoBestMethodResult run_fixed_constant_best_analysis(
+        const std::vector<std::int32_t>& samples,
+        const opencl_detail::OpenClMonoAnalysisTaskPlan& plan,
+        unsigned max_rice_partition_order = 5);
+
     opencl_detail::OpenClMonoFixedConstantAnalysisResult run_lpc_analysis(
         const std::vector<std::int32_t>& samples,
         const opencl_detail::OpenClMonoAnalysisTaskPlan& plan,
         unsigned max_rice_partition_order = 5);
 
     opencl_detail::OpenClMonoFixedConstantAnalysisResult run_generated_analysis(
+        const std::vector<std::int32_t>& samples,
+        const opencl_detail::OpenClMonoAnalysisTaskPlan& plan,
+        unsigned lpc_coefficient_precision = 12,
+        unsigned max_rice_partition_order = 5);
+
+    opencl_detail::OpenClMonoBestMethodResult run_generated_best_analysis(
         const std::vector<std::int32_t>& samples,
         const opencl_detail::OpenClMonoAnalysisTaskPlan& plan,
         unsigned lpc_coefficient_precision = 12,

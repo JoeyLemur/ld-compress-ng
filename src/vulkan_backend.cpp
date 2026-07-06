@@ -18,7 +18,7 @@
 namespace ldcompress {
 namespace {
 
-constexpr std::size_t kVulkanBatchFrames = 32;
+constexpr std::size_t kVulkanBatchFrames = 128;
 constexpr unsigned kMinimumStreamInfoBlockSize = 16;
 constexpr unsigned kMaxVulkanFrameSamples = 4608;
 constexpr unsigned kMaxVulkanLpcOrder = 12;
@@ -88,9 +88,9 @@ AcceleratedSelectedFrameAnalysis analyze_vulkan_selected_frames(
 
     const auto analysis_started = Clock::now();
     auto result = frame_info.max_lpc_order == 0
-        ? session.run_fixed_constant_analysis(
+        ? session.run_fixed_constant_best_analysis(
             samples, plan, frame_info.max_rice_partition_order)
-        : session.run_generated_analysis(
+        : session.run_generated_best_analysis(
             samples,
             plan,
             frame_info.lpc_coefficient_precision,
