@@ -618,7 +618,7 @@ std::uint32_t find_memory_type(
     if (fallback.has_value()) {
         return *fallback;
     }
-    throw std::runtime_error("no compatible host-visible Vulkan memory type found");
+    throw std::runtime_error("no compatible Vulkan memory type found");
 }
 
 bool memory_type_is_coherent(VkPhysicalDevice physical_device, std::uint32_t memory_type_index)
@@ -750,6 +750,69 @@ private:
     void* mapped_ = nullptr;
     VkDeviceSize size_ = 0;
     bool coherent_ = false;
+};
+
+class DeviceBuffer final {
+public:
+    DeviceBuffer(
+        VkDevice device,
+        VkPhysicalDevice physical_device,
+        VkDeviceSize size,
+        VkBufferUsageFlags usage)
+        : device_(device), size_(size)
+    {
+        const VkBufferCreateInfo buffer_info {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .size = size_,
+            .usage = usage,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = nullptr,
+        };
+        require_vk(vkCreateBuffer(device_, &buffer_info, nullptr, &buffer_), "vkCreateBuffer");
+
+        VkMemoryRequirements memory_requirements {};
+        vkGetBufferMemoryRequirements(device_, buffer_, &memory_requirements);
+        const auto memory_type_index = find_memory_type(
+            physical_device,
+            memory_requirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            0);
+
+        const VkMemoryAllocateInfo allocate_info {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .pNext = nullptr,
+            .allocationSize = memory_requirements.size,
+            .memoryTypeIndex = memory_type_index,
+        };
+        require_vk(vkAllocateMemory(device_, &allocate_info, nullptr, &memory_),
+            "vkAllocateMemory");
+        require_vk(vkBindBufferMemory(device_, buffer_, memory_, 0), "vkBindBufferMemory");
+    }
+
+    DeviceBuffer(const DeviceBuffer&) = delete;
+    DeviceBuffer& operator=(const DeviceBuffer&) = delete;
+
+    ~DeviceBuffer()
+    {
+        if (buffer_ != VK_NULL_HANDLE) {
+            vkDestroyBuffer(device_, buffer_, nullptr);
+        }
+        if (memory_ != VK_NULL_HANDLE) {
+            vkFreeMemory(device_, memory_, nullptr);
+        }
+    }
+
+    VkBuffer get() const { return buffer_; }
+    VkDeviceSize size() const { return size_; }
+
+private:
+    VkDevice device_ = VK_NULL_HANDLE;
+    VkBuffer buffer_ = VK_NULL_HANDLE;
+    VkDeviceMemory memory_ = VK_NULL_HANDLE;
+    VkDeviceSize size_ = 0;
 };
 
 struct PushConstants {
@@ -1015,43 +1078,76 @@ public:
                 opencl_detail::kFlacClMaxOrder;
         }
 
-        HostBuffer& samples_buffer = ensure_buffer(
+        const auto samples_bytes =
+            checked_buffer_bytes(samples.size(), sizeof(std::int32_t), "samples");
+        const auto tasks_bytes =
+            checked_buffer_bytes(plan.residual_tasks.size(), sizeof(FlacClSubframeTask), "tasks");
+        const auto selected_bytes =
+            checked_buffer_bytes(plan.selected_tasks.size(), sizeof(std::int32_t), "selected tasks");
+        const auto best_bytes =
+            checked_buffer_bytes(best_tasks.size(), sizeof(FlacClSubframeTask), "best tasks");
+        const auto window_bytes =
+            checked_buffer_bytes(window_values->size(), sizeof(float), "generated windows");
+        const auto autocor_bytes =
+            checked_buffer_bytes(autocor_count, sizeof(float), "generated autocorrelations");
+        const auto lpc_bytes =
+            checked_buffer_bytes(lpc_count, sizeof(float), "generated LPC coefficients");
+
+        DeviceBuffer& samples_buffer = ensure_device_buffer(
             samples_buffer_,
-            checked_buffer_bytes(samples.size(), sizeof(std::int32_t), "samples"),
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        HostBuffer& tasks_buffer = ensure_buffer(
+            samples_bytes,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        DeviceBuffer& tasks_buffer = ensure_device_buffer(
             tasks_buffer_,
-            checked_buffer_bytes(plan.residual_tasks.size(), sizeof(FlacClSubframeTask), "tasks"),
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        HostBuffer& selected_buffer = ensure_buffer(
+            tasks_bytes,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        DeviceBuffer& selected_buffer = ensure_device_buffer(
             selected_buffer_,
-            checked_buffer_bytes(plan.selected_tasks.size(), sizeof(std::int32_t), "selected tasks"),
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        HostBuffer& best_buffer = ensure_buffer(
+            selected_bytes,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        DeviceBuffer& best_buffer = ensure_device_buffer(
             best_buffer_,
-            checked_buffer_bytes(best_tasks.size(), sizeof(FlacClSubframeTask), "best tasks"),
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        HostBuffer& window_buffer = ensure_buffer(
+            best_bytes,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        DeviceBuffer& window_buffer = ensure_device_buffer(
             window_buffer_,
-            checked_buffer_bytes(window_values->size(), sizeof(float), "generated windows"),
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        HostBuffer& autocor_buffer = ensure_buffer(
+            window_bytes,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        DeviceBuffer& autocor_buffer = ensure_device_buffer(
             autocor_buffer_,
-            checked_buffer_bytes(autocor_count, sizeof(float), "generated autocorrelations"),
+            autocor_bytes,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        HostBuffer& lpc_buffer = ensure_buffer(
+        DeviceBuffer& lpc_buffer = ensure_device_buffer(
             lpc_buffer_,
-            checked_buffer_bytes(lpc_count, sizeof(float), "generated LPC coefficients"),
+            lpc_bytes,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
-        samples_buffer.copy_from(samples);
-        tasks_buffer.copy_from(plan.residual_tasks);
-        selected_buffer.copy_from(plan.selected_tasks);
-        window_buffer.copy_from(*window_values);
-        samples_buffer.flush();
-        tasks_buffer.flush();
-        selected_buffer.flush();
-        window_buffer.flush();
+        HostBuffer& samples_upload_buffer = ensure_host_buffer(
+            samples_upload_buffer_, samples_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        HostBuffer& tasks_upload_buffer = ensure_host_buffer(
+            tasks_upload_buffer_, tasks_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        HostBuffer& selected_upload_buffer = ensure_host_buffer(
+            selected_upload_buffer_, selected_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        HostBuffer& window_upload_buffer = ensure_host_buffer(
+            window_upload_buffer_, window_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        HostBuffer& best_readback_buffer = ensure_host_buffer(
+            best_readback_buffer_, best_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        HostBuffer* tasks_readback_buffer = nullptr;
+        if (read_analyzed_tasks) {
+            tasks_readback_buffer = &ensure_host_buffer(
+                tasks_readback_buffer_, tasks_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        }
+
+        samples_upload_buffer.copy_from(samples);
+        tasks_upload_buffer.copy_from(plan.residual_tasks);
+        selected_upload_buffer.copy_from(plan.selected_tasks);
+        window_upload_buffer.copy_from(*window_values);
+        samples_upload_buffer.flush();
+        tasks_upload_buffer.flush();
+        selected_upload_buffer.flush();
+        window_upload_buffer.flush();
 
         const std::array<VkDescriptorBufferInfo, 7> descriptor_buffers {{
             VkDescriptorBufferInfo {
@@ -1120,6 +1216,41 @@ public:
             .pInheritanceInfo = nullptr,
         };
         require_vk(vkBeginCommandBuffer(command_buffer_, &begin_info), "vkBeginCommandBuffer");
+        auto copy_buffer = [&](
+                               VkBuffer source,
+                               VkBuffer destination,
+                               VkDeviceSize bytes) {
+            const VkBufferCopy region {
+                .srcOffset = 0,
+                .dstOffset = 0,
+                .size = bytes,
+            };
+            vkCmdCopyBuffer(command_buffer_, source, destination, 1, &region);
+        };
+
+        copy_buffer(samples_upload_buffer.get(), samples_buffer.get(), samples_bytes);
+        copy_buffer(tasks_upload_buffer.get(), tasks_buffer.get(), tasks_bytes);
+        copy_buffer(selected_upload_buffer.get(), selected_buffer.get(), selected_bytes);
+        copy_buffer(window_upload_buffer.get(), window_buffer.get(), window_bytes);
+
+        const VkMemoryBarrier upload_barrier {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+        };
+        vkCmdPipelineBarrier(
+            command_buffer_,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0,
+            1,
+            &upload_barrier,
+            0,
+            nullptr,
+            0,
+            nullptr);
+
         vkCmdBindPipeline(command_buffer_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
         vkCmdBindDescriptorSets(
             command_buffer_,
@@ -1185,19 +1316,42 @@ public:
         shader_write_to_read_barrier();
         dispatch_mode(1, dispatch_groups(base_push.frame_count));
 
-        const VkMemoryBarrier host_barrier {
+        const VkMemoryBarrier shader_to_transfer_barrier {
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
             .pNext = nullptr,
             .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
         };
         vkCmdPipelineBarrier(
             command_buffer_,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0,
+            1,
+            &shader_to_transfer_barrier,
+            0,
+            nullptr,
+            0,
+            nullptr);
+
+        copy_buffer(best_buffer.get(), best_readback_buffer.get(), best_bytes);
+        if (tasks_readback_buffer != nullptr) {
+            copy_buffer(tasks_buffer.get(), tasks_readback_buffer->get(), tasks_bytes);
+        }
+
+        const VkMemoryBarrier transfer_to_host_barrier {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+        };
+        vkCmdPipelineBarrier(
+            command_buffer_,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_HOST_BIT,
             0,
             1,
-            &host_barrier,
+            &transfer_to_host_barrier,
             0,
             nullptr,
             0,
@@ -1221,13 +1375,13 @@ public:
         require_vk(vkWaitForFences(device_, 1, &fence_, VK_TRUE, kFenceTimeoutNs),
             "vkWaitForFences");
 
-        best_buffer.invalidate();
-        best_buffer.copy_to(best_tasks);
+        best_readback_buffer.invalidate();
+        best_readback_buffer.copy_to(best_tasks);
         std::vector<FlacClSubframeTask> analyzed_tasks;
-        if (read_analyzed_tasks) {
+        if (tasks_readback_buffer != nullptr) {
             analyzed_tasks.resize(plan.residual_tasks.size());
-            tasks_buffer.invalidate();
-            tasks_buffer.copy_to(analyzed_tasks);
+            tasks_readback_buffer->invalidate();
+            tasks_readback_buffer->copy_to(analyzed_tasks);
         }
 
         return OpenClMonoFixedConstantAnalysisResult {
@@ -1238,13 +1392,25 @@ public:
     }
 
 private:
-    HostBuffer& ensure_buffer(
+    HostBuffer& ensure_host_buffer(
         std::unique_ptr<HostBuffer>& buffer,
         VkDeviceSize required_size,
         VkBufferUsageFlags usage)
     {
         if (buffer == nullptr || buffer->size() < required_size) {
             buffer = std::make_unique<HostBuffer>(
+                device_, selected_.physical_device, required_size, usage);
+        }
+        return *buffer;
+    }
+
+    DeviceBuffer& ensure_device_buffer(
+        std::unique_ptr<DeviceBuffer>& buffer,
+        VkDeviceSize required_size,
+        VkBufferUsageFlags usage)
+    {
+        if (buffer == nullptr || buffer->size() < required_size) {
+            buffer = std::make_unique<DeviceBuffer>(
                 device_, selected_.physical_device, required_size, usage);
         }
         return *buffer;
@@ -1260,6 +1426,12 @@ private:
             window_buffer_.reset();
             autocor_buffer_.reset();
             lpc_buffer_.reset();
+            samples_upload_buffer_.reset();
+            tasks_upload_buffer_.reset();
+            selected_upload_buffer_.reset();
+            window_upload_buffer_.reset();
+            best_readback_buffer_.reset();
+            tasks_readback_buffer_.reset();
             if (fence_ != VK_NULL_HANDLE) {
                 vkDestroyFence(device_, fence_, nullptr);
                 fence_ = VK_NULL_HANDLE;
@@ -1311,13 +1483,19 @@ private:
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
     VkCommandBuffer command_buffer_ = VK_NULL_HANDLE;
     VkFence fence_ = VK_NULL_HANDLE;
-    std::unique_ptr<HostBuffer> samples_buffer_;
-    std::unique_ptr<HostBuffer> tasks_buffer_;
-    std::unique_ptr<HostBuffer> selected_buffer_;
-    std::unique_ptr<HostBuffer> best_buffer_;
-    std::unique_ptr<HostBuffer> window_buffer_;
-    std::unique_ptr<HostBuffer> autocor_buffer_;
-    std::unique_ptr<HostBuffer> lpc_buffer_;
+    std::unique_ptr<DeviceBuffer> samples_buffer_;
+    std::unique_ptr<DeviceBuffer> tasks_buffer_;
+    std::unique_ptr<DeviceBuffer> selected_buffer_;
+    std::unique_ptr<DeviceBuffer> best_buffer_;
+    std::unique_ptr<DeviceBuffer> window_buffer_;
+    std::unique_ptr<DeviceBuffer> autocor_buffer_;
+    std::unique_ptr<DeviceBuffer> lpc_buffer_;
+    std::unique_ptr<HostBuffer> samples_upload_buffer_;
+    std::unique_ptr<HostBuffer> tasks_upload_buffer_;
+    std::unique_ptr<HostBuffer> selected_upload_buffer_;
+    std::unique_ptr<HostBuffer> window_upload_buffer_;
+    std::unique_ptr<HostBuffer> best_readback_buffer_;
+    std::unique_ptr<HostBuffer> tasks_readback_buffer_;
 };
 
 #else
