@@ -1,5 +1,6 @@
 #include "lds_codec.h"
 #include "opencl_devices.h"
+#include "vulkan_devices.h"
 
 #include <cstdlib>
 #include <filesystem>
@@ -123,6 +124,21 @@ std::optional<std::size_t> first_available_opencl_device_index()
     return std::nullopt;
 }
 
+std::optional<std::size_t> first_available_vulkan_analysis_device_index()
+{
+    if (!ldcompress::vulkan_support_built()) {
+        return std::nullopt;
+    }
+
+    for (const auto& device : ldcompress::list_vulkan_devices()) {
+        if (device.available && device.shader_int64) {
+            return device.index;
+        }
+    }
+
+    return std::nullopt;
+}
+
 void test_cli(const std::filesystem::path& exe)
 {
     const auto temp_dir = std::filesystem::temp_directory_path() /
@@ -211,6 +227,11 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_opencl_device = temp_dir / "fixture.bad-opencl-device.flac.ldf";
     const auto bad_opencl_container = temp_dir / "fixture.bad-opencl-container.ldf";
     const auto vulkan_output = temp_dir / "fixture.vulkan.flac.ldf";
+    const auto vulkan_output_out = temp_dir / "fixture.vulkan.out.lds";
+    const auto empty_vulkan = temp_dir / "empty.vulkan.flac.ldf";
+    const auto empty_vulkan_out = temp_dir / "empty.vulkan.out.lds";
+    const auto bad_vulkan_lpc_order = temp_dir / "fixture.bad-vulkan-lpc-order.flac.ldf";
+    const auto bad_vulkan_threads = temp_dir / "fixture.bad-vulkan-threads.flac.ldf";
     const auto bad_vulkan_opencl_device = temp_dir / "fixture.bad-vulkan-opencl-device.flac.ldf";
     const auto bad_vulkan_device = temp_dir / "fixture.bad-vulkan-device.flac.ldf";
     const auto bad_vulkan_container = temp_dir / "fixture.bad-vulkan-container.ldf";
@@ -417,8 +438,26 @@ void test_cli(const std::filesystem::path& exe)
     require(!std::filesystem::exists(bad_opencl_device), "invalid OpenCL device index wrote output");
     run_fails(shell_quote(exe) + " compress --backend opencl --container ogg " + shell_quote(lds) + " " + shell_quote(bad_opencl_container));
     require(!std::filesystem::exists(bad_opencl_container), "OpenCL Ogg rejection wrote output");
-    run_fails(shell_quote(exe) + " compress --backend vulkan --device 0 " + shell_quote(lds) + " " + shell_quote(vulkan_output));
-    require(!std::filesystem::exists(vulkan_output), "unimplemented Vulkan backend wrote output");
+    const auto vulkan_device_index = first_available_vulkan_analysis_device_index();
+    if (vulkan_device_index.has_value()) {
+        const auto vulkan_device_arg = " --device " + std::to_string(*vulkan_device_index);
+        run_fails(shell_quote(exe) + " compress --backend vulkan" + vulkan_device_arg + " " + shell_quote(lds) + " " + shell_quote(bad_vulkan_lpc_order));
+        require(!std::filesystem::exists(bad_vulkan_lpc_order),
+            "Vulkan default LPC-order rejection wrote output");
+        run_ok(shell_quote(exe) + " compress --backend vulkan --lpc-order 0" + vulkan_device_arg + " " + shell_quote(lds) + " " + shell_quote(vulkan_output));
+        run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(vulkan_output));
+        run_ok(shell_quote(exe) + " decompress " + shell_quote(vulkan_output) + " " + shell_quote(vulkan_output_out));
+        require(read_file(vulkan_output_out) == fixture, "Vulkan fixed-only FLAC round trip changed LDS bytes");
+        run_ok(shell_quote(exe) + " compress --backend vulkan --lpc-order 0" + vulkan_device_arg + " " + shell_quote(empty_lds) + " " + shell_quote(empty_vulkan));
+        run_ok(shell_quote(exe) + " verify --source " + shell_quote(empty_lds) + " " + shell_quote(empty_vulkan));
+        run_ok(shell_quote(exe) + " decompress " + shell_quote(empty_vulkan) + " " + shell_quote(empty_vulkan_out));
+        require(read_file(empty_vulkan_out).empty(), "empty Vulkan FLAC produced decoded LDS bytes");
+    } else {
+        run_fails(shell_quote(exe) + " compress --backend vulkan --lpc-order 0 " + shell_quote(lds) + " " + shell_quote(vulkan_output));
+        require(!std::filesystem::exists(vulkan_output), "unavailable Vulkan backend wrote output");
+    }
+    run_fails(shell_quote(exe) + " compress --backend vulkan --threads 2 --lpc-order 0 " + shell_quote(lds) + " " + shell_quote(bad_vulkan_threads));
+    require(!std::filesystem::exists(bad_vulkan_threads), "Vulkan --threads rejection wrote output");
     run_fails(shell_quote(exe) + " compress --backend vulkan --opencl-device 0 " + shell_quote(lds) + " " + shell_quote(bad_vulkan_opencl_device));
     require(!std::filesystem::exists(bad_vulkan_opencl_device), "Vulkan --opencl-device rejection wrote output");
     run_fails(shell_quote(exe) + " compress --backend vulkan --vulkan-device nope " + shell_quote(lds) + " " + shell_quote(bad_vulkan_device));

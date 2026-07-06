@@ -16,7 +16,7 @@ tools when they are available and skip cleanly when they are not.
 | `libFLAC` development files | Yes | CPU FLAC encode/decode | Requires pkg-config module `flac`. |
 | `libogg` development files | Yes | Ogg FLAC container support | Requires pkg-config module `ogg`. |
 | OpenCL headers + loader/framework | Optional | `devices` enumeration and OpenCL compression backend | Disable with `-DLDCOMPRESS_ENABLE_OPENCL=OFF`. |
-| Vulkan headers + loader + `glslangValidator` | Optional | Vulkan `devices` enumeration and in-development Vulkan backend | Disable with `-DLDCOMPRESS_ENABLE_VULKAN=OFF`; compression is not implemented yet. |
+| Vulkan headers + loader + `glslangValidator` | Optional | Vulkan `devices` enumeration and in-development fixed/Rice Vulkan backend | Disable with `-DLDCOMPRESS_ENABLE_VULKAN=OFF`; Vulkan compression currently requires `--lpc-order 0`. |
 | Python 3 interpreter | Optional | Skip-safe external decode compatibility CTests and helper scripts | CMake adds Python-based tests only when an interpreter is found. |
 | `ffmpeg`/`ffprobe` | Optional | External native-FLAC decode compatibility CTest and legacy fixture regeneration | The compatibility test skips if `ffmpeg` is unavailable. |
 | PyAV and reference `ld-decode` dependencies | Optional | External `ld-decode` loader compatibility CTests | Tests skip if the local reference tree or imports are unavailable. |
@@ -116,10 +116,12 @@ package, `glslangValidator`, and a vendor runtime. Common package names:
 both Vulkan development files and `glslangValidator` are found. Without them,
 `ld-compress-ng devices` reports `Vulkan support: not built`.
 
-When Vulkan is enabled, CMake compiles the checked-in GLSL smoke shader to
-SPIR-V with `glslangValidator` and the `vulkan_smoke` CTest dispatches it
-against the first available compute device. Set `LDCOMPRESS_VULKAN_TEST_DEVICE`
-at configure time to force a specific backend-local Vulkan device index.
+When Vulkan is enabled, CMake compiles the checked-in GLSL shaders to SPIR-V
+with `glslangValidator`. The smoke shader is passed to `vulkan_smoke`; the
+fixed/constant analysis shader is embedded into the binary for
+`--backend vulkan --lpc-order 0`. Set `LDCOMPRESS_VULKAN_TEST_DEVICE` at
+configure time to force a specific backend-local Vulkan device index for the
+Vulkan CTests.
 
 ### Linux OpenCL Validation Record
 
@@ -168,11 +170,16 @@ cmake --build build --parallel
 build/ld-compress-ng devices
 ctest --test-dir build -L vulkan --output-on-failure
 build/test_vulkan_smoke build/shaders/vulkan_smoke.comp.spv --device 1
+build/test_vulkan_analysis --device 1
+build/ld-compress-ng compress --backend vulkan --lpc-order 0 --device 1 capture.lds
 ```
 
-Observed result: the Vulkan-labelled CTests passed, and direct smoke runs passed
-on the AMD integrated GPU plus both NVIDIA GPUs. Sandboxed runs may expose only
-llvmpipe; use a GPU-visible context for NVIDIA/AMD runtime validation.
+Observed result: the Vulkan-labelled CTests passed, direct analyzer parity
+passed on NVIDIA device `[1]`, and direct fixed/Rice Vulkan CLI compression on
+that NVIDIA device verified back to the source LDS bytes. Direct smoke runs also
+passed on the AMD integrated GPU plus both NVIDIA GPUs. Sandboxed runs may
+expose only llvmpipe; use a GPU-visible context for NVIDIA/AMD runtime
+validation.
 
 CPU-only configure on Linux is the same as macOS:
 
@@ -213,9 +220,10 @@ ctest --test-dir build --output-on-failure
 OpenCL indexes are used by `compress --backend opencl --device INDEX` or
 `--opencl-device INDEX`, plus platform-local `platform/device` coordinates. The
 OpenCL compression backend writes native FLAC and requires an available OpenCL
-device at runtime. Vulkan indexes are backend-local and reserved for
-`compress --backend vulkan --device INDEX`; Vulkan compression is still a 1.1
-development path and currently fails cleanly before writing output.
+device at runtime. Vulkan indexes are backend-local and used by
+`compress --backend vulkan --device INDEX`; the current Vulkan compression path
+is a 1.1 development path that requires `--lpc-order 0`, `--threads 1`, and a
+compute-capable device with `shaderInt64`.
 
 ## Install Layout
 
@@ -262,9 +270,9 @@ build/ld-compress-ng compress --backend native-fixed \
 The current recommended native defaults are frame size `4608`, maximum LPC
 order `12`, LPC coefficient precision `12`, maximum Rice partition order `5`,
 and one thread unless `--threads` is specified. OpenCL uses the same native
-tuning options, but currently requires `--threads 1`. The Vulkan backend is
-recognized by the CLI for 1.1 development, but compression is not implemented
-yet.
+tuning options, but currently requires `--threads 1`. The Vulkan backend
+currently supports only the fixed/Rice slice with `--lpc-order 0` and
+`--threads 1`; LPC and generated-LPC Vulkan analysis are still future 1.1 work.
 
 ## Local Validation Matrix
 

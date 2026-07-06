@@ -274,6 +274,9 @@ std::vector<VulkanDeviceInfo> list_vulkan_devices()
             info.compute_queue_count = compute_family->second;
             info.available = true;
         }
+        VkPhysicalDeviceFeatures features {};
+        vkGetPhysicalDeviceFeatures(physical_device, &features);
+        info.shader_int64 = features.shaderInt64 == VK_TRUE;
         info.max_compute_work_group_invocations =
             properties.limits.maxComputeWorkGroupInvocations;
         info.max_compute_shared_memory_bytes =

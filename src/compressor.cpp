@@ -2,6 +2,7 @@
 
 #include "native_flac_encoder.h"
 #include "opencl_backend.h"
+#include "vulkan_backend.h"
 
 #include <stdexcept>
 
@@ -71,7 +72,17 @@ ConversionStats compress_lds(
             .native_stats = options.native_stats,
         });
     case CompressionBackend::VulkanNativeFlac:
-        throw std::runtime_error("vulkan backend is not implemented yet");
+        return compress_lds_to_vulkan_native_flac(lds_input, output_path, VulkanCompressionOptions {
+            .container = options.container,
+            .sample_rate = options.sample_rate,
+            .thread_count = options.thread_count,
+            .frame_samples = options.native_frame_samples,
+            .max_lpc_order = options.native_max_lpc_order,
+            .lpc_precision = options.native_lpc_precision,
+            .max_rice_partition_order = options.native_max_rice_partition_order,
+            .device_index = options.vulkan_device_index,
+            .native_stats = options.native_stats,
+        });
     }
 
     throw std::runtime_error("unknown compression backend");

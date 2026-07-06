@@ -22,6 +22,7 @@ struct VulkanDeviceInfo {
     std::uint32_t max_compute_work_group_invocations = 0;
     std::uint64_t max_compute_shared_memory_bytes = 0;
     std::uint64_t device_local_memory_bytes = 0;
+    bool shader_int64 = false;
     bool available = false;
 };
 

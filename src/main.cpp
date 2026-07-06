@@ -100,12 +100,12 @@ struct Options {
         << "  cpu              Default portable Ogg FLAC .ldf backend using libFLAC/libogg.\n"
         << "  native-fixed     Native FLAC .flac.ldf backend with scalar fixed/LPC prediction.\n"
         << "  opencl           Native FLAC .flac.ldf backend using the selected OpenCL device.\n"
-        << "  vulkan           Native FLAC .flac.ldf backend using the selected Vulkan device.\n"
+        << "  vulkan           Native FLAC .flac.ldf backend using Vulkan; fixed-only for now.\n"
         << "  native-verbatim  Native FLAC .flac.ldf compatibility/debug backend.\n\n"
         << "Compress options:\n"
         << "  --backend cpu|native-verbatim|native-fixed|opencl|vulkan\n"
         << "  --level N                    CPU/libFLAC level, 1..12; default 11.\n"
-        << "  --threads N                  Native scalar frame threads; default 1. OpenCL requires 1.\n"
+        << "  --threads N                  Native scalar frame threads; default 1. OpenCL/Vulkan require 1.\n"
         << "  --frame-samples N            Native FLAC block size, 16..4608; default 4608.\n"
         << "  --lpc-order N                Predictive native max LPC order, 0..12; default 12.\n"
         << "  --lpc-precision N            Predictive native LPC precision, 1..15; default 12.\n"
@@ -1332,6 +1332,7 @@ int run_devices(int argc, char** argv)
                           << "    available: " << (device.available ? "yes" : "no") << '\n'
                           << "    compute queue family: " << device.compute_queue_family_index << '\n'
                           << "    compute queues: " << device.compute_queue_count << '\n'
+                          << "    shaderInt64: " << (device.shader_int64 ? "yes" : "no") << '\n'
                           << "    max workgroup invocations: "
                           << device.max_compute_work_group_invocations << '\n'
                           << "    max compute shared memory: "

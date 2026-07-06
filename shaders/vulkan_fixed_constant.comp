@@ -1,0 +1,329 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+const int kSubframeConstant = 0;
+const int kSubframeFixed = 8;
+const int kIntMax = 2147483647;
+const uint kMaxRiceParameter = 14u;
+
+struct FlacClSubframeData {
+    int residualOrder;
+    int samplesOffs;
+    int shift;
+    int cbits;
+    int size;
+    int type;
+    int obits;
+    int blocksize;
+    int coding_method;
+    int channel;
+    int residualOffs;
+    int wbits;
+    int abits;
+    int porder;
+    int headerLen;
+    int encodingOffset;
+};
+
+struct FlacClSubframeTask {
+    FlacClSubframeData data;
+    int coefs[32];
+};
+
+layout(std430, set = 0, binding = 0) readonly buffer Samples {
+    int samples[];
+};
+
+layout(std430, set = 0, binding = 1) buffer Tasks {
+    FlacClSubframeTask tasks[];
+};
+
+layout(std430, set = 0, binding = 2) readonly buffer SelectedTasks {
+    int selected_tasks[];
+};
+
+layout(std430, set = 0, binding = 3) writeonly buffer BestTasks {
+    FlacClSubframeTask best_tasks[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint mode;
+    uint task_count;
+    uint frame_count;
+    uint selected_tasks_per_frame;
+    uint residual_tasks_per_frame;
+    uint max_rice_partition_order;
+} pc;
+
+uint bit_width_u32(uint value)
+{
+    uint bits = 0u;
+    while (value != 0u) {
+        value >>= 1u;
+        ++bits;
+    }
+    return bits;
+}
+
+int sample_trailing_zero_bits(int smp, int bits_per_sample)
+{
+    if (smp == 0) {
+        return bits_per_sample;
+    }
+
+    const uint mask = bits_per_sample >= 32
+        ? 0xffffffffu
+        : ((1u << uint(bits_per_sample)) - 1u);
+    uint raw = uint(smp) & mask;
+    int zeros = 0;
+    while (zeros < bits_per_sample && (raw & 1u) == 0u) {
+        raw >>= 1u;
+        ++zeros;
+    }
+    return zeros;
+}
+
+int common_wasted_bits(FlacClSubframeTask task)
+{
+    int wasted_bits = task.data.obits;
+    for (int i = 0; i < task.data.blocksize; ++i) {
+        wasted_bits = min(
+            wasted_bits,
+            sample_trailing_zero_bits(samples[task.data.samplesOffs + i], task.data.obits));
+        if (wasted_bits == 0) {
+            return 0;
+        }
+    }
+    return min(wasted_bits, task.data.obits - 1);
+}
+
+int frame_amplitude_bits(FlacClSubframeTask task, int wasted_bits)
+{
+    uint amplitude_or = 0u;
+    for (int i = 0; i < task.data.blocksize; ++i) {
+        const int smp = samples[task.data.samplesOffs + i];
+        amplitude_or |= uint(smp ^ (smp >> 31));
+    }
+
+    if (amplitude_or == 0u) {
+        return 1;
+    }
+
+    const int bits = int(bit_width_u32(amplitude_or));
+    return max(1, bits - wasted_bits);
+}
+
+bool all_frame_samples_equal(FlacClSubframeTask task)
+{
+    const int first = samples[task.data.samplesOffs];
+    for (int i = 1; i < task.data.blocksize; ++i) {
+        if (samples[task.data.samplesOffs + i] != first) {
+            return false;
+        }
+    }
+    return true;
+}
+
+int shifted_sample(int samples_offset, int index, int wasted_bits)
+{
+    const int smp = samples[samples_offset + index];
+    if (wasted_bits == 0) {
+        return smp;
+    }
+    return smp / (1 << wasted_bits);
+}
+
+int64_t fixed_prediction_residual(FlacClSubframeTask task, int index, int wasted_bits)
+{
+    const int offset = task.data.samplesOffs;
+    switch (task.data.residualOrder) {
+    case 0:
+        return int64_t(shifted_sample(offset, index, wasted_bits));
+    case 1:
+        return int64_t(shifted_sample(offset, index, wasted_bits)) -
+            int64_t(shifted_sample(offset, index - 1, wasted_bits));
+    case 2:
+        return int64_t(shifted_sample(offset, index, wasted_bits)) -
+            (int64_t(2) * int64_t(shifted_sample(offset, index - 1, wasted_bits))) +
+            int64_t(shifted_sample(offset, index - 2, wasted_bits));
+    case 3:
+        return int64_t(shifted_sample(offset, index, wasted_bits)) -
+            (int64_t(3) * int64_t(shifted_sample(offset, index - 1, wasted_bits))) +
+            (int64_t(3) * int64_t(shifted_sample(offset, index - 2, wasted_bits))) -
+            int64_t(shifted_sample(offset, index - 3, wasted_bits));
+    default:
+        return int64_t(shifted_sample(offset, index, wasted_bits)) -
+            (int64_t(4) * int64_t(shifted_sample(offset, index - 1, wasted_bits))) +
+            (int64_t(6) * int64_t(shifted_sample(offset, index - 2, wasted_bits))) -
+            (int64_t(4) * int64_t(shifted_sample(offset, index - 3, wasted_bits))) +
+            int64_t(shifted_sample(offset, index - 4, wasted_bits));
+    }
+}
+
+uint64_t fold_signed_residual(int64_t residual)
+{
+    if (residual >= int64_t(0)) {
+        return uint64_t(residual) << 1u;
+    }
+    return (uint64_t(-(residual + int64_t(1))) << 1u) + uint64_t(1);
+}
+
+uint partition_residual_count(uint block_size, uint predictor_order, uint partition_order, uint part)
+{
+    const uint partition_samples = block_size >> partition_order;
+    return part == 0u
+        ? partition_samples - predictor_order
+        : partition_samples;
+}
+
+bool valid_partition_order(uint block_size, uint predictor_order, uint partition_order)
+{
+    const uint partition_count = 1u << partition_order;
+    if ((block_size % partition_count) != 0u) {
+        return false;
+    }
+    const uint partition_samples = block_size / partition_count;
+    return partition_samples > predictor_order;
+}
+
+uint64_t rice_bits(FlacClSubframeTask task, uint residual_offset, uint count, uint parameter, int wasted_bits)
+{
+    uint64_t bits = uint64_t(0);
+    const uint order = uint(task.data.residualOrder);
+    for (uint i = 0u; i < count; ++i) {
+        const int sample_index = int(order + residual_offset + i);
+        const uint64_t folded =
+            fold_signed_residual(fixed_prediction_residual(task, sample_index, wasted_bits));
+        bits += (folded >> parameter) + uint64_t(1u + parameter);
+    }
+    return bits;
+}
+
+uint choose_rice_parameter(FlacClSubframeTask task, uint residual_offset, uint count, int wasted_bits)
+{
+    uint best_parameter = 0u;
+    uint64_t best_bits = ~uint64_t(0);
+    for (uint parameter = 0u; parameter <= kMaxRiceParameter; ++parameter) {
+        const uint64_t bits = rice_bits(task, residual_offset, count, parameter, wasted_bits);
+        if (bits < best_bits) {
+            best_bits = bits;
+            best_parameter = parameter;
+        }
+    }
+    return best_parameter;
+}
+
+uint64_t fixed_rice_subframe_bits(
+    FlacClSubframeTask task,
+    uint partition_order,
+    int wasted_bits,
+    uint effective_bits_per_sample)
+{
+    const uint order = uint(task.data.residualOrder);
+    const uint block_size = uint(task.data.blocksize);
+    uint64_t bits =
+        uint64_t(8u) +
+        (uint64_t(order) * uint64_t(effective_bits_per_sample)) +
+        uint64_t(2u + 4u) +
+        uint64_t(wasted_bits == 0 ? 0 : wasted_bits);
+
+    const uint partition_count = 1u << partition_order;
+    uint residual_offset = 0u;
+    for (uint part = 0u; part < partition_count; ++part) {
+        const uint residual_count =
+            partition_residual_count(block_size, order, partition_order, part);
+        const uint rice_parameter =
+            choose_rice_parameter(task, residual_offset, residual_count, wasted_bits);
+        bits += uint64_t(4u);
+        bits += rice_bits(task, residual_offset, residual_count, rice_parameter, wasted_bits);
+        residual_offset += residual_count;
+    }
+    return bits;
+}
+
+int clamp_size_bits(uint64_t bits)
+{
+    return bits > uint64_t(kIntMax) ? kIntMax : int(bits);
+}
+
+void analyze_task(uint task_index)
+{
+    FlacClSubframeTask task = tasks[task_index];
+    const int wasted_bits = common_wasted_bits(task);
+    task.data.wbits = wasted_bits;
+    task.data.abits = frame_amplitude_bits(task, wasted_bits);
+    task.data.porder = 0;
+
+    if (task.data.type == kSubframeConstant) {
+        if (!all_frame_samples_equal(task)) {
+            task.data.size = kIntMax;
+        } else {
+            const uint64_t bits =
+                uint64_t(8u) +
+                uint64_t(task.data.obits - wasted_bits) +
+                uint64_t(wasted_bits == 0 ? 0 : wasted_bits);
+            task.data.size = clamp_size_bits(bits);
+        }
+        tasks[task_index] = task;
+        return;
+    }
+
+    if (task.data.type != kSubframeFixed) {
+        task.data.size = kIntMax;
+        tasks[task_index] = task;
+        return;
+    }
+
+    const uint block_size = uint(task.data.blocksize);
+    const uint order = uint(task.data.residualOrder);
+    const uint effective_bits_per_sample = uint(task.data.obits - wasted_bits);
+    uint64_t best_bits = ~uint64_t(0);
+    uint best_partition_order = 0u;
+    for (uint partition_order = 0u;
+         partition_order <= pc.max_rice_partition_order;
+         ++partition_order) {
+        if (!valid_partition_order(block_size, order, partition_order)) {
+            continue;
+        }
+        const uint64_t bits =
+            fixed_rice_subframe_bits(task, partition_order, wasted_bits, effective_bits_per_sample);
+        if (bits < best_bits) {
+            best_bits = bits;
+            best_partition_order = partition_order;
+        }
+    }
+
+    task.data.porder = int(best_partition_order);
+    task.data.size = clamp_size_bits(best_bits);
+    tasks[task_index] = task;
+}
+
+void choose_best(uint frame)
+{
+    const uint selected_base = frame * pc.selected_tasks_per_frame;
+    int best_index = selected_tasks[selected_base];
+    int best_size = tasks[best_index].data.size;
+    for (uint i = 1u; i < pc.selected_tasks_per_frame; ++i) {
+        const int task_index = selected_tasks[selected_base + i];
+        const int task_size = tasks[task_index].data.size;
+        if (task_size < best_size) {
+            best_index = task_index;
+            best_size = task_size;
+        }
+    }
+    best_tasks[frame] = tasks[best_index];
+}
+
+void main()
+{
+    const uint id = gl_GlobalInvocationID.x;
+    if (pc.mode == 0u) {
+        if (id < pc.task_count) {
+            analyze_task(id);
+        }
+    } else if (id < pc.frame_count) {
+        choose_best(id);
+    }
+}

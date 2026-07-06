@@ -73,6 +73,8 @@ add_library(ldcompress_core
     src/opencl_analysis.cpp
     src/opencl_backend.cpp
     src/opencl_devices.cpp
+    src/vulkan_analysis.cpp
+    src/vulkan_backend.cpp
     src/vulkan_devices.cpp
     src/vulkan_smoke.cpp
 )
@@ -111,6 +113,44 @@ if(LDCOMPRESS_HAVE_VULKAN)
     target_link_libraries(ldcompress_core
         PRIVATE
             Vulkan::Vulkan
+    )
+
+    set(LDCOMPRESS_VULKAN_FIXED_CONSTANT_SHADER
+        "${CMAKE_CURRENT_BINARY_DIR}/shaders/vulkan_fixed_constant.comp.spv")
+    set(LDCOMPRESS_VULKAN_FIXED_CONSTANT_SHADER_CPP
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/vulkan_fixed_constant_shader.cpp")
+    add_custom_command(
+        OUTPUT "${LDCOMPRESS_VULKAN_FIXED_CONSTANT_SHADER}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${CMAKE_CURRENT_BINARY_DIR}/shaders"
+        COMMAND "${LDCOMPRESS_GLSLANG_VALIDATOR}" -V
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan_fixed_constant.comp"
+            -o "${LDCOMPRESS_VULKAN_FIXED_CONSTANT_SHADER}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan_fixed_constant.comp"
+        VERBATIM
+    )
+    add_custom_command(
+        OUTPUT "${LDCOMPRESS_VULKAN_FIXED_CONSTANT_SHADER_CPP}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${CMAKE_CURRENT_BINARY_DIR}/generated"
+        COMMAND ${CMAKE_COMMAND}
+            -DINPUT=${LDCOMPRESS_VULKAN_FIXED_CONSTANT_SHADER}
+            -DOUTPUT=${LDCOMPRESS_VULKAN_FIXED_CONSTANT_SHADER_CPP}
+            -DFUNCTION_NAME=fixed_constant_shader_spirv
+            -DARRAY_NAME=kVulkanFixedConstantShaderSpirv
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake"
+        DEPENDS
+            "${LDCOMPRESS_VULKAN_FIXED_CONSTANT_SHADER}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake"
+        VERBATIM
+    )
+    set_source_files_properties(
+        "${LDCOMPRESS_VULKAN_FIXED_CONSTANT_SHADER_CPP}"
+        PROPERTIES GENERATED TRUE
+    )
+    target_sources(ldcompress_core
+        PRIVATE
+            "${LDCOMPRESS_VULKAN_FIXED_CONSTANT_SHADER_CPP}"
     )
 
     set(LDCOMPRESS_VULKAN_SMOKE_SHADER
@@ -269,6 +309,25 @@ if(BUILD_TESTING)
 
     add_test(NAME vulkan_smoke COMMAND ${vulkan_smoke_command})
     set_tests_properties(vulkan_smoke PROPERTIES LABELS vulkan)
+
+    add_executable(test_vulkan_analysis
+        tests/test_vulkan_analysis.cpp
+    )
+
+    target_link_libraries(test_vulkan_analysis
+        PRIVATE
+            ldcompress_core
+    )
+
+    set(vulkan_analysis_command test_vulkan_analysis)
+    if(LDCOMPRESS_HAVE_VULKAN AND NOT "${LDCOMPRESS_VULKAN_TEST_DEVICE}" STREQUAL "")
+        list(APPEND vulkan_analysis_command
+            --device "${LDCOMPRESS_VULKAN_TEST_DEVICE}"
+        )
+    endif()
+
+    add_test(NAME vulkan_analysis COMMAND ${vulkan_analysis_command})
+    set_tests_properties(vulkan_analysis PROPERTIES LABELS vulkan)
 
     add_executable(compare_opencl_scalar_frames
         tests/compare_opencl_scalar_frames.cpp

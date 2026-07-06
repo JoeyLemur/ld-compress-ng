@@ -9,7 +9,8 @@ The default CPU backend writes Ogg FLAC `.ldf` files with system `libFLAC` and
 `libogg`. The native scalar and OpenCL backends write native FLAC `.flac.ldf`
 files. CPU, scalar native, and OpenCL compression paths are ready for normal
 use; OpenCL just requires a build and runtime environment with a usable OpenCL
-device.
+device. The Vulkan backend is in 1.1 development and currently supports a
+fixed/Rice-only compression path with `--lpc-order 0`.
 
 `ld-compress-ng` does not depend at runtime on Qt, ffmpeg, `.NET`, Mono, FlaLDF,
 OpenSSL, or `ld-lds-converter`.
@@ -30,7 +31,7 @@ Requirements:
 - Optional OpenCL headers and loader/framework for `devices` and
   `--backend opencl`.
 - Optional Vulkan headers, loader, and `glslangValidator` for Vulkan device
-  enumeration and the in-development Vulkan backend.
+  enumeration and the in-development fixed/Rice Vulkan backend.
 
 ### Linux
 
@@ -66,8 +67,9 @@ Arch.
 
 For the in-development Vulkan backend, install Vulkan development headers, the
 loader, `glslangValidator`, and a vendor Vulkan runtime. Current 1.1 work uses
-Vulkan for Linux-first compute acceleration; compression support is not complete
-yet.
+Vulkan for Linux-first compute acceleration; the current backend supports
+`--backend vulkan --lpc-order 0` and requires a compute-capable device with
+`shaderInt64`.
 
 ### macOS
 
@@ -132,7 +134,7 @@ build/ld-compress-ng decompress --overwrite capture.ldf capture.lds
 | `cpu` | Ogg FLAC `.ldf` | Default, portable, uses system `libFLAC`/`libogg`; supports `--level`. |
 | `native-fixed` | Native FLAC `.flac.ldf` | Scalar native encoder with fixed/LPC prediction, Rice coding, threading, and tuning controls. |
 | `opencl` | Native FLAC `.flac.ldf` | GPU-assisted native encoder; list devices with `devices`, select one with `--device INDEX`. |
-| `vulkan` | Native FLAC `.flac.ldf` | 1.1 development backend; device enumeration is wired, compression is not implemented yet. |
+| `vulkan` | Native FLAC `.flac.ldf` | 1.1 development backend; currently fixed/Rice-only with `--lpc-order 0`. |
 | `native-verbatim` | Native FLAC `.flac.ldf` | Compatibility/debug path using verbatim FLAC frames. |
 
 Use the scalar native backend:
@@ -146,6 +148,13 @@ Use OpenCL:
 ```sh
 build/ld-compress-ng devices
 build/ld-compress-ng compress --backend opencl --device 0 capture.lds
+```
+
+Use the current Vulkan fixed/Rice path:
+
+```sh
+build/ld-compress-ng devices
+build/ld-compress-ng compress --backend vulkan --lpc-order 0 --device 0 capture.lds
 ```
 
 ## Advanced Usage
@@ -178,6 +187,7 @@ Native tuning defaults are `--frame-samples 4608`, `--lpc-order 12`,
 `--lpc-precision 12`, `--rice-partition-order 5`, and `--threads 1`; the
 defaults are the recommended settings for normal use. The OpenCL backend uses
 the same native FLAC tuning controls, but currently requires `--threads 1`.
+The Vulkan backend currently requires `--threads 1` and `--lpc-order 0`.
 
 Use explicit native FLAC tuning controls when you are comparing size/speed
 tradeoffs:
