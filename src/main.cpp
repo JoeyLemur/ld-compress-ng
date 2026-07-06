@@ -100,7 +100,7 @@ struct Options {
         << "  cpu              Default portable Ogg FLAC .ldf backend using libFLAC/libogg.\n"
         << "  native-fixed     Native FLAC .flac.ldf backend with scalar fixed/LPC prediction.\n"
         << "  opencl           Native FLAC .flac.ldf backend using the selected OpenCL device.\n"
-        << "  vulkan           Native FLAC .flac.ldf backend using Vulkan; fixed-only for now.\n"
+        << "  vulkan           Native FLAC .flac.ldf backend using Vulkan compute.\n"
         << "  native-verbatim  Native FLAC .flac.ldf compatibility/debug backend.\n\n"
         << "Compress options:\n"
         << "  --backend cpu|native-verbatim|native-fixed|opencl|vulkan\n"

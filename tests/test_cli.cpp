@@ -228,9 +228,10 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_opencl_container = temp_dir / "fixture.bad-opencl-container.ldf";
     const auto vulkan_output = temp_dir / "fixture.vulkan.flac.ldf";
     const auto vulkan_output_out = temp_dir / "fixture.vulkan.out.lds";
+    const auto vulkan_fixed_only = temp_dir / "fixture.vulkan-fixed-only.flac.ldf";
+    const auto vulkan_fixed_only_out = temp_dir / "fixture.vulkan-fixed-only.out.lds";
     const auto empty_vulkan = temp_dir / "empty.vulkan.flac.ldf";
     const auto empty_vulkan_out = temp_dir / "empty.vulkan.out.lds";
-    const auto bad_vulkan_lpc_order = temp_dir / "fixture.bad-vulkan-lpc-order.flac.ldf";
     const auto bad_vulkan_threads = temp_dir / "fixture.bad-vulkan-threads.flac.ldf";
     const auto bad_vulkan_opencl_device = temp_dir / "fixture.bad-vulkan-opencl-device.flac.ldf";
     const auto bad_vulkan_device = temp_dir / "fixture.bad-vulkan-device.flac.ldf";
@@ -441,13 +442,14 @@ void test_cli(const std::filesystem::path& exe)
     const auto vulkan_device_index = first_available_vulkan_analysis_device_index();
     if (vulkan_device_index.has_value()) {
         const auto vulkan_device_arg = " --device " + std::to_string(*vulkan_device_index);
-        run_fails(shell_quote(exe) + " compress --backend vulkan" + vulkan_device_arg + " " + shell_quote(lds) + " " + shell_quote(bad_vulkan_lpc_order));
-        require(!std::filesystem::exists(bad_vulkan_lpc_order),
-            "Vulkan default LPC-order rejection wrote output");
-        run_ok(shell_quote(exe) + " compress --backend vulkan --lpc-order 0" + vulkan_device_arg + " " + shell_quote(lds) + " " + shell_quote(vulkan_output));
+        run_ok(shell_quote(exe) + " compress --backend vulkan" + vulkan_device_arg + " " + shell_quote(lds) + " " + shell_quote(vulkan_output));
         run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(vulkan_output));
         run_ok(shell_quote(exe) + " decompress " + shell_quote(vulkan_output) + " " + shell_quote(vulkan_output_out));
-        require(read_file(vulkan_output_out) == fixture, "Vulkan fixed-only FLAC round trip changed LDS bytes");
+        require(read_file(vulkan_output_out) == fixture, "Vulkan FLAC round trip changed LDS bytes");
+        run_ok(shell_quote(exe) + " compress --backend vulkan --lpc-order 0" + vulkan_device_arg + " " + shell_quote(lds) + " " + shell_quote(vulkan_fixed_only));
+        run_ok(shell_quote(exe) + " decompress " + shell_quote(vulkan_fixed_only) + " " + shell_quote(vulkan_fixed_only_out));
+        require(read_file(vulkan_fixed_only_out) == fixture,
+            "Vulkan fixed-only FLAC round trip changed LDS bytes");
         run_ok(shell_quote(exe) + " compress --backend vulkan --lpc-order 0" + vulkan_device_arg + " " + shell_quote(empty_lds) + " " + shell_quote(empty_vulkan));
         run_ok(shell_quote(exe) + " verify --source " + shell_quote(empty_lds) + " " + shell_quote(empty_vulkan));
         run_ok(shell_quote(exe) + " decompress " + shell_quote(empty_vulkan) + " " + shell_quote(empty_vulkan_out));

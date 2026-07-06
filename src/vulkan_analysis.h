@@ -15,4 +15,10 @@ opencl_detail::OpenClMonoFixedConstantAnalysisResult run_vulkan_mono_fixed_const
     std::optional<std::size_t> requested_device_index = std::nullopt,
     unsigned max_rice_partition_order = 5);
 
+opencl_detail::OpenClMonoFixedConstantAnalysisResult run_vulkan_mono_lpc_analysis(
+    const std::vector<std::int32_t>& samples,
+    const opencl_detail::OpenClMonoAnalysisTaskPlan& plan,
+    std::optional<std::size_t> requested_device_index = std::nullopt,
+    unsigned max_rice_partition_order = 5);
+
 }  // namespace ldcompress::vulkan_detail

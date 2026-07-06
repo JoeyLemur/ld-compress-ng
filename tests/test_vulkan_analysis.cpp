@@ -1,10 +1,12 @@
 #include "opencl_analysis.h"
+#include "flac_native_writer.h"
 #include "vulkan_analysis.h"
 #include "vulkan_devices.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -97,6 +99,21 @@ void require_task_matches_task(
     require(actual.data.size == expected.data.size, label);
 }
 
+void require_lpc_task_matches(
+    const ldcompress::opencl_detail::FlacClSubframeTask& actual,
+    const ldcompress::opencl_detail::FlacClSubframeTask& expected,
+    const char* label)
+{
+    require_task_matches_task(actual, expected, label);
+    require(actual.data.shift == expected.data.shift, label);
+    require(actual.data.cbits == expected.data.cbits, label);
+    for (int i = 0; i < expected.data.residualOrder; ++i) {
+        require(actual.coefs[static_cast<std::size_t>(i)] ==
+                expected.coefs[static_cast<std::size_t>(i)],
+            label);
+    }
+}
+
 void require_analysis_matches(
     const ldcompress::opencl_detail::OpenClMonoFixedConstantAnalysisResult& actual,
     const ldcompress::opencl_detail::OpenClMonoFixedConstantAnalysisResult& expected,
@@ -111,6 +128,32 @@ void require_analysis_matches(
     for (std::size_t i = 0; i < expected.best_tasks.size(); ++i) {
         require_task_matches_task(actual.best_tasks[i], expected.best_tasks[i], label);
     }
+}
+
+std::vector<std::int32_t> make_lpc_friendly_samples()
+{
+    std::vector<std::int32_t> samples;
+    samples.reserve(512);
+    for (int i = 0; i < 512; ++i) {
+        const auto sample =
+            ((i * 448) + ((i % 17) * 384) - ((i % 5) * 512)) % 32768;
+        samples.push_back(static_cast<std::int32_t>(
+            (sample - 16384) & ~std::int32_t {63}));
+    }
+    return samples;
+}
+
+std::vector<std::int32_t> make_lpc_friendly_alternate_samples()
+{
+    std::vector<std::int32_t> samples;
+    samples.reserve(512);
+    for (int i = 0; i < 512; ++i) {
+        const auto sample =
+            ((i * 704) + ((i % 23) * 256) + ((i % 7) * 640)) % 32768;
+        samples.push_back(static_cast<std::int32_t>(
+            (sample - 16384) & ~std::int32_t {63}));
+    }
+    return samples;
 }
 
 std::vector<std::int32_t> make_fixed_constant_samples()
@@ -133,6 +176,65 @@ std::vector<std::int32_t> make_fixed_constant_samples()
     };
     samples.insert(samples.end(), partitioned.begin(), partitioned.end());
     return samples;
+}
+
+ldcompress::opencl_detail::OpenClMonoAnalysisTaskPlan make_single_lpc_task_plan(
+    const ldcompress::opencl_detail::FlacClSubframeTask& task)
+{
+    ldcompress::opencl_detail::OpenClMonoAnalysisTaskPlan plan;
+    plan.residual_tasks.push_back(task);
+    plan.selected_tasks.push_back(0);
+    plan.residual_tasks_per_frame = 1;
+    plan.estimate_tasks_per_frame = 1;
+    return plan;
+}
+
+ldcompress::opencl_detail::OpenClMonoAnalysisTaskPlan make_lpc_order_task_plan(
+    const std::vector<std::int32_t>& samples,
+    std::size_t frame_count,
+    const ldcompress::opencl_detail::OpenClMonoAnalysisTaskOptions& options,
+    unsigned lpc_coefficient_precision,
+    unsigned max_rice_partition_order,
+    std::vector<ldcompress::opencl_detail::FlacClSubframeTask>& expected_tasks,
+    std::vector<ldcompress::opencl_detail::FlacClSubframeTask>& expected_best_tasks)
+{
+    using namespace ldcompress::opencl_detail;
+
+    OpenClMonoAnalysisTaskPlan plan;
+    plan.residual_tasks_per_frame = options.max_lpc_order;
+    plan.estimate_tasks_per_frame = options.max_lpc_order;
+
+    for (std::size_t frame = 0; frame < frame_count; ++frame) {
+        const auto frame_task_base = plan.residual_tasks.size();
+        auto best_index = expected_tasks.size();
+        auto best_size = std::numeric_limits<std::int32_t>::max();
+        for (unsigned order = 1; order <= options.max_lpc_order; ++order) {
+            const auto expected = analyze_mono_lpc_exact_task(
+                samples, frame, options, order, lpc_coefficient_precision,
+                max_rice_partition_order);
+            require(expected.has_value(), "scalar exact LPC per-order task was not produced");
+
+            auto input = *expected;
+            input.data.size = 16 * static_cast<int>(options.frame_samples);
+            input.data.abits = 0;
+            input.data.porder = 0;
+
+            if (expected->data.size < best_size) {
+                best_index = expected_tasks.size();
+                best_size = expected->data.size;
+            }
+
+            plan.residual_tasks.push_back(input);
+            expected_tasks.push_back(*expected);
+        }
+
+        for (std::size_t i = 0; i < plan.estimate_tasks_per_frame; ++i) {
+            plan.selected_tasks.push_back(static_cast<std::int32_t>(frame_task_base + i));
+        }
+        expected_best_tasks.push_back(expected_tasks.at(best_index));
+    }
+
+    return plan;
 }
 
 void test_vulkan_fixed_constant_analysis(const Options& options)
@@ -197,12 +299,102 @@ void test_vulkan_fixed_constant_analysis(const Options& options)
         "Vulkan exact partition search did not improve fixed task size");
 }
 
+void test_vulkan_lpc_analysis(const Options& options)
+{
+    using namespace ldcompress::opencl_detail;
+
+    if (!ldcompress::vulkan_support_built()) {
+        std::cout << "Vulkan LPC analysis skipped: Vulkan support was not built\n";
+        return;
+    }
+
+    const auto device_index =
+        first_available_vulkan_analysis_device_index(options.device_index);
+    if (!device_index.has_value()) {
+        std::cout << "Vulkan LPC analysis skipped: no suitable Vulkan device\n";
+        return;
+    }
+
+    OpenClMonoAnalysisTaskOptions task_options;
+    task_options.frame_samples = 512;
+    task_options.max_lpc_order = 12;
+    task_options.include_constant = false;
+    task_options.min_fixed_order = 0;
+    task_options.max_fixed_order = 4;
+
+    const auto samples = make_lpc_friendly_samples();
+    const ldcompress::FlacFrameInfo frame_info {
+        .frame_number = 0,
+        .sample_rate = 40000,
+        .bits_per_sample = 16,
+        .max_lpc_order = 12,
+        .lpc_coefficient_precision = 12,
+        .max_rice_partition_order = 5,
+    };
+    const auto best_lpc = ldcompress::analyze_mono_lpc_frame(samples, frame_info);
+    require(best_lpc.has_value(), "native LPC analysis did not return a candidate for Vulkan test");
+    const auto expected_task = analyze_mono_lpc_exact_task(
+        samples, 0, task_options, best_lpc->order, 12, 5);
+    require(expected_task.has_value(),
+        "scalar exact LPC task analysis did not return a task for Vulkan test");
+
+    auto input_task = *expected_task;
+    input_task.data.size = 16 * 512;
+    input_task.data.abits = 0;
+    input_task.data.porder = 0;
+
+    auto single_plan = make_single_lpc_task_plan(input_task);
+    const auto single_result = ldcompress::vulkan_detail::run_vulkan_mono_lpc_analysis(
+        samples, single_plan, device_index, 5);
+    require(!single_result.device_name.empty(),
+        "Vulkan LPC result did not report a device");
+    require_lpc_task_matches(single_result.analyzed_tasks[0], *expected_task,
+        "Vulkan exact LPC analyzed task diverged from scalar oracle");
+    require_lpc_task_matches(single_result.best_tasks[0], *expected_task,
+        "Vulkan exact LPC best task diverged from scalar oracle");
+
+    const auto expected_unpartitioned = analyze_mono_lpc_exact_task(
+        samples, 0, task_options, best_lpc->order, 12, 0);
+    require(expected_unpartitioned.has_value(),
+        "scalar exact LPC task did not return unpartitioned result");
+    const auto unpartitioned_result = ldcompress::vulkan_detail::run_vulkan_mono_lpc_analysis(
+        samples, single_plan, device_index, 0);
+    require_lpc_task_matches(unpartitioned_result.best_tasks[0], *expected_unpartitioned,
+        "Vulkan exact LPC task did not honor max partition order 0");
+
+    auto two_frame_samples = samples;
+    const auto alternate = make_lpc_friendly_alternate_samples();
+    two_frame_samples.insert(two_frame_samples.end(), alternate.begin(), alternate.end());
+
+    std::vector<FlacClSubframeTask> expected_tasks;
+    std::vector<FlacClSubframeTask> expected_best_tasks;
+    const auto multi_plan = make_lpc_order_task_plan(
+        two_frame_samples, 2, task_options, 12, 5, expected_tasks, expected_best_tasks);
+
+    const auto multi_result = ldcompress::vulkan_detail::run_vulkan_mono_lpc_analysis(
+        two_frame_samples, multi_plan, device_index, 5);
+    require(multi_result.analyzed_tasks.size() == expected_tasks.size(),
+        "Vulkan LPC multi-order analyzed task count mismatch");
+    require(multi_result.best_tasks.size() == expected_best_tasks.size(),
+        "Vulkan LPC multi-order best task count mismatch");
+    for (std::size_t i = 0; i < expected_tasks.size(); ++i) {
+        require_lpc_task_matches(multi_result.analyzed_tasks[i], expected_tasks[i],
+            "Vulkan exact LPC multi-order analyzed task diverged from scalar oracle");
+    }
+    for (std::size_t i = 0; i < expected_best_tasks.size(); ++i) {
+        require_lpc_task_matches(multi_result.best_tasks[i], expected_best_tasks[i],
+            "Vulkan exact LPC multi-order best task diverged from scalar oracle");
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
 {
     try {
-        test_vulkan_fixed_constant_analysis(parse_args(argc, argv));
+        const auto options = parse_args(argc, argv);
+        test_vulkan_fixed_constant_analysis(options);
+        test_vulkan_lpc_analysis(options);
     } catch (const std::exception& ex) {
         std::cerr << "test_vulkan_analysis: " << ex.what() << '\n';
         return 1;

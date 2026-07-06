@@ -117,10 +117,21 @@ void validate_sample_range(std::int32_t sample, unsigned bits_per_sample)
     }
 }
 
-void validate_fixed_constant_analysis_inputs(
+bool signed_value_fits_bits(std::int32_t value, unsigned bits)
+{
+    if (bits == 0 || bits > 31) {
+        return false;
+    }
+    const auto min_value = -(std::int64_t {1} << (bits - 1U));
+    const auto max_value = (std::int64_t {1} << (bits - 1U)) - 1;
+    return value >= min_value && value <= max_value;
+}
+
+void validate_vulkan_exact_analysis_inputs(
     const std::vector<std::int32_t>& samples,
     const OpenClMonoAnalysisTaskPlan& plan,
-    unsigned max_rice_partition_order)
+    unsigned max_rice_partition_order,
+    bool allow_lpc)
 {
     validate_best_method_plan(plan);
     if (max_rice_partition_order > kVulkanExactMaxRicePartitionOrder) {
@@ -133,32 +144,55 @@ void validate_fixed_constant_analysis_inputs(
 
     for (const auto& task : plan.residual_tasks) {
         if (task.data.type != opencl_detail::kFlacClSubframeConstant &&
-            task.data.type != opencl_detail::kFlacClSubframeFixed) {
-            throw std::runtime_error("Vulkan mono fixed/constant analysis received non-fixed task");
+            task.data.type != opencl_detail::kFlacClSubframeFixed &&
+            (!allow_lpc ||
+                (task.data.type != opencl_detail::kFlacClSubframeLpc &&
+                 task.data.type != opencl_detail::kFlacClSubframeVerbatim))) {
+            throw std::runtime_error("Vulkan mono analysis received unsupported task type");
         }
         if (task.data.type == opencl_detail::kFlacClSubframeFixed &&
             (task.data.residualOrder < 0 || task.data.residualOrder > 4)) {
-            throw std::runtime_error("Vulkan mono fixed/constant analysis received invalid fixed order");
+            throw std::runtime_error("Vulkan mono analysis received invalid fixed order");
+        }
+        if (task.data.type == opencl_detail::kFlacClSubframeLpc &&
+            (task.data.residualOrder <= 0 ||
+                task.data.residualOrder > static_cast<std::int32_t>(opencl_detail::kFlacClMaxOrder))) {
+            throw std::runtime_error("Vulkan mono analysis received invalid LPC order");
         }
         if (task.data.obits != static_cast<std::int32_t>(kVulkanAnalysisBitsPerSample)) {
-            throw std::runtime_error("Vulkan mono fixed/constant analysis currently supports 16-bit tasks only");
+            throw std::runtime_error("Vulkan mono analysis currently supports 16-bit tasks only");
         }
         if (task.data.blocksize <= 0 ||
             static_cast<std::size_t>(task.data.blocksize) > kVulkanAnalysisMaxBlockSize) {
-            throw std::runtime_error("Vulkan mono fixed/constant analysis block size is unsupported");
+            throw std::runtime_error("Vulkan mono analysis block size is unsupported");
         }
-        if (task.data.type == opencl_detail::kFlacClSubframeFixed &&
+        if ((task.data.type == opencl_detail::kFlacClSubframeFixed ||
+                task.data.type == opencl_detail::kFlacClSubframeLpc) &&
             task.data.residualOrder >= task.data.blocksize) {
-            throw std::runtime_error("Vulkan mono fixed/constant analysis fixed order exceeds block size");
+            throw std::runtime_error("Vulkan mono analysis predictor order exceeds block size");
         }
         if (task.data.samplesOffs < 0 ||
             static_cast<std::size_t>(task.data.samplesOffs) > samples.size() ||
             static_cast<std::size_t>(task.data.blocksize) >
                 samples.size() - static_cast<std::size_t>(task.data.samplesOffs)) {
-            throw std::runtime_error("Vulkan mono fixed/constant analysis task samples are out of range");
+            throw std::runtime_error("Vulkan mono analysis task samples are out of range");
         }
-        if (task.data.shift < 0 || task.data.shift > 30) {
-            throw std::runtime_error("Vulkan mono fixed/constant analysis task shift is unsupported");
+        if (task.data.type == opencl_detail::kFlacClSubframeLpc) {
+            if (task.data.shift < 0 || task.data.shift > 15) {
+                throw std::runtime_error("Vulkan mono analysis LPC task shift is unsupported");
+            }
+            if (task.data.cbits <= 0 || task.data.cbits > 15) {
+                throw std::runtime_error("Vulkan mono analysis LPC coefficient precision is unsupported");
+            }
+            for (int i = 0; i < task.data.residualOrder; ++i) {
+                if (!signed_value_fits_bits(
+                        task.coefs[static_cast<std::size_t>(i)],
+                        static_cast<unsigned>(task.data.cbits))) {
+                    throw std::runtime_error("Vulkan mono analysis LPC coefficient does not fit precision");
+                }
+            }
+        } else if (task.data.shift < 0 || task.data.shift > 30) {
+            throw std::runtime_error("Vulkan mono analysis task shift is unsupported");
         }
     }
 }
@@ -542,13 +576,14 @@ std::uint32_t dispatch_groups(std::uint32_t items)
 
 }  // namespace
 
-OpenClMonoFixedConstantAnalysisResult run_vulkan_mono_fixed_constant_analysis(
+OpenClMonoFixedConstantAnalysisResult run_vulkan_mono_exact_analysis(
     const std::vector<std::int32_t>& samples,
     const OpenClMonoAnalysisTaskPlan& plan,
     std::optional<std::size_t> requested_device_index,
-    unsigned max_rice_partition_order)
+    unsigned max_rice_partition_order,
+    bool allow_lpc)
 {
-    validate_fixed_constant_analysis_inputs(samples, plan, max_rice_partition_order);
+    validate_vulkan_exact_analysis_inputs(samples, plan, max_rice_partition_order, allow_lpc);
 
 #if LDCOMPRESS_HAVE_VULKAN
     if (!vulkan_support_built()) {
@@ -970,6 +1005,26 @@ OpenClMonoFixedConstantAnalysisResult run_vulkan_mono_fixed_constant_analysis(
     (void)max_rice_partition_order;
     throw std::runtime_error("Vulkan support was not built");
 #endif
+}
+
+OpenClMonoFixedConstantAnalysisResult run_vulkan_mono_fixed_constant_analysis(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    std::optional<std::size_t> requested_device_index,
+    unsigned max_rice_partition_order)
+{
+    return run_vulkan_mono_exact_analysis(
+        samples, plan, requested_device_index, max_rice_partition_order, false);
+}
+
+OpenClMonoFixedConstantAnalysisResult run_vulkan_mono_lpc_analysis(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    std::optional<std::size_t> requested_device_index,
+    unsigned max_rice_partition_order)
+{
+    return run_vulkan_mono_exact_analysis(
+        samples, plan, requested_device_index, max_rice_partition_order, true);
 }
 
 }  // namespace ldcompress::vulkan_detail

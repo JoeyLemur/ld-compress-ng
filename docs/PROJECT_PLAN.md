@@ -301,38 +301,38 @@ Implemented for the first 1.1 checkpoint:
 - `ld-compress-ng devices` now reports grouped OpenCL and Vulkan sections,
   including `shaderInt64` availability for the exact-cost Vulkan analysis path.
 - The CLI recognizes `--backend vulkan`, `--device`, and `--vulkan-device`.
-  Vulkan compression now has its first bounded implementation:
-  `--backend vulkan --lpc-order 0` runs fixed/Rice analysis on Vulkan compute
-  and writes selected native FLAC subframes through the shared accelerated host
-  flow.
+  Vulkan compression now writes compatible native FLAC. `--lpc-order 0` runs
+  fixed/Rice analysis on Vulkan compute, and the default path exact-costs
+  scalar-generated LPC tasks on Vulkan before writing selected subframes through
+  the shared accelerated host flow.
 - `test_vulkan_devices` covers disabled-build behavior and runtime device
   selection when Vulkan support is built.
 - A CMake-built GLSL-to-SPIR-V compute smoke shader and `test_vulkan_smoke`
   exercise Vulkan instance/device setup, storage buffers, descriptor binding,
   compute pipeline creation, command submission, and host readback.
-- A CMake-built, embedded GLSL-to-SPIR-V fixed/constant analysis shader and
-  `test_vulkan_analysis` compare Vulkan exact fixed/Rice costing against the
-  scalar task oracle, including Rice partition search and partition-order limit
-  behavior.
+- A CMake-built, embedded GLSL-to-SPIR-V exact analysis shader and
+  `test_vulkan_analysis` compare Vulkan fixed/Rice and pre-populated LPC costing
+  against the scalar task oracle, including Rice partition search and
+  partition-order limit behavior.
 - The OpenCL native-FLAC backend now uses a shared accelerated native-FLAC host
   flow for LDS scanning, STREAMINFO/PCM MD5 generation, frame batching, selected
   native-subframe writing, scalar tail fallback, and native stats. OpenCL owns
   only OpenCL validation/device selection and the batch analyzer callback, giving
   Vulkan a matching plug-in point.
-- The Vulkan fixed/Rice backend is wired through that shared host flow for
-  `--lpc-order 0`, including selected-subframe handoff, `verify --source`
-  compatibility, and clean rejection of nonzero LPC orders for now.
+- The Vulkan backend is wired through that shared host flow, including
+  selected-subframe handoff, `verify --source` compatibility, fixed/Rice
+  diagnostics through `--lpc-order 0`, and default LPC-enabled compression.
 - The local validation matrix helper has a `no-vulkan` lane for optional-build
   regression coverage.
 
 Remaining Vulkan work:
 
-- Extend analysis beyond the current fixed/Rice `--lpc-order 0` path: LPC
-  candidate evaluation, generated LPC/window/autocorrelation, and then broader
-  compression quality comparisons against scalar/OpenCL.
+- Move generated LPC/window/autocorrelation work onto Vulkan instead of using
+  scalar-generated LPC tasks, then compare broader compression quality against
+  scalar/OpenCL.
 - Improve Vulkan buffer placement and batching after correctness is in place;
-  the current exact path uses host-visible buffers and one serial frame analysis
-  invocation per frame as a correctness milestone, not the final throughput
+  the current exact path uses host-visible buffers and one simple analysis
+  invocation per task as a correctness milestone, not the final throughput
   design.
 - Add Vulkan real-fixture compatibility and matrix lanes now that the backend
   can produce valid `.flac.ldf` output.
