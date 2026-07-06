@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <iosfwd>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace ldcompress {
@@ -117,6 +118,12 @@ FlacSubframeDecision write_mono_fixed_rice_frame(
 FlacSubframeDecision write_mono_selected_frame(
     std::ostream& output,
     const std::vector<std::int32_t>& samples,
+    const FlacFrameInfo& info,
+    const FlacSelectedSubframe& selected);
+
+FlacSubframeDecision write_mono_selected_frame(
+    std::ostream& output,
+    std::span<const std::int32_t> samples,
     const FlacFrameInfo& info,
     const FlacSelectedSubframe& selected);
 

@@ -10,6 +10,7 @@
 #include <fstream>
 #include <istream>
 #include <ostream>
+#include <span>
 #include <stdexcept>
 #include <vector>
 
@@ -212,9 +213,9 @@ void write_accelerated_selected_batch(
     const auto write_started = Clock::now();
     for (std::size_t frame = 0; frame < frame_count; ++frame) {
         const auto offset = frame * static_cast<std::size_t>(options.frame_samples);
-        const std::vector<std::int32_t> frame_samples(
-            batch_samples.begin() + static_cast<std::ptrdiff_t>(offset),
-            batch_samples.begin() + static_cast<std::ptrdiff_t>(offset + options.frame_samples));
+        const std::span<const std::int32_t> frame_samples(
+            batch_samples.data() + offset,
+            static_cast<std::size_t>(options.frame_samples));
         auto frame_info = make_frame_info(first_frame_number + frame, options);
         const auto decision = write_mono_selected_frame(
             output, frame_samples, frame_info, analysis.selected_subframes[frame]);
@@ -279,10 +280,10 @@ ConversionStats compress_lds_to_accelerated_native_flac(
 
     write_native_flac_streaminfo(output, streaminfo);
 
-    std::vector<std::int32_t> frame_samples;
-    frame_samples.reserve(options.frame_samples);
     std::vector<std::int32_t> batch_samples;
-    batch_samples.reserve(static_cast<std::size_t>(options.frame_samples) * options.batch_frames);
+    const auto frame_sample_count = static_cast<std::size_t>(options.frame_samples);
+    const auto batch_sample_count = frame_sample_count * options.batch_frames;
+    batch_samples.reserve(batch_sample_count);
     std::uint64_t frame_number = 0;
 
     const auto flush_batch = [&] {
@@ -290,27 +291,34 @@ ConversionStats compress_lds_to_accelerated_native_flac(
             return;
         }
         const auto batch_first_frame =
-            frame_number - (batch_samples.size() / options.frame_samples);
+            frame_number - (batch_samples.size() / frame_sample_count);
         write_accelerated_selected_batch(
             output, batch_samples, batch_first_frame, options, analyzer);
         batch_samples.clear();
     };
 
     const auto encoded_stats = process_lds_samples(lds_input, [&](std::int16_t sample) {
-        frame_samples.push_back(sample);
-        if (frame_samples.size() == options.frame_samples) {
-            batch_samples.insert(batch_samples.end(), frame_samples.begin(), frame_samples.end());
+        batch_samples.push_back(sample);
+        if ((batch_samples.size() % frame_sample_count) == 0) {
             ++frame_number;
-            frame_samples.clear();
-            if ((batch_samples.size() / options.frame_samples) == options.batch_frames) {
+            if (batch_samples.size() == batch_sample_count) {
                 flush_batch();
             }
         }
     });
 
+    std::vector<std::int32_t> tail_samples;
+    const auto complete_sample_count =
+        (batch_samples.size() / frame_sample_count) * frame_sample_count;
+    if (complete_sample_count < batch_samples.size()) {
+        tail_samples.assign(
+            batch_samples.begin() + static_cast<std::ptrdiff_t>(complete_sample_count),
+            batch_samples.end());
+        batch_samples.resize(complete_sample_count);
+    }
     flush_batch();
-    if (!frame_samples.empty()) {
-        write_native_tail_frame(output, frame_samples, frame_number, options);
+    if (!tail_samples.empty()) {
+        write_native_tail_frame(output, tail_samples, frame_number, options);
         ++frame_number;
     }
 

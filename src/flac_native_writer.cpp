@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <limits>
 #include <ostream>
+#include <span>
 #include <stdexcept>
 #include <utility>
 
@@ -20,6 +21,7 @@ constexpr unsigned kMaxLpcOrder = 12;
 constexpr unsigned kWelchLpcCandidateTargetCount = 2;
 constexpr unsigned kMinLpcBlockSize = 256;
 constexpr double kPi = 3.14159265358979323846264338327950288;
+using SampleSpan = std::span<const std::int32_t>;
 
 void write_byte(std::ostream& output, std::uint8_t byte)
 {
@@ -172,7 +174,7 @@ void validate_sample(std::int32_t sample, unsigned bits_per_sample)
 }
 
 std::int64_t fixed_prediction_residual(
-    const std::vector<std::int32_t>& samples,
+    SampleSpan samples,
     std::size_t index,
     unsigned order)
 {
@@ -206,7 +208,7 @@ std::uint64_t fold_signed_residual(std::int64_t residual)
 }
 
 std::vector<std::int64_t> fixed_residuals(
-    const std::vector<std::int32_t>& samples,
+    SampleSpan samples,
     unsigned order)
 {
     std::vector<std::int64_t> residuals;
@@ -321,7 +323,7 @@ struct QuantizedLpcCoefficients {
     std::vector<std::int32_t> coefficients;
 };
 
-bool all_samples_equal(const std::vector<std::int32_t>& samples)
+bool all_samples_equal(SampleSpan samples)
 {
     return std::all_of(samples.begin(), samples.end(), [&](std::int32_t sample) {
         return sample == samples.front();
@@ -407,7 +409,7 @@ unsigned sample_trailing_zero_bits(std::int32_t sample, unsigned bits_per_sample
 }
 
 unsigned common_wasted_bits(
-    const std::vector<std::int32_t>& samples,
+    SampleSpan samples,
     unsigned bits_per_sample)
 {
     unsigned wasted_bits = bits_per_sample;
@@ -422,13 +424,13 @@ unsigned common_wasted_bits(
 }
 
 std::vector<std::int32_t> shift_samples(
-    const std::vector<std::int32_t>& samples,
+    SampleSpan samples,
     unsigned wasted_bits)
 {
     std::vector<std::int32_t> shifted;
     shifted.reserve(samples.size());
     if (wasted_bits == 0) {
-        shifted = samples;
+        shifted.assign(samples.begin(), samples.end());
         return shifted;
     }
 
@@ -612,7 +614,7 @@ std::vector<double> autocorrelation_by_index(
 }
 
 std::vector<double> autocorrelation(
-    const std::vector<std::int32_t>& samples,
+    SampleSpan samples,
     unsigned max_order)
 {
     return autocorrelation_by_index(samples.size(), max_order, [&](std::size_t index) {
@@ -630,7 +632,7 @@ std::vector<double> autocorrelation(
 }
 
 std::vector<double> tukey_windowed_samples(
-    const std::vector<std::int32_t>& samples,
+    SampleSpan samples,
     double taper_fraction)
 {
     std::vector<double> windowed;
@@ -674,7 +676,7 @@ std::vector<double> tukey_windowed_samples(
     return windowed;
 }
 
-std::vector<double> welch_windowed_samples(const std::vector<std::int32_t>& samples)
+std::vector<double> welch_windowed_samples(SampleSpan samples)
 {
     std::vector<double> windowed;
     windowed.reserve(samples.size());
@@ -835,7 +837,7 @@ std::vector<QuantizedLpcCoefficients> quantize_lpc_coefficients(
 }
 
 std::vector<std::int64_t> lpc_residuals(
-    const std::vector<std::int32_t>& samples,
+    SampleSpan samples,
     const std::vector<std::int32_t>& coefficients,
     unsigned order,
     int quantization_shift)
@@ -856,7 +858,7 @@ std::vector<std::int64_t> lpc_residuals(
 }
 
 FixedRiceSubframe choose_fixed_rice_subframe(
-    const std::vector<std::int32_t>& samples,
+    SampleSpan samples,
     unsigned bits_per_sample,
     unsigned max_rice_partition_order)
 {
@@ -1045,7 +1047,7 @@ void consider_lpc_rice_order(
 }
 
 LpcRiceSubframe choose_lpc_rice_subframe_for_order(
-    const std::vector<std::int32_t>& samples,
+    SampleSpan samples,
     unsigned bits_per_sample,
     unsigned lpc_order,
     unsigned max_lpc_order,
@@ -1106,7 +1108,7 @@ LpcRiceSubframe choose_lpc_rice_subframe_for_order(
 }
 
 LpcRiceSubframe choose_lpc_rice_subframe(
-    const std::vector<std::int32_t>& samples,
+    SampleSpan samples,
     unsigned bits_per_sample,
     unsigned max_lpc_order,
     unsigned lpc_coefficient_precision,
@@ -1167,7 +1169,7 @@ LpcRiceSubframe choose_lpc_rice_subframe(
 }
 
 unsigned checked_selected_wasted_bits(
-    const std::vector<std::int32_t>& samples,
+    SampleSpan samples,
     unsigned bits_per_sample,
     unsigned selected_wasted_bits)
 {
@@ -1179,7 +1181,7 @@ unsigned checked_selected_wasted_bits(
 }
 
 FixedRiceSubframe make_selected_fixed_rice_subframe(
-    const std::vector<std::int32_t>& samples,
+    SampleSpan samples,
     const FlacFrameInfo& info,
     const FlacSelectedSubframe& selected)
 {
@@ -1223,7 +1225,7 @@ FixedRiceSubframe make_selected_fixed_rice_subframe(
 }
 
 LpcRiceSubframe make_selected_lpc_rice_subframe(
-    const std::vector<std::int32_t>& samples,
+    SampleSpan samples,
     const FlacFrameInfo& info,
     const FlacSelectedSubframe& selected)
 {
@@ -1452,6 +1454,69 @@ FlacSubframeDecision write_lpc_rice_frame(
     return lpc_rice_decision(subframe);
 }
 
+FlacSubframeDecision write_mono_verbatim_frame_impl(
+    std::ostream& output,
+    SampleSpan samples,
+    const FlacFrameInfo& info)
+{
+    if (samples.empty()) {
+        throw std::runtime_error("cannot write an empty FLAC frame");
+    }
+    for (const auto sample : samples) {
+        validate_sample(sample, info.bits_per_sample);
+    }
+
+    const auto wasted_bits = common_wasted_bits(samples, info.bits_per_sample);
+    const auto shifted_samples = shift_samples(samples, wasted_bits);
+    const auto effective_bits_per_sample = info.bits_per_sample - wasted_bits;
+
+    BitWriter frame_body;
+    write_subframe_header(frame_body, 1, wasted_bits);
+    for (const auto sample : shifted_samples) {
+        validate_sample(sample, effective_bits_per_sample);
+        frame_body.write_signed(sample, effective_bits_per_sample);
+    }
+    write_frame_with_body(output, samples.size(), info, frame_body);
+    return FlacSubframeDecision {
+        .kind = FlacSubframeKind::Verbatim,
+        .fixed_order = 0,
+        .rice_partition_order = 0,
+        .wasted_bits = wasted_bits,
+        .estimated_bits = verbatim_subframe_bits(
+            samples.size(), info.bits_per_sample, wasted_bits),
+    };
+}
+
+FlacSubframeDecision write_mono_constant_frame_impl(
+    std::ostream& output,
+    SampleSpan samples,
+    const FlacFrameInfo& info)
+{
+    if (samples.empty()) {
+        throw std::runtime_error("cannot write an empty FLAC frame");
+    }
+    if (!all_samples_equal(samples)) {
+        throw std::runtime_error("constant FLAC subframe received varying samples");
+    }
+    validate_sample(samples.front(), info.bits_per_sample);
+
+    const auto wasted_bits = common_wasted_bits(samples, info.bits_per_sample);
+    const auto shifted_samples = shift_samples(samples, wasted_bits);
+    const auto effective_bits_per_sample = info.bits_per_sample - wasted_bits;
+
+    BitWriter frame_body;
+    write_subframe_header(frame_body, 0, wasted_bits);
+    frame_body.write_signed(shifted_samples.front(), effective_bits_per_sample);
+    write_frame_with_body(output, samples.size(), info, frame_body);
+    return FlacSubframeDecision {
+        .kind = FlacSubframeKind::Constant,
+        .fixed_order = 0,
+        .rice_partition_order = 0,
+        .wasted_bits = wasted_bits,
+        .estimated_bits = constant_subframe_bits(info.bits_per_sample, wasted_bits),
+    };
+}
+
 }  // namespace
 
 void write_native_flac_streaminfo(std::ostream& output, const FlacStreamInfo& info)
@@ -1662,32 +1727,7 @@ FlacSubframeDecision write_mono_verbatim_frame(
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& info)
 {
-    if (samples.empty()) {
-        throw std::runtime_error("cannot write an empty FLAC frame");
-    }
-    for (const auto sample : samples) {
-        validate_sample(sample, info.bits_per_sample);
-    }
-
-    const auto wasted_bits = common_wasted_bits(samples, info.bits_per_sample);
-    const auto shifted_samples = shift_samples(samples, wasted_bits);
-    const auto effective_bits_per_sample = info.bits_per_sample - wasted_bits;
-
-    BitWriter frame_body;
-    write_subframe_header(frame_body, 1, wasted_bits);
-    for (const auto sample : shifted_samples) {
-        validate_sample(sample, effective_bits_per_sample);
-        frame_body.write_signed(sample, effective_bits_per_sample);
-    }
-    write_frame_with_body(output, samples.size(), info, frame_body);
-    return FlacSubframeDecision {
-        .kind = FlacSubframeKind::Verbatim,
-        .fixed_order = 0,
-        .rice_partition_order = 0,
-        .wasted_bits = wasted_bits,
-        .estimated_bits = verbatim_subframe_bits(
-            samples.size(), info.bits_per_sample, wasted_bits),
-    };
+    return write_mono_verbatim_frame_impl(output, samples, info);
 }
 
 FlacSubframeDecision write_mono_constant_frame(
@@ -1695,29 +1735,7 @@ FlacSubframeDecision write_mono_constant_frame(
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& info)
 {
-    if (samples.empty()) {
-        throw std::runtime_error("cannot write an empty FLAC frame");
-    }
-    if (!all_samples_equal(samples)) {
-        throw std::runtime_error("constant FLAC subframe received varying samples");
-    }
-    validate_sample(samples.front(), info.bits_per_sample);
-
-    const auto wasted_bits = common_wasted_bits(samples, info.bits_per_sample);
-    const auto shifted_samples = shift_samples(samples, wasted_bits);
-    const auto effective_bits_per_sample = info.bits_per_sample - wasted_bits;
-
-    BitWriter frame_body;
-    write_subframe_header(frame_body, 0, wasted_bits);
-    frame_body.write_signed(shifted_samples.front(), effective_bits_per_sample);
-    write_frame_with_body(output, samples.size(), info, frame_body);
-    return FlacSubframeDecision {
-        .kind = FlacSubframeKind::Constant,
-        .fixed_order = 0,
-        .rice_partition_order = 0,
-        .wasted_bits = wasted_bits,
-        .estimated_bits = constant_subframe_bits(info.bits_per_sample, wasted_bits),
-    };
+    return write_mono_constant_frame_impl(output, samples, info);
 }
 
 FlacSubframeDecision write_mono_fixed_rice_frame(
@@ -1743,6 +1761,16 @@ FlacSubframeDecision write_mono_selected_frame(
     const FlacFrameInfo& info,
     const FlacSelectedSubframe& selected)
 {
+    return write_mono_selected_frame(
+        output, std::span<const std::int32_t>(samples), info, selected);
+}
+
+FlacSubframeDecision write_mono_selected_frame(
+    std::ostream& output,
+    std::span<const std::int32_t> samples,
+    const FlacFrameInfo& info,
+    const FlacSelectedSubframe& selected)
+{
     if (samples.empty()) {
         throw std::runtime_error("cannot write an empty selected FLAC frame");
     }
@@ -1754,11 +1782,11 @@ FlacSubframeDecision write_mono_selected_frame(
     case FlacSubframeKind::Constant:
         (void)checked_selected_wasted_bits(
             samples, info.bits_per_sample, selected.wasted_bits);
-        return write_mono_constant_frame(output, samples, info);
+        return write_mono_constant_frame_impl(output, samples, info);
     case FlacSubframeKind::Verbatim:
         (void)checked_selected_wasted_bits(
             samples, info.bits_per_sample, selected.wasted_bits);
-        return write_mono_verbatim_frame(output, samples, info);
+        return write_mono_verbatim_frame_impl(output, samples, info);
     case FlacSubframeKind::FixedRice: {
         const auto subframe = make_selected_fixed_rice_subframe(samples, info, selected);
         return write_fixed_rice_frame(output, info, subframe);
