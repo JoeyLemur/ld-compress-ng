@@ -4,10 +4,35 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
 namespace ldcompress::vulkan_detail {
+
+class VulkanMonoExactAnalysisSession final {
+public:
+    explicit VulkanMonoExactAnalysisSession(
+        std::optional<std::size_t> requested_device_index = std::nullopt);
+    ~VulkanMonoExactAnalysisSession();
+
+    VulkanMonoExactAnalysisSession(const VulkanMonoExactAnalysisSession&) = delete;
+    VulkanMonoExactAnalysisSession& operator=(const VulkanMonoExactAnalysisSession&) = delete;
+
+    opencl_detail::OpenClMonoFixedConstantAnalysisResult run_fixed_constant_analysis(
+        const std::vector<std::int32_t>& samples,
+        const opencl_detail::OpenClMonoAnalysisTaskPlan& plan,
+        unsigned max_rice_partition_order = 5);
+
+    opencl_detail::OpenClMonoFixedConstantAnalysisResult run_lpc_analysis(
+        const std::vector<std::int32_t>& samples,
+        const opencl_detail::OpenClMonoAnalysisTaskPlan& plan,
+        unsigned max_rice_partition_order = 5);
+
+private:
+    class Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 opencl_detail::OpenClMonoFixedConstantAnalysisResult run_vulkan_mono_fixed_constant_analysis(
     const std::vector<std::int32_t>& samples,

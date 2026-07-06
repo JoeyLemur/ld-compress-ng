@@ -322,22 +322,24 @@ Implemented for the first 1.1 checkpoint:
 - The Vulkan backend is wired through that shared host flow, including
   selected-subframe handoff, `verify --source` compatibility, fixed/Rice
   diagnostics through `--lpc-order 0`, and default LPC-enabled compression.
+- Vulkan exact analysis now has a persistent session object. Compression creates
+  one session per run and reuses the Vulkan instance, device, queue, shader
+  module, pipeline, descriptor set, command buffer, fence, and grow-only host
+  buffers across batches. The old one-shot analysis functions remain as
+  compatibility wrappers for tests and diagnostics.
 - The local validation matrix helper has a `no-vulkan` lane for optional-build
   regression coverage.
 
 Remaining Vulkan work:
 
 - Treat Vulkan/OpenCL throughput as an architecture problem before any
-  shader-level micro-tuning. Current NVIDIA timings on `ntsc/issue176.lds`
-  show CPU/libFLAC at about `0.140` seconds, scalar native-fixed at `1.381`
-  seconds with `16` threads, OpenCL at `10.654` seconds, and Vulkan at
-  `61.651` seconds. Vulkan matches scalar native size on that fixture, but the
-  current implementation is not yet an accelerator in wall-clock terms.
-- Add persistent accelerator analysis sessions so OpenCL and Vulkan reuse
-  device/context/queue/program/pipeline/buffer setup across all batches in a
-  compression run. This is the first performance architecture target because it
-  changes lifecycle overhead without changing compression heuristics or the
-  native FLAC writer contract.
+  shader-level micro-tuning. Current NVIDIA RTX 5070 Ti timings on
+  `ntsc/issue176.lds` after Vulkan session reuse show CPU/libFLAC at about
+  `0.136` seconds, scalar native-fixed at `1.684` seconds with `8` threads,
+  OpenCL at `10.119` seconds, and Vulkan at `74.770` seconds. Vulkan matches
+  scalar native size on that fixture, but the current implementation is not yet
+  an accelerator in wall-clock terms; persistent Vulkan object reuse did not
+  address the dominant cost.
 - Move generated LPC/window/autocorrelation work onto Vulkan instead of using
   scalar-generated LPC tasks, then compare broader compression quality against
   scalar/OpenCL.
@@ -420,7 +422,7 @@ ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl|vulka
 ld-compress-ng decompress INPUT [OUTPUT]
 ld-compress-ng verify INPUT [--source ORIGINAL.lds]
 ld-compress-ng convert --pack|--unpack INPUT [OUTPUT]
-ld-compress-ng bench [--threads 1,4,8] [--include-opencl] [--include-vulkan] INPUT
+ld-compress-ng bench [--threads 8] [--include-opencl] [--include-vulkan] INPUT
 ld-compress-ng devices
 ```
 

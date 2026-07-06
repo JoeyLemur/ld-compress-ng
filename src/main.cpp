@@ -79,7 +79,7 @@ struct Options {
         << "  ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng verify [--source ORIGINAL.lds] INPUT\n"
         << "  ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]\n"
-        << "  ld-compress-ng bench [--threads 1,4,8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] [--lpc-precision N[,N...]] [--rice-partition-order N[,N...]] [--include-opencl] [--include-vulkan] [--device INDEX|--opencl-device INDEX|--vulkan-device INDEX] INPUT\n"
+        << "  ld-compress-ng bench [--threads 8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] [--lpc-precision N[,N...]] [--rice-partition-order N[,N...]] [--include-opencl] [--include-vulkan] [--device INDEX|--opencl-device INDEX|--vulkan-device INDEX] INPUT\n"
         << "  ld-compress-ng devices\n"
         << "  ld-compress-ng --version\n"
         << "  ld-compress-ng --help\n\n"

@@ -576,6 +576,532 @@ std::uint32_t dispatch_groups(std::uint32_t items)
 
 }  // namespace
 
+#if LDCOMPRESS_HAVE_VULKAN
+
+class VulkanMonoExactAnalysisSession::Impl final {
+public:
+    explicit Impl(std::optional<std::size_t> requested_device_index)
+    {
+        if (!vulkan_support_built()) {
+            throw std::runtime_error("Vulkan support was not built");
+        }
+
+        try {
+            instance_ = create_instance();
+            selected_ = select_physical_device(instance_, requested_device_index);
+
+            const float queue_priority = 1.0F;
+            const VkDeviceQueueCreateInfo queue_create_info {
+                .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .queueFamilyIndex = selected_.queue_family_index,
+                .queueCount = 1,
+                .pQueuePriorities = &queue_priority,
+            };
+            VkPhysicalDeviceFeatures enabled_features {};
+            enabled_features.shaderInt64 = VK_TRUE;
+            const VkDeviceCreateInfo device_create_info {
+                .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .queueCreateInfoCount = 1,
+                .pQueueCreateInfos = &queue_create_info,
+                .enabledLayerCount = 0,
+                .ppEnabledLayerNames = nullptr,
+                .enabledExtensionCount = 0,
+                .ppEnabledExtensionNames = nullptr,
+                .pEnabledFeatures = &enabled_features,
+            };
+            require_vk(
+                vkCreateDevice(selected_.physical_device, &device_create_info, nullptr, &device_),
+                "vkCreateDevice");
+            vkGetDeviceQueue(device_, selected_.queue_family_index, 0, &queue_);
+
+            const auto shader = fixed_constant_shader_spirv();
+            if (shader.data == nullptr || shader.size_bytes == 0 ||
+                (shader.size_bytes % sizeof(std::uint32_t)) != 0) {
+                throw std::runtime_error("embedded Vulkan fixed/constant shader is invalid");
+            }
+            const VkShaderModuleCreateInfo shader_module_info {
+                .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .codeSize = shader.size_bytes,
+                .pCode = shader.data,
+            };
+            require_vk(
+                vkCreateShaderModule(device_, &shader_module_info, nullptr, &shader_module_),
+                "vkCreateShaderModule");
+
+            const std::array<VkDescriptorSetLayoutBinding, 4> layout_bindings {{
+                VkDescriptorSetLayoutBinding {
+                    .binding = 0,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                    .pImmutableSamplers = nullptr,
+                },
+                VkDescriptorSetLayoutBinding {
+                    .binding = 1,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                    .pImmutableSamplers = nullptr,
+                },
+                VkDescriptorSetLayoutBinding {
+                    .binding = 2,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                    .pImmutableSamplers = nullptr,
+                },
+                VkDescriptorSetLayoutBinding {
+                    .binding = 3,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                    .pImmutableSamplers = nullptr,
+                },
+            }};
+            const VkDescriptorSetLayoutCreateInfo descriptor_layout_info {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .bindingCount = static_cast<std::uint32_t>(layout_bindings.size()),
+                .pBindings = layout_bindings.data(),
+            };
+            require_vk(vkCreateDescriptorSetLayout(
+                           device_, &descriptor_layout_info, nullptr, &descriptor_set_layout_),
+                "vkCreateDescriptorSetLayout");
+
+            const VkPushConstantRange push_constant_range {
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                .offset = 0,
+                .size = sizeof(PushConstants),
+            };
+            const VkPipelineLayoutCreateInfo pipeline_layout_info {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .setLayoutCount = 1,
+                .pSetLayouts = &descriptor_set_layout_,
+                .pushConstantRangeCount = 1,
+                .pPushConstantRanges = &push_constant_range,
+            };
+            require_vk(
+                vkCreatePipelineLayout(device_, &pipeline_layout_info, nullptr, &pipeline_layout_),
+                "vkCreatePipelineLayout");
+
+            const VkPipelineShaderStageCreateInfo shader_stage_info {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                .module = shader_module_,
+                .pName = "main",
+                .pSpecializationInfo = nullptr,
+            };
+            const VkComputePipelineCreateInfo pipeline_info {
+                .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .stage = shader_stage_info,
+                .layout = pipeline_layout_,
+                .basePipelineHandle = VK_NULL_HANDLE,
+                .basePipelineIndex = 0,
+            };
+            require_vk(vkCreateComputePipelines(
+                           device_, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline_),
+                "vkCreateComputePipelines");
+
+            const VkDescriptorPoolSize pool_size {
+                .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = 4,
+            };
+            const VkDescriptorPoolCreateInfo descriptor_pool_info {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .maxSets = 1,
+                .poolSizeCount = 1,
+                .pPoolSizes = &pool_size,
+            };
+            require_vk(vkCreateDescriptorPool(
+                           device_, &descriptor_pool_info, nullptr, &descriptor_pool_),
+                "vkCreateDescriptorPool");
+
+            const VkDescriptorSetAllocateInfo descriptor_allocate_info {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                .pNext = nullptr,
+                .descriptorPool = descriptor_pool_,
+                .descriptorSetCount = 1,
+                .pSetLayouts = &descriptor_set_layout_,
+            };
+            require_vk(
+                vkAllocateDescriptorSets(device_, &descriptor_allocate_info, &descriptor_set_),
+                "vkAllocateDescriptorSets");
+
+            const VkCommandPoolCreateInfo command_pool_info {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                .queueFamilyIndex = selected_.queue_family_index,
+            };
+            require_vk(vkCreateCommandPool(device_, &command_pool_info, nullptr, &command_pool_),
+                "vkCreateCommandPool");
+
+            const VkCommandBufferAllocateInfo command_buffer_info {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .pNext = nullptr,
+                .commandPool = command_pool_,
+                .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                .commandBufferCount = 1,
+            };
+            require_vk(vkAllocateCommandBuffers(device_, &command_buffer_info, &command_buffer_),
+                "vkAllocateCommandBuffers");
+
+            const VkFenceCreateInfo fence_info {
+                .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+            };
+            require_vk(vkCreateFence(device_, &fence_info, nullptr, &fence_), "vkCreateFence");
+        } catch (...) {
+            cleanup();
+            throw;
+        }
+    }
+
+    ~Impl()
+    {
+        cleanup();
+    }
+
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    OpenClMonoFixedConstantAnalysisResult run_validated(
+        const std::vector<std::int32_t>& samples,
+        const OpenClMonoAnalysisTaskPlan& plan,
+        unsigned max_rice_partition_order,
+        bool allow_lpc)
+    {
+        (void)allow_lpc;
+
+        const auto frame_count = plan.selected_tasks.size() / plan.estimate_tasks_per_frame;
+        const auto task_count_u32 = checked_u32(plan.residual_tasks.size(), "task count");
+        const PushConstants base_push {
+            .mode = 0,
+            .task_count = task_count_u32,
+            .frame_count = checked_u32(frame_count, "frame count"),
+            .selected_tasks_per_frame = checked_u32(
+                plan.estimate_tasks_per_frame, "selected task count"),
+            .residual_tasks_per_frame = checked_u32(
+                plan.residual_tasks_per_frame, "residual task count"),
+            .max_rice_partition_order = checked_u32(
+                max_rice_partition_order, "max Rice partition order"),
+        };
+
+        std::vector<FlacClSubframeTask> analyzed_tasks = plan.residual_tasks;
+        std::vector<FlacClSubframeTask> best_tasks(frame_count);
+
+        HostBuffer& samples_buffer = ensure_buffer(
+            samples_buffer_,
+            checked_buffer_bytes(samples.size(), sizeof(std::int32_t), "samples"),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        HostBuffer& tasks_buffer = ensure_buffer(
+            tasks_buffer_,
+            checked_buffer_bytes(analyzed_tasks.size(), sizeof(FlacClSubframeTask), "tasks"),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        HostBuffer& selected_buffer = ensure_buffer(
+            selected_buffer_,
+            checked_buffer_bytes(plan.selected_tasks.size(), sizeof(std::int32_t), "selected tasks"),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        HostBuffer& best_buffer = ensure_buffer(
+            best_buffer_,
+            checked_buffer_bytes(best_tasks.size(), sizeof(FlacClSubframeTask), "best tasks"),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+
+        samples_buffer.copy_from(samples);
+        tasks_buffer.copy_from(analyzed_tasks);
+        selected_buffer.copy_from(plan.selected_tasks);
+        samples_buffer.flush();
+        tasks_buffer.flush();
+        selected_buffer.flush();
+
+        const std::array<VkDescriptorBufferInfo, 4> descriptor_buffers {{
+            VkDescriptorBufferInfo {
+                .buffer = samples_buffer.get(),
+                .offset = 0,
+                .range = samples_buffer.size(),
+            },
+            VkDescriptorBufferInfo {
+                .buffer = tasks_buffer.get(),
+                .offset = 0,
+                .range = tasks_buffer.size(),
+            },
+            VkDescriptorBufferInfo {
+                .buffer = selected_buffer.get(),
+                .offset = 0,
+                .range = selected_buffer.size(),
+            },
+            VkDescriptorBufferInfo {
+                .buffer = best_buffer.get(),
+                .offset = 0,
+                .range = best_buffer.size(),
+            },
+        }};
+        std::array<VkWriteDescriptorSet, 4> descriptor_writes {};
+        for (std::uint32_t i = 0; i < descriptor_writes.size(); ++i) {
+            descriptor_writes[i] = VkWriteDescriptorSet {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .pNext = nullptr,
+                .dstSet = descriptor_set_,
+                .dstBinding = i,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .pImageInfo = nullptr,
+                .pBufferInfo = &descriptor_buffers[i],
+                .pTexelBufferView = nullptr,
+            };
+        }
+        vkUpdateDescriptorSets(
+            device_,
+            static_cast<std::uint32_t>(descriptor_writes.size()),
+            descriptor_writes.data(),
+            0,
+            nullptr);
+
+        require_vk(vkResetCommandBuffer(command_buffer_, 0), "vkResetCommandBuffer");
+        const VkCommandBufferBeginInfo begin_info {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .pNext = nullptr,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            .pInheritanceInfo = nullptr,
+        };
+        require_vk(vkBeginCommandBuffer(command_buffer_, &begin_info), "vkBeginCommandBuffer");
+        vkCmdBindPipeline(command_buffer_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
+        vkCmdBindDescriptorSets(
+            command_buffer_,
+            VK_PIPELINE_BIND_POINT_COMPUTE,
+            pipeline_layout_,
+            0,
+            1,
+            &descriptor_set_,
+            0,
+            nullptr);
+
+        auto push = base_push;
+        push.mode = 0;
+        vkCmdPushConstants(
+            command_buffer_,
+            pipeline_layout_,
+            VK_SHADER_STAGE_COMPUTE_BIT,
+            0,
+            sizeof(push),
+            &push);
+        vkCmdDispatch(command_buffer_, dispatch_groups(push.task_count), 1, 1);
+
+        const VkMemoryBarrier analysis_barrier {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        };
+        vkCmdPipelineBarrier(
+            command_buffer_,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0,
+            1,
+            &analysis_barrier,
+            0,
+            nullptr,
+            0,
+            nullptr);
+
+        push.mode = 1;
+        vkCmdPushConstants(
+            command_buffer_,
+            pipeline_layout_,
+            VK_SHADER_STAGE_COMPUTE_BIT,
+            0,
+            sizeof(push),
+            &push);
+        vkCmdDispatch(command_buffer_, dispatch_groups(push.frame_count), 1, 1);
+
+        const VkMemoryBarrier host_barrier {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+        };
+        vkCmdPipelineBarrier(
+            command_buffer_,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_HOST_BIT,
+            0,
+            1,
+            &host_barrier,
+            0,
+            nullptr,
+            0,
+            nullptr);
+
+        require_vk(vkEndCommandBuffer(command_buffer_), "vkEndCommandBuffer");
+        require_vk(vkResetFences(device_, 1, &fence_), "vkResetFences");
+
+        const VkSubmitInfo submit_info {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .pNext = nullptr,
+            .waitSemaphoreCount = 0,
+            .pWaitSemaphores = nullptr,
+            .pWaitDstStageMask = nullptr,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &command_buffer_,
+            .signalSemaphoreCount = 0,
+            .pSignalSemaphores = nullptr,
+        };
+        require_vk(vkQueueSubmit(queue_, 1, &submit_info, fence_), "vkQueueSubmit");
+        require_vk(vkWaitForFences(device_, 1, &fence_, VK_TRUE, kFenceTimeoutNs),
+            "vkWaitForFences");
+
+        tasks_buffer.invalidate();
+        best_buffer.invalidate();
+        tasks_buffer.copy_to(analyzed_tasks);
+        best_buffer.copy_to(best_tasks);
+
+        return OpenClMonoFixedConstantAnalysisResult {
+            .analyzed_tasks = std::move(analyzed_tasks),
+            .best_tasks = std::move(best_tasks),
+            .device_name = selected_.name,
+        };
+    }
+
+private:
+    HostBuffer& ensure_buffer(
+        std::unique_ptr<HostBuffer>& buffer,
+        VkDeviceSize required_size,
+        VkBufferUsageFlags usage)
+    {
+        if (buffer == nullptr || buffer->size() < required_size) {
+            buffer = std::make_unique<HostBuffer>(
+                device_, selected_.physical_device, required_size, usage);
+        }
+        return *buffer;
+    }
+
+    void cleanup() noexcept
+    {
+        if (device_ != VK_NULL_HANDLE) {
+            samples_buffer_.reset();
+            tasks_buffer_.reset();
+            selected_buffer_.reset();
+            best_buffer_.reset();
+            if (fence_ != VK_NULL_HANDLE) {
+                vkDestroyFence(device_, fence_, nullptr);
+                fence_ = VK_NULL_HANDLE;
+            }
+            if (command_pool_ != VK_NULL_HANDLE) {
+                vkDestroyCommandPool(device_, command_pool_, nullptr);
+                command_pool_ = VK_NULL_HANDLE;
+            }
+            if (descriptor_pool_ != VK_NULL_HANDLE) {
+                vkDestroyDescriptorPool(device_, descriptor_pool_, nullptr);
+                descriptor_pool_ = VK_NULL_HANDLE;
+                descriptor_set_ = VK_NULL_HANDLE;
+            }
+            if (pipeline_ != VK_NULL_HANDLE) {
+                vkDestroyPipeline(device_, pipeline_, nullptr);
+                pipeline_ = VK_NULL_HANDLE;
+            }
+            if (pipeline_layout_ != VK_NULL_HANDLE) {
+                vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr);
+                pipeline_layout_ = VK_NULL_HANDLE;
+            }
+            if (descriptor_set_layout_ != VK_NULL_HANDLE) {
+                vkDestroyDescriptorSetLayout(device_, descriptor_set_layout_, nullptr);
+                descriptor_set_layout_ = VK_NULL_HANDLE;
+            }
+            if (shader_module_ != VK_NULL_HANDLE) {
+                vkDestroyShaderModule(device_, shader_module_, nullptr);
+                shader_module_ = VK_NULL_HANDLE;
+            }
+            vkDestroyDevice(device_, nullptr);
+            device_ = VK_NULL_HANDLE;
+        }
+        if (instance_ != VK_NULL_HANDLE) {
+            vkDestroyInstance(instance_, nullptr);
+            instance_ = VK_NULL_HANDLE;
+        }
+    }
+
+    VkInstance instance_ = VK_NULL_HANDLE;
+    SelectedDevice selected_;
+    VkDevice device_ = VK_NULL_HANDLE;
+    VkQueue queue_ = VK_NULL_HANDLE;
+    VkShaderModule shader_module_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout descriptor_set_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
+    VkPipeline pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
+    VkDescriptorSet descriptor_set_ = VK_NULL_HANDLE;
+    VkCommandPool command_pool_ = VK_NULL_HANDLE;
+    VkCommandBuffer command_buffer_ = VK_NULL_HANDLE;
+    VkFence fence_ = VK_NULL_HANDLE;
+    std::unique_ptr<HostBuffer> samples_buffer_;
+    std::unique_ptr<HostBuffer> tasks_buffer_;
+    std::unique_ptr<HostBuffer> selected_buffer_;
+    std::unique_ptr<HostBuffer> best_buffer_;
+};
+
+#else
+
+class VulkanMonoExactAnalysisSession::Impl final {};
+
+#endif
+
+VulkanMonoExactAnalysisSession::VulkanMonoExactAnalysisSession(
+    std::optional<std::size_t> requested_device_index)
+{
+#if LDCOMPRESS_HAVE_VULKAN
+    impl_ = std::make_unique<Impl>(requested_device_index);
+#else
+    (void)requested_device_index;
+    throw std::runtime_error("Vulkan support was not built");
+#endif
+}
+
+VulkanMonoExactAnalysisSession::~VulkanMonoExactAnalysisSession() = default;
+
+OpenClMonoFixedConstantAnalysisResult VulkanMonoExactAnalysisSession::run_fixed_constant_analysis(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    unsigned max_rice_partition_order)
+{
+    validate_vulkan_exact_analysis_inputs(samples, plan, max_rice_partition_order, false);
+#if LDCOMPRESS_HAVE_VULKAN
+    return impl_->run_validated(samples, plan, max_rice_partition_order, false);
+#else
+    throw std::runtime_error("Vulkan support was not built");
+#endif
+}
+
+OpenClMonoFixedConstantAnalysisResult VulkanMonoExactAnalysisSession::run_lpc_analysis(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    unsigned max_rice_partition_order)
+{
+    validate_vulkan_exact_analysis_inputs(samples, plan, max_rice_partition_order, true);
+#if LDCOMPRESS_HAVE_VULKAN
+    return impl_->run_validated(samples, plan, max_rice_partition_order, true);
+#else
+    throw std::runtime_error("Vulkan support was not built");
+#endif
+}
+
 OpenClMonoFixedConstantAnalysisResult run_vulkan_mono_exact_analysis(
     const std::vector<std::int32_t>& samples,
     const OpenClMonoAnalysisTaskPlan& plan,
@@ -585,426 +1111,10 @@ OpenClMonoFixedConstantAnalysisResult run_vulkan_mono_exact_analysis(
 {
     validate_vulkan_exact_analysis_inputs(samples, plan, max_rice_partition_order, allow_lpc);
 
-#if LDCOMPRESS_HAVE_VULKAN
-    if (!vulkan_support_built()) {
-        throw std::runtime_error("Vulkan support was not built");
-    }
-
-    const auto frame_count = plan.selected_tasks.size() / plan.estimate_tasks_per_frame;
-    const auto task_count_u32 = checked_u32(plan.residual_tasks.size(), "task count");
-    const PushConstants base_push {
-        .mode = 0,
-        .task_count = task_count_u32,
-        .frame_count = checked_u32(frame_count, "frame count"),
-        .selected_tasks_per_frame = checked_u32(
-            plan.estimate_tasks_per_frame, "selected task count"),
-        .residual_tasks_per_frame = checked_u32(
-            plan.residual_tasks_per_frame, "residual task count"),
-        .max_rice_partition_order = checked_u32(
-            max_rice_partition_order, "max Rice partition order"),
-    };
-
-    const VkInstance instance = create_instance();
-    const auto destroy_instance = scope_exit([&] {
-        vkDestroyInstance(instance, nullptr);
-    });
-
-    const auto selected = select_physical_device(instance, requested_device_index);
-    const float queue_priority = 1.0F;
-    const VkDeviceQueueCreateInfo queue_create_info {
-        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
-        .queueFamilyIndex = selected.queue_family_index,
-        .queueCount = 1,
-        .pQueuePriorities = &queue_priority,
-    };
-    VkPhysicalDeviceFeatures enabled_features {};
-    enabled_features.shaderInt64 = VK_TRUE;
-    const VkDeviceCreateInfo device_create_info {
-        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
-        .queueCreateInfoCount = 1,
-        .pQueueCreateInfos = &queue_create_info,
-        .enabledLayerCount = 0,
-        .ppEnabledLayerNames = nullptr,
-        .enabledExtensionCount = 0,
-        .ppEnabledExtensionNames = nullptr,
-        .pEnabledFeatures = &enabled_features,
-    };
-
-    VkDevice device = VK_NULL_HANDLE;
-    require_vk(vkCreateDevice(selected.physical_device, &device_create_info, nullptr, &device),
-        "vkCreateDevice");
-    const auto destroy_device = scope_exit([&] {
-        vkDestroyDevice(device, nullptr);
-    });
-
-    VkQueue queue = VK_NULL_HANDLE;
-    vkGetDeviceQueue(device, selected.queue_family_index, 0, &queue);
-
-    const auto shader = fixed_constant_shader_spirv();
-    if (shader.data == nullptr || shader.size_bytes == 0 ||
-        (shader.size_bytes % sizeof(std::uint32_t)) != 0) {
-        throw std::runtime_error("embedded Vulkan fixed/constant shader is invalid");
-    }
-    const VkShaderModuleCreateInfo shader_module_info {
-        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
-        .codeSize = shader.size_bytes,
-        .pCode = shader.data,
-    };
-    VkShaderModule shader_module = VK_NULL_HANDLE;
-    require_vk(vkCreateShaderModule(device, &shader_module_info, nullptr, &shader_module),
-        "vkCreateShaderModule");
-    const auto destroy_shader_module = scope_exit([&] {
-        vkDestroyShaderModule(device, shader_module, nullptr);
-    });
-
-    const std::array<VkDescriptorSetLayoutBinding, 4> layout_bindings {{
-        VkDescriptorSetLayoutBinding {
-            .binding = 0,
-            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .descriptorCount = 1,
-            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-            .pImmutableSamplers = nullptr,
-        },
-        VkDescriptorSetLayoutBinding {
-            .binding = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .descriptorCount = 1,
-            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-            .pImmutableSamplers = nullptr,
-        },
-        VkDescriptorSetLayoutBinding {
-            .binding = 2,
-            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .descriptorCount = 1,
-            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-            .pImmutableSamplers = nullptr,
-        },
-        VkDescriptorSetLayoutBinding {
-            .binding = 3,
-            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .descriptorCount = 1,
-            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-            .pImmutableSamplers = nullptr,
-        },
-    }};
-    const VkDescriptorSetLayoutCreateInfo descriptor_layout_info {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
-        .bindingCount = static_cast<std::uint32_t>(layout_bindings.size()),
-        .pBindings = layout_bindings.data(),
-    };
-    VkDescriptorSetLayout descriptor_set_layout = VK_NULL_HANDLE;
-    require_vk(vkCreateDescriptorSetLayout(
-                   device, &descriptor_layout_info, nullptr, &descriptor_set_layout),
-        "vkCreateDescriptorSetLayout");
-    const auto destroy_descriptor_set_layout = scope_exit([&] {
-        vkDestroyDescriptorSetLayout(device, descriptor_set_layout, nullptr);
-    });
-
-    const VkPushConstantRange push_constant_range {
-        .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-        .offset = 0,
-        .size = sizeof(PushConstants),
-    };
-    const VkPipelineLayoutCreateInfo pipeline_layout_info {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
-        .setLayoutCount = 1,
-        .pSetLayouts = &descriptor_set_layout,
-        .pushConstantRangeCount = 1,
-        .pPushConstantRanges = &push_constant_range,
-    };
-    VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
-    require_vk(vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &pipeline_layout),
-        "vkCreatePipelineLayout");
-    const auto destroy_pipeline_layout = scope_exit([&] {
-        vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
-    });
-
-    const VkPipelineShaderStageCreateInfo shader_stage_info {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
-        .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-        .module = shader_module,
-        .pName = "main",
-        .pSpecializationInfo = nullptr,
-    };
-    const VkComputePipelineCreateInfo pipeline_info {
-        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
-        .stage = shader_stage_info,
-        .layout = pipeline_layout,
-        .basePipelineHandle = VK_NULL_HANDLE,
-        .basePipelineIndex = 0,
-    };
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    require_vk(vkCreateComputePipelines(
-                   device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline),
-        "vkCreateComputePipelines");
-    const auto destroy_pipeline = scope_exit([&] {
-        vkDestroyPipeline(device, pipeline, nullptr);
-    });
-
-    std::vector<FlacClSubframeTask> analyzed_tasks = plan.residual_tasks;
-    std::vector<FlacClSubframeTask> best_tasks(frame_count);
-
-    HostBuffer samples_buffer(
-        device,
-        selected.physical_device,
-        checked_buffer_bytes(samples.size(), sizeof(std::int32_t), "samples"),
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    HostBuffer tasks_buffer(
-        device,
-        selected.physical_device,
-        checked_buffer_bytes(analyzed_tasks.size(), sizeof(FlacClSubframeTask), "tasks"),
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    HostBuffer selected_buffer(
-        device,
-        selected.physical_device,
-        checked_buffer_bytes(plan.selected_tasks.size(), sizeof(std::int32_t), "selected tasks"),
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    HostBuffer best_buffer(
-        device,
-        selected.physical_device,
-        checked_buffer_bytes(best_tasks.size(), sizeof(FlacClSubframeTask), "best tasks"),
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-
-    samples_buffer.copy_from(samples);
-    tasks_buffer.copy_from(analyzed_tasks);
-    selected_buffer.copy_from(plan.selected_tasks);
-    samples_buffer.flush();
-    tasks_buffer.flush();
-    selected_buffer.flush();
-
-    const VkDescriptorPoolSize pool_size {
-        .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        .descriptorCount = 4,
-    };
-    const VkDescriptorPoolCreateInfo descriptor_pool_info {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
-        .maxSets = 1,
-        .poolSizeCount = 1,
-        .pPoolSizes = &pool_size,
-    };
-    VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
-    require_vk(vkCreateDescriptorPool(
-                   device, &descriptor_pool_info, nullptr, &descriptor_pool),
-        "vkCreateDescriptorPool");
-    const auto destroy_descriptor_pool = scope_exit([&] {
-        vkDestroyDescriptorPool(device, descriptor_pool, nullptr);
-    });
-
-    const VkDescriptorSetAllocateInfo descriptor_allocate_info {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .pNext = nullptr,
-        .descriptorPool = descriptor_pool,
-        .descriptorSetCount = 1,
-        .pSetLayouts = &descriptor_set_layout,
-    };
-    VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
-    require_vk(vkAllocateDescriptorSets(device, &descriptor_allocate_info, &descriptor_set),
-        "vkAllocateDescriptorSets");
-
-    const std::array<VkDescriptorBufferInfo, 4> descriptor_buffers {{
-        VkDescriptorBufferInfo {
-            .buffer = samples_buffer.get(),
-            .offset = 0,
-            .range = samples_buffer.size(),
-        },
-        VkDescriptorBufferInfo {
-            .buffer = tasks_buffer.get(),
-            .offset = 0,
-            .range = tasks_buffer.size(),
-        },
-        VkDescriptorBufferInfo {
-            .buffer = selected_buffer.get(),
-            .offset = 0,
-            .range = selected_buffer.size(),
-        },
-        VkDescriptorBufferInfo {
-            .buffer = best_buffer.get(),
-            .offset = 0,
-            .range = best_buffer.size(),
-        },
-    }};
-    std::array<VkWriteDescriptorSet, 4> descriptor_writes {};
-    for (std::uint32_t i = 0; i < descriptor_writes.size(); ++i) {
-        descriptor_writes[i] = VkWriteDescriptorSet {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext = nullptr,
-            .dstSet = descriptor_set,
-            .dstBinding = i,
-            .dstArrayElement = 0,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .pImageInfo = nullptr,
-            .pBufferInfo = &descriptor_buffers[i],
-            .pTexelBufferView = nullptr,
-        };
-    }
-    vkUpdateDescriptorSets(
-        device,
-        static_cast<std::uint32_t>(descriptor_writes.size()),
-        descriptor_writes.data(),
-        0,
-        nullptr);
-
-    const VkCommandPoolCreateInfo command_pool_info {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-        .queueFamilyIndex = selected.queue_family_index,
-    };
-    VkCommandPool command_pool = VK_NULL_HANDLE;
-    require_vk(vkCreateCommandPool(device, &command_pool_info, nullptr, &command_pool),
-        "vkCreateCommandPool");
-    const auto destroy_command_pool = scope_exit([&] {
-        vkDestroyCommandPool(device, command_pool, nullptr);
-    });
-
-    const VkCommandBufferAllocateInfo command_buffer_info {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .pNext = nullptr,
-        .commandPool = command_pool,
-        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1,
-    };
-    VkCommandBuffer command_buffer = VK_NULL_HANDLE;
-    require_vk(vkAllocateCommandBuffers(device, &command_buffer_info, &command_buffer),
-        "vkAllocateCommandBuffers");
-
-    const VkCommandBufferBeginInfo begin_info {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-        .pNext = nullptr,
-        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-        .pInheritanceInfo = nullptr,
-    };
-    require_vk(vkBeginCommandBuffer(command_buffer, &begin_info), "vkBeginCommandBuffer");
-    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-    vkCmdBindDescriptorSets(
-        command_buffer,
-        VK_PIPELINE_BIND_POINT_COMPUTE,
-        pipeline_layout,
-        0,
-        1,
-        &descriptor_set,
-        0,
-        nullptr);
-
-    auto push = base_push;
-    push.mode = 0;
-    vkCmdPushConstants(
-        command_buffer,
-        pipeline_layout,
-        VK_SHADER_STAGE_COMPUTE_BIT,
-        0,
-        sizeof(push),
-        &push);
-    vkCmdDispatch(command_buffer, dispatch_groups(push.task_count), 1, 1);
-
-    const VkMemoryBarrier analysis_barrier {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-        .pNext = nullptr,
-        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-    };
-    vkCmdPipelineBarrier(
-        command_buffer,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        0,
-        1,
-        &analysis_barrier,
-        0,
-        nullptr,
-        0,
-        nullptr);
-
-    push.mode = 1;
-    vkCmdPushConstants(
-        command_buffer,
-        pipeline_layout,
-        VK_SHADER_STAGE_COMPUTE_BIT,
-        0,
-        sizeof(push),
-        &push);
-    vkCmdDispatch(command_buffer, dispatch_groups(push.frame_count), 1, 1);
-
-    const VkMemoryBarrier host_barrier {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-        .pNext = nullptr,
-        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-        .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
-    };
-    vkCmdPipelineBarrier(
-        command_buffer,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_HOST_BIT,
-        0,
-        1,
-        &host_barrier,
-        0,
-        nullptr,
-        0,
-        nullptr);
-
-    require_vk(vkEndCommandBuffer(command_buffer), "vkEndCommandBuffer");
-
-    const VkFenceCreateInfo fence_info {
-        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
-    };
-    VkFence fence = VK_NULL_HANDLE;
-    require_vk(vkCreateFence(device, &fence_info, nullptr, &fence), "vkCreateFence");
-    const auto destroy_fence = scope_exit([&] {
-        vkDestroyFence(device, fence, nullptr);
-    });
-
-    const VkSubmitInfo submit_info {
-        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-        .pNext = nullptr,
-        .waitSemaphoreCount = 0,
-        .pWaitSemaphores = nullptr,
-        .pWaitDstStageMask = nullptr,
-        .commandBufferCount = 1,
-        .pCommandBuffers = &command_buffer,
-        .signalSemaphoreCount = 0,
-        .pSignalSemaphores = nullptr,
-    };
-    require_vk(vkQueueSubmit(queue, 1, &submit_info, fence), "vkQueueSubmit");
-    require_vk(vkWaitForFences(device, 1, &fence, VK_TRUE, kFenceTimeoutNs),
-        "vkWaitForFences");
-
-    tasks_buffer.invalidate();
-    best_buffer.invalidate();
-    tasks_buffer.copy_to(analyzed_tasks);
-    best_buffer.copy_to(best_tasks);
-
-    return OpenClMonoFixedConstantAnalysisResult {
-        .analyzed_tasks = std::move(analyzed_tasks),
-        .best_tasks = std::move(best_tasks),
-        .device_name = selected.name,
-    };
-#else
-    (void)samples;
-    (void)plan;
-    (void)requested_device_index;
-    (void)max_rice_partition_order;
-    throw std::runtime_error("Vulkan support was not built");
-#endif
+    VulkanMonoExactAnalysisSession session(requested_device_index);
+    return allow_lpc
+        ? session.run_lpc_analysis(samples, plan, max_rice_partition_order)
+        : session.run_fixed_constant_analysis(samples, plan, max_rice_partition_order);
 }
 
 OpenClMonoFixedConstantAnalysisResult run_vulkan_mono_fixed_constant_analysis(

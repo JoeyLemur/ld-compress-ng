@@ -205,9 +205,9 @@ build/ld-compress-ng compress --backend native-fixed \
 Benchmark available backends on one capture:
 
 ```sh
-build/ld-compress-ng bench capture.lds
-build/ld-compress-ng bench --include-opencl --device 0 capture.lds
-build/ld-compress-ng bench --include-vulkan --vulkan-device 1 capture.lds
+build/ld-compress-ng bench --threads 8 capture.lds
+build/ld-compress-ng bench --threads 8 --include-opencl --device 0 capture.lds
+build/ld-compress-ng bench --threads 8 --include-vulkan --vulkan-device 1 capture.lds
 ```
 
 Convert between packed LDS and signed 16-bit little-endian mono PCM:

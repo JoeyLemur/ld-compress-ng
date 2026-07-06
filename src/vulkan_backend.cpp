@@ -123,17 +123,17 @@ AcceleratedSelectedFrameAnalysis analyze_vulkan_selected_frames(
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& frame_info,
     unsigned frame_samples,
-    std::optional<std::size_t> device_index)
+    vulkan_detail::VulkanMonoExactAnalysisSession& session)
 {
     const auto frame_count = samples.size() / frame_samples;
     const auto plan = frame_info.max_lpc_order == 0
         ? build_vulkan_fixed_constant_task_plan(frame_count, frame_info, frame_samples)
         : build_vulkan_mixed_lpc_task_plan(samples, frame_info, frame_samples);
     auto result = frame_info.max_lpc_order == 0
-        ? vulkan_detail::run_vulkan_mono_fixed_constant_analysis(
-            samples, plan, device_index, frame_info.max_rice_partition_order)
-        : vulkan_detail::run_vulkan_mono_lpc_analysis(
-            samples, plan, device_index, frame_info.max_rice_partition_order);
+        ? session.run_fixed_constant_analysis(
+            samples, plan, frame_info.max_rice_partition_order)
+        : session.run_lpc_analysis(
+            samples, plan, frame_info.max_rice_partition_order);
 
     AcceleratedSelectedFrameAnalysis selected;
     selected.decisions.reserve(result.best_tasks.size());
@@ -202,6 +202,7 @@ ConversionStats compress_lds_to_vulkan_native_flac(
     validate_vulkan_options(options);
     const auto selected_device = select_vulkan_analysis_device(options.device_index);
     const auto device_index = std::optional<std::size_t>(selected_device.index);
+    vulkan_detail::VulkanMonoExactAnalysisSession session(device_index);
 
     const AcceleratedNativeCompressionOptions accelerated_options {
         .backend_label = "Vulkan",
@@ -220,12 +221,12 @@ ConversionStats compress_lds_to_vulkan_native_flac(
         lds_input,
         output_path,
         accelerated_options,
-        [device_index](
+        [&session](
             const std::vector<std::int32_t>& samples,
             const FlacFrameInfo& frame_info,
             unsigned frame_samples) {
             return analyze_vulkan_selected_frames(
-                samples, frame_info, frame_samples, device_index);
+                samples, frame_info, frame_samples, session);
         });
 }
 

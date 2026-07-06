@@ -267,9 +267,11 @@ build/ld-compress-ng compress --backend native-fixed \
 ```
 
 The current recommended native defaults are frame size `4608`, maximum LPC
-order `12`, LPC coefficient precision `12`, maximum Rice partition order `5`,
-and one thread unless `--threads` is specified. OpenCL and Vulkan use the same
-native tuning options, but currently require `--threads 1`. Vulkan exact-costs
+order `12`, LPC coefficient precision `12`, and maximum Rice partition order
+`5`. Compression still defaults to one thread unless `--threads` is specified;
+use `--threads 8` for routine native benchmark comparisons. OpenCL and Vulkan
+use the same native tuning options, but currently require `--threads 1`.
+Vulkan exact-costs
 fixed/Rice and scalar-generated LPC candidates; generated-LPC-on-GPU and
 throughput tuning are still future 1.1 work.
 
@@ -394,8 +396,8 @@ python3 tools/sweep_real_fixtures.py \
 ```
 
 The default sweep is intentionally focused: frame size `4608`, LPC orders
-`10,12`, LPC coefficient precisions `10,12`, Rice partition order `5`, and one
-thread. Add `--include-opencl` and optionally `--opencl-device INDEX` to include
+`10,12`, LPC coefficient precisions `10,12`, Rice partition order `5`, and `8`
+native threads. Add `--include-opencl` and optionally `--opencl-device INDEX` to include
 OpenCL backend rows in the CSV/Markdown output when an OpenCL device is
 available. For single-capture Vulkan comparisons, use `bench --include-vulkan`
 with `--vulkan-device INDEX` so the run targets the intended discrete GPU.

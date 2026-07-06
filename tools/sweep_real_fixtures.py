@@ -351,7 +351,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--binary", default="build/ld-compress-ng", type=Path)
     parser.add_argument("--fixtures", default=DEFAULT_FIXTURE_DIR, type=Path)
     parser.add_argument("--out-dir", default="build/real-fixture-sweeps", type=Path)
-    parser.add_argument("--threads", default="1", type=uint_list_arg("threads", 1, 1024))
+    parser.add_argument("--threads", default="8", type=uint_list_arg("threads", 1, 1024))
     parser.add_argument("--frame-samples", default="4608",
         type=uint_list_arg("frame samples", 16, 4608))
     parser.add_argument("--lpc-order", default="10,12",
