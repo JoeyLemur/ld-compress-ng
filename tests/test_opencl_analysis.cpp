@@ -1590,6 +1590,15 @@ void test_opencl_mixed_generated_analysis_smoke()
     require(result.best_tasks.size() == 3,
         "OpenCL mixed generated best task count mismatch");
 
+    OpenClMonoAnalysisSession session(device_index);
+    const auto best_only = session.run_generated_best_analysis(samples, plan, 12, 5);
+    require(best_only.best_tasks.size() == result.best_tasks.size(),
+        "OpenCL mixed generated best-only task count mismatch");
+    for (std::size_t i = 0; i < result.best_tasks.size(); ++i) {
+        require_task_matches_task(best_only.best_tasks[i], result.best_tasks[i],
+            "OpenCL mixed generated best-only task diverged from full result");
+    }
+
     for (std::size_t frame = 0; frame < 3; ++frame) {
         const auto frame_base = frame * tasks_per_frame;
         const auto lpc_shape = generated_lpc_prefix_shape(plan, frame);

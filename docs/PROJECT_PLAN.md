@@ -453,6 +453,20 @@ Remaining Vulkan work:
   compression discards full analyzed tasks too, so a future OpenCL best-only
   analyzer path and writer handoff could skip avoidable readback/recost work
   while keeping the current full-result APIs for parity diagnostics.
+- The first OpenCL throughput cleanup applied those reusable host-flow lessons:
+  OpenCL compression now batches `128` frames, keeps a generated-analysis
+  session alive across batches, reads back only best tasks for the normal
+  generated-LPC compression path, reuses grow-only OpenCL buffers, and fills the
+  same coarse task-plan/exact-analysis timing buckets as Vulkan. On
+  `ntsc/issue176.lds` with NVIDIA device `1`, the focused `compress --backend
+  opencl --stats` run improved from about `10.30` wall seconds
+  (`46` batches, `9.735` analyzer seconds) to about `3.18` wall seconds
+  (`12` batches, `2.587` exact-analysis seconds) with unchanged `4,298,234`
+  byte output. The matching bench row improved to `2.969` seconds. Remaining
+  OpenCL time is now dominated by the exact residual/Rice kernel shape, not
+  writer work, host allocation churn, or full-task readback; the next OpenCL
+  performance step is a bounded parallel exact/Rice analysis kernel pass,
+  modeled after the Vulkan workgroup reduction design.
 
 Immediate engineering focus:
 

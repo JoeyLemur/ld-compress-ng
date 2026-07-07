@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <type_traits>
@@ -130,6 +131,39 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis(
     std::optional<std::size_t> requested_device_index = std::nullopt,
     unsigned lpc_coefficient_precision = 12,
     unsigned max_rice_partition_order = 5);
+
+OpenClMonoBestMethodResult run_opencl_mono_generated_best_analysis(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    std::optional<std::size_t> requested_device_index = std::nullopt,
+    unsigned lpc_coefficient_precision = 12,
+    unsigned max_rice_partition_order = 5);
+
+class OpenClMonoAnalysisSession final {
+public:
+    explicit OpenClMonoAnalysisSession(
+        std::optional<std::size_t> requested_device_index = std::nullopt);
+    ~OpenClMonoAnalysisSession();
+
+    OpenClMonoAnalysisSession(const OpenClMonoAnalysisSession&) = delete;
+    OpenClMonoAnalysisSession& operator=(const OpenClMonoAnalysisSession&) = delete;
+
+    OpenClMonoFixedConstantAnalysisResult run_generated_analysis(
+        const std::vector<std::int32_t>& samples,
+        const OpenClMonoAnalysisTaskPlan& plan,
+        unsigned lpc_coefficient_precision = 12,
+        unsigned max_rice_partition_order = 5);
+
+    OpenClMonoBestMethodResult run_generated_best_analysis(
+        const std::vector<std::int32_t>& samples,
+        const OpenClMonoAnalysisTaskPlan& plan,
+        unsigned lpc_coefficient_precision = 12,
+        unsigned max_rice_partition_order = 5);
+
+private:
+    class Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 ldcompress::FlacSubframeDecision flaccl_task_to_subframe_decision(
     const FlacClSubframeTask& task);

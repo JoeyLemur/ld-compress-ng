@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <istream>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -18,7 +19,7 @@
 namespace ldcompress {
 namespace {
 
-constexpr std::size_t kOpenClBatchFrames = 32;
+constexpr std::size_t kOpenClBatchFrames = 128;
 constexpr unsigned kMinimumStreamInfoBlockSize = 16;
 constexpr unsigned kMaxOpenClFrameSamples = 4608;
 constexpr unsigned kMaxOpenClLpcOrder = 12;
@@ -37,15 +38,57 @@ AcceleratedSelectedFrameAnalysis analyze_opencl_selected_frames(
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& frame_info,
     unsigned frame_samples,
-    std::optional<std::size_t> device_index)
+    std::optional<std::size_t> device_index,
+    opencl_detail::OpenClMonoAnalysisSession* generated_session,
+    NativeCompressionStats* stats)
 {
     if (frame_info.max_lpc_order > 0) {
-        auto result = opencl_detail::analyze_opencl_mono_generated_frames(
-            samples, frame_info, frame_samples, device_index);
-        return AcceleratedSelectedFrameAnalysis {
-            .decisions = std::move(result.decisions),
-            .selected_subframes = std::move(result.selected_subframes),
-        };
+        if (generated_session == nullptr) {
+            throw std::runtime_error("OpenCL generated analysis session was not initialized");
+        }
+        if (frame_samples == 0) {
+            throw std::runtime_error("OpenCL generated frame analysis frame_samples must be positive");
+        }
+        if (samples.empty()) {
+            throw std::runtime_error("OpenCL generated frame analysis requires at least one frame");
+        }
+        if ((samples.size() % frame_samples) != 0) {
+            throw std::runtime_error("OpenCL generated frame analysis samples are not frame-aligned");
+        }
+
+        opencl_detail::OpenClMonoAnalysisTaskOptions task_options;
+        task_options.frame_samples = frame_samples;
+        task_options.bits_per_sample = frame_info.bits_per_sample;
+        task_options.max_lpc_order = frame_info.max_lpc_order;
+        task_options.min_fixed_order = 0;
+        task_options.max_fixed_order = 4;
+        task_options.include_constant = true;
+
+        const auto frame_count = samples.size() / frame_samples;
+        const auto plan_started = Clock::now();
+        const auto plan = opencl_detail::build_mono_analysis_task_plan(frame_count, task_options);
+        if (stats != nullptr) {
+            add_elapsed_ns(stats->accelerated_task_plan_ns, plan_started);
+        }
+        const auto analysis_started = Clock::now();
+        auto result = generated_session->run_generated_best_analysis(
+            samples,
+            plan,
+            frame_info.lpc_coefficient_precision,
+            frame_info.max_rice_partition_order);
+        if (stats != nullptr) {
+            add_elapsed_ns(stats->accelerated_exact_analysis_ns, analysis_started);
+        }
+
+        AcceleratedSelectedFrameAnalysis selected;
+        selected.decisions.reserve(result.best_tasks.size());
+        selected.selected_subframes.reserve(result.best_tasks.size());
+        for (const auto& task : result.best_tasks) {
+            selected.decisions.push_back(opencl_detail::flaccl_task_to_subframe_decision(task));
+            selected.selected_subframes.push_back(
+                opencl_detail::flaccl_task_to_selected_subframe(task));
+        }
+        return selected;
     }
 
     opencl_detail::OpenClMonoAnalysisTaskOptions task_options;
@@ -57,9 +100,17 @@ AcceleratedSelectedFrameAnalysis analyze_opencl_selected_frames(
     task_options.max_fixed_order = 4;
 
     const auto frame_count = samples.size() / frame_samples;
+    const auto plan_started = Clock::now();
     const auto plan = opencl_detail::build_mono_analysis_task_plan(frame_count, task_options);
+    if (stats != nullptr) {
+        add_elapsed_ns(stats->accelerated_task_plan_ns, plan_started);
+    }
+    const auto analysis_started = Clock::now();
     auto result = opencl_detail::run_opencl_mono_fixed_constant_analysis(
         samples, plan, device_index, frame_info.max_rice_partition_order);
+    if (stats != nullptr) {
+        add_elapsed_ns(stats->accelerated_exact_analysis_ns, analysis_started);
+    }
 
     AcceleratedSelectedFrameAnalysis selected;
     selected.decisions.reserve(result.best_tasks.size());
@@ -106,6 +157,10 @@ ConversionStats compress_lds_to_opencl_native_flac(
     validate_opencl_options(options);
     const auto selected_device = select_opencl_device(options.device_index);
     const auto device_index = std::optional<std::size_t>(selected_device.flat_index);
+    std::unique_ptr<opencl_detail::OpenClMonoAnalysisSession> generated_session;
+    if (options.max_lpc_order > 0) {
+        generated_session = std::make_unique<opencl_detail::OpenClMonoAnalysisSession>(device_index);
+    }
 
     const AcceleratedNativeCompressionOptions accelerated_options {
         .backend_label = "OpenCL",
@@ -124,12 +179,14 @@ ConversionStats compress_lds_to_opencl_native_flac(
         lds_input,
         output_path,
         accelerated_options,
-        [device_index](
+        [device_index, generated_session_ptr = generated_session.get(),
+            native_stats = options.native_stats](
             const std::vector<std::int32_t>& samples,
             const FlacFrameInfo& frame_info,
             unsigned frame_samples) {
             return analyze_opencl_selected_frames(
-                samples, frame_info, frame_samples, device_index);
+                samples, frame_info, frame_samples, device_index, generated_session_ptr,
+                native_stats);
         });
     if (options.native_stats != nullptr) {
         add_elapsed_ns(options.native_stats->accelerated_total_ns, total_started);

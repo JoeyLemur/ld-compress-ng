@@ -1843,6 +1843,117 @@ std::string program_build_log(cl_program program, cl_device_id device)
     return trim_trailing_nul(std::move(log));
 }
 
+struct OpenClGeneratedAnalysisRuntime {
+    SelectedOpenClDevice selected_device;
+    ClContext context;
+    ClCommandQueue queue;
+    ClProgram program;
+    ClKernel wasted_kernel;
+    ClKernel autocor_kernel;
+    ClKernel lpc_kernel;
+    ClKernel quantize_kernel;
+    ClKernel exact_kernel;
+    ClKernel choose_kernel;
+    ClMem samples_buffer;
+    ClMem tasks_buffer;
+    ClMem selected_buffer;
+    ClMem window_buffer;
+    ClMem autocor_buffer;
+    ClMem lpc_buffer;
+    ClMem best_buffer;
+    std::size_t samples_buffer_bytes = 0;
+    std::size_t tasks_buffer_bytes = 0;
+    std::size_t selected_buffer_bytes = 0;
+    std::size_t window_buffer_bytes = 0;
+    std::size_t autocor_buffer_bytes = 0;
+    std::size_t lpc_buffer_bytes = 0;
+    std::size_t best_buffer_bytes = 0;
+};
+
+OpenClGeneratedAnalysisRuntime make_opencl_generated_analysis_runtime(
+    std::optional<std::size_t> requested_device_index)
+{
+    OpenClGeneratedAnalysisRuntime runtime;
+    runtime.selected_device = choose_opencl_device(requested_device_index);
+
+    cl_int status = CL_SUCCESS;
+    runtime.context.reset(clCreateContext(
+        nullptr, 1, &runtime.selected_device.id, nullptr, nullptr, &status));
+    require_cl(status, "clCreateContext");
+
+    runtime.queue.reset(clCreateCommandQueue(
+        runtime.context.get(), runtime.selected_device.id, 0, &status));
+    require_cl(status, "clCreateCommandQueue");
+
+    const char* source = mono_analysis_kernel_source();
+    const std::size_t source_length = std::char_traits<char>::length(source);
+    runtime.program.reset(clCreateProgramWithSource(
+        runtime.context.get(), 1, &source, &source_length, &status));
+    require_cl(status, "clCreateProgramWithSource");
+
+    const cl_int build_status = clBuildProgram(
+        runtime.program.get(), 1, &runtime.selected_device.id, nullptr, nullptr, nullptr);
+    if (build_status != CL_SUCCESS) {
+        const auto log = program_build_log(runtime.program.get(), runtime.selected_device.id);
+        throw std::runtime_error("clBuildProgram failed: " + cl_error_name(build_status) +
+            (log.empty() ? std::string {} : "\n" + log));
+    }
+
+    runtime.wasted_kernel.reset(
+        clCreateKernel(runtime.program.get(), "ldcompressFindWastedBits", &status));
+    require_cl(status, "clCreateKernel(ldcompressFindWastedBits)");
+    runtime.autocor_kernel.reset(
+        clCreateKernel(runtime.program.get(), "ldcompressComputeAutocor", &status));
+    require_cl(status, "clCreateKernel(ldcompressComputeAutocor)");
+    runtime.lpc_kernel.reset(
+        clCreateKernel(runtime.program.get(), "ldcompressComputeLpc", &status));
+    require_cl(status, "clCreateKernel(ldcompressComputeLpc)");
+    runtime.quantize_kernel.reset(
+        clCreateKernel(runtime.program.get(), "ldcompressQuantizeLpcOrders", &status));
+    require_cl(status, "clCreateKernel(ldcompressQuantizeLpcOrders)");
+    runtime.exact_kernel.reset(
+        clCreateKernel(runtime.program.get(), "ldcompressAnalyzeSubframeExact", &status));
+    require_cl(status, "clCreateKernel(ldcompressAnalyzeSubframeExact)");
+    runtime.choose_kernel.reset(
+        clCreateKernel(runtime.program.get(), "ldcompressChooseBestMethod", &status));
+    require_cl(status, "clCreateKernel(ldcompressChooseBestMethod)");
+
+    return runtime;
+}
+
+void ensure_opencl_buffer(
+    const ClContext& context,
+    ClMem& buffer,
+    std::size_t& capacity_bytes,
+    cl_mem_flags flags,
+    std::size_t required_bytes,
+    const char* name)
+{
+    if (required_bytes == 0) {
+        throw std::runtime_error(std::string("OpenCL ") + name + " buffer is empty");
+    }
+    if (required_bytes <= capacity_bytes) {
+        return;
+    }
+
+    cl_int status = CL_SUCCESS;
+    buffer.reset(clCreateBuffer(context.get(), flags, required_bytes, nullptr, &status));
+    require_cl(status, (std::string("clCreateBuffer(") + name + ")").c_str());
+    capacity_bytes = required_bytes;
+}
+
+void write_opencl_buffer(
+    const ClCommandQueue& queue,
+    const ClMem& buffer,
+    const void* data,
+    std::size_t bytes,
+    const char* name)
+{
+    require_cl(clEnqueueWriteBuffer(
+                   queue.get(), buffer.get(), CL_TRUE, 0, bytes, data, 0, nullptr, nullptr),
+        (std::string("clEnqueueWriteBuffer(") + name + ")").c_str());
+}
+
 #endif
 
 }  // namespace
@@ -2461,15 +2572,16 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_analysis(
 }
 
 #if LDCOMPRESS_HAVE_OPENCL
-OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_impl(
+OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validated(
     const std::vector<std::int32_t>& samples,
     const OpenClMonoAnalysisTaskPlan& plan,
-    std::optional<std::size_t> requested_device_index,
     unsigned lpc_coefficient_precision,
     unsigned max_rice_partition_order,
     std::size_t lpc_tasks_per_window,
     std::size_t total_lpc_tasks,
-    std::size_t generated_window_count)
+    std::size_t generated_window_count,
+    OpenClGeneratedAnalysisRuntime& runtime,
+    bool read_analyzed_tasks)
 {
     if (lpc_tasks_per_window == 0 || lpc_tasks_per_window > kFlacClMaxOrder ||
         generated_window_count == 0 ||
@@ -2482,133 +2594,89 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_impl(
         throw std::runtime_error("OpenCL generated analysis max Rice partition order must be 0..8");
     }
 
-    const auto selected_device = choose_opencl_device(requested_device_index);
+    const auto samples_bytes = samples.size() * sizeof(std::int32_t);
+    ensure_opencl_buffer(runtime.context, runtime.samples_buffer,
+        runtime.samples_buffer_bytes, CL_MEM_READ_ONLY, samples_bytes, "samples");
+    write_opencl_buffer(
+        runtime.queue, runtime.samples_buffer, samples.data(), samples_bytes, "samples");
 
-    cl_int status = CL_SUCCESS;
-    ClContext context(clCreateContext(nullptr, 1, &selected_device.id, nullptr, nullptr, &status));
-    require_cl(status, "clCreateContext");
+    const auto tasks_bytes = plan.residual_tasks.size() * sizeof(FlacClSubframeTask);
+    ensure_opencl_buffer(runtime.context, runtime.tasks_buffer,
+        runtime.tasks_buffer_bytes, CL_MEM_READ_WRITE, tasks_bytes, "tasks");
+    write_opencl_buffer(
+        runtime.queue, runtime.tasks_buffer, plan.residual_tasks.data(), tasks_bytes, "tasks");
 
-    ClCommandQueue queue(clCreateCommandQueue(context.get(), selected_device.id, 0, &status));
-    require_cl(status, "clCreateCommandQueue");
-
-    const char* source = mono_analysis_kernel_source();
-    const std::size_t source_length = std::char_traits<char>::length(source);
-    ClProgram program(clCreateProgramWithSource(context.get(), 1, &source, &source_length, &status));
-    require_cl(status, "clCreateProgramWithSource");
-
-    const cl_int build_status = clBuildProgram(program.get(), 1, &selected_device.id, nullptr, nullptr, nullptr);
-    if (build_status != CL_SUCCESS) {
-        const auto log = program_build_log(program.get(), selected_device.id);
-        throw std::runtime_error("clBuildProgram failed: " + cl_error_name(build_status) +
-            (log.empty() ? std::string {} : "\n" + log));
-    }
-
-    ClKernel wasted_kernel(clCreateKernel(program.get(), "ldcompressFindWastedBits", &status));
-    require_cl(status, "clCreateKernel(ldcompressFindWastedBits)");
-    ClKernel autocor_kernel(clCreateKernel(program.get(), "ldcompressComputeAutocor", &status));
-    require_cl(status, "clCreateKernel(ldcompressComputeAutocor)");
-    ClKernel lpc_kernel(clCreateKernel(program.get(), "ldcompressComputeLpc", &status));
-    require_cl(status, "clCreateKernel(ldcompressComputeLpc)");
-    ClKernel quantize_kernel(clCreateKernel(program.get(), "ldcompressQuantizeLpcOrders", &status));
-    require_cl(status, "clCreateKernel(ldcompressQuantizeLpcOrders)");
-    ClKernel exact_kernel(clCreateKernel(program.get(), "ldcompressAnalyzeSubframeExact", &status));
-    require_cl(status, "clCreateKernel(ldcompressAnalyzeSubframeExact)");
-    ClKernel choose_kernel(clCreateKernel(program.get(), "ldcompressChooseBestMethod", &status));
-    require_cl(status, "clCreateKernel(ldcompressChooseBestMethod)");
-
-    ClMem samples_buffer(clCreateBuffer(context.get(),
-        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        samples.size() * sizeof(std::int32_t),
-        const_cast<std::int32_t*>(samples.data()),
-        &status));
-    require_cl(status, "clCreateBuffer(samples)");
-
-    ClMem tasks_buffer(clCreateBuffer(context.get(),
-        CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-        plan.residual_tasks.size() * sizeof(FlacClSubframeTask),
-        const_cast<FlacClSubframeTask*>(plan.residual_tasks.data()),
-        &status));
-    require_cl(status, "clCreateBuffer(tasks)");
-
-    ClMem selected_buffer(clCreateBuffer(context.get(),
-        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        plan.selected_tasks.size() * sizeof(std::int32_t),
-        const_cast<std::int32_t*>(plan.selected_tasks.data()),
-        &status));
-    require_cl(status, "clCreateBuffer(selectedTasks)");
+    const auto selected_bytes = plan.selected_tasks.size() * sizeof(std::int32_t);
+    ensure_opencl_buffer(runtime.context, runtime.selected_buffer,
+        runtime.selected_buffer_bytes, CL_MEM_READ_ONLY, selected_bytes, "selectedTasks");
+    write_opencl_buffer(runtime.queue, runtime.selected_buffer,
+        plan.selected_tasks.data(), selected_bytes, "selectedTasks");
 
     const auto frame_count = plan.selected_tasks.size() / plan.estimate_tasks_per_frame;
     const auto blocksize = static_cast<std::size_t>(plan.residual_tasks.front().data.blocksize);
     std::vector<float> window =
         make_generated_lpc_windows(blocksize, generated_window_count);
-    ClMem window_buffer(clCreateBuffer(context.get(),
-        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-        window.size() * sizeof(float),
-        window.data(),
-        &status));
-    require_cl(status, "clCreateBuffer(window)");
+    const auto window_bytes = window.size() * sizeof(float);
+    ensure_opencl_buffer(runtime.context, runtime.window_buffer,
+        runtime.window_buffer_bytes, CL_MEM_READ_ONLY, window_bytes, "window");
+    write_opencl_buffer(
+        runtime.queue, runtime.window_buffer, window.data(), window_bytes, "window");
 
     const auto autocor_count = frame_count * generated_window_count * (kFlacClMaxOrder + 1U);
-    ClMem autocor_buffer(clCreateBuffer(context.get(),
-        CL_MEM_READ_WRITE,
-        autocor_count * sizeof(float),
-        nullptr,
-        &status));
-    require_cl(status, "clCreateBuffer(autocor)");
+    const auto autocor_bytes = autocor_count * sizeof(float);
+    ensure_opencl_buffer(runtime.context, runtime.autocor_buffer,
+        runtime.autocor_buffer_bytes, CL_MEM_READ_WRITE, autocor_bytes, "autocor");
 
     const auto lpc_count =
         frame_count * generated_window_count * (kFlacClMaxOrder + 1U) * kFlacClMaxOrder;
-    ClMem lpc_buffer(clCreateBuffer(context.get(),
-        CL_MEM_READ_WRITE,
-        lpc_count * sizeof(float),
-        nullptr,
-        &status));
-    require_cl(status, "clCreateBuffer(lpc)");
+    const auto lpc_bytes = lpc_count * sizeof(float);
+    ensure_opencl_buffer(runtime.context, runtime.lpc_buffer,
+        runtime.lpc_buffer_bytes, CL_MEM_READ_WRITE, lpc_bytes, "lpc");
 
-    std::vector<FlacClSubframeTask> analyzed_tasks(plan.residual_tasks.size());
+    std::vector<FlacClSubframeTask> analyzed_tasks;
+    if (read_analyzed_tasks) {
+        analyzed_tasks.resize(plan.residual_tasks.size());
+    }
     std::vector<FlacClSubframeTask> best_tasks(frame_count);
-    ClMem best_buffer(clCreateBuffer(context.get(),
-        CL_MEM_WRITE_ONLY,
-        best_tasks.size() * sizeof(FlacClSubframeTask),
-        nullptr,
-        &status));
-    require_cl(status, "clCreateBuffer(tasks_out)");
+    const auto best_bytes = best_tasks.size() * sizeof(FlacClSubframeTask);
+    ensure_opencl_buffer(runtime.context, runtime.best_buffer,
+        runtime.best_buffer_bytes, CL_MEM_WRITE_ONLY, best_bytes, "tasks_out");
 
-    cl_mem tasks_mem = tasks_buffer.get();
-    cl_mem samples_mem = samples_buffer.get();
-    cl_mem selected_mem = selected_buffer.get();
-    cl_mem window_mem = window_buffer.get();
-    cl_mem autocor_mem = autocor_buffer.get();
-    cl_mem lpc_mem = lpc_buffer.get();
-    cl_mem best_mem = best_buffer.get();
+    cl_mem tasks_mem = runtime.tasks_buffer.get();
+    cl_mem samples_mem = runtime.samples_buffer.get();
+    cl_mem selected_mem = runtime.selected_buffer.get();
+    cl_mem window_mem = runtime.window_buffer.get();
+    cl_mem autocor_mem = runtime.autocor_buffer.get();
+    cl_mem lpc_mem = runtime.lpc_buffer.get();
+    cl_mem best_mem = runtime.best_buffer.get();
     const auto residual_tasks_per_frame =
         static_cast<std::int32_t>(plan.residual_tasks_per_frame);
     const auto estimate_tasks_per_frame =
         static_cast<std::int32_t>(plan.estimate_tasks_per_frame);
 
-    require_cl(clSetKernelArg(wasted_kernel.get(), 0, sizeof(tasks_mem), &tasks_mem),
+    require_cl(clSetKernelArg(runtime.wasted_kernel.get(), 0, sizeof(tasks_mem), &tasks_mem),
         "clSetKernelArg(wasted.tasks)");
-    require_cl(clSetKernelArg(wasted_kernel.get(), 1, sizeof(samples_mem), &samples_mem),
+    require_cl(clSetKernelArg(runtime.wasted_kernel.get(), 1, sizeof(samples_mem), &samples_mem),
         "clSetKernelArg(wasted.samples)");
-    require_cl(clSetKernelArg(wasted_kernel.get(), 2, sizeof(residual_tasks_per_frame),
+    require_cl(clSetKernelArg(runtime.wasted_kernel.get(), 2, sizeof(residual_tasks_per_frame),
                    &residual_tasks_per_frame),
         "clSetKernelArg(wasted.tasksPerChannel)");
 
     const std::size_t one = 1;
     const std::size_t frame_global_work_size = frame_count;
-    require_cl(clEnqueueNDRangeKernel(queue.get(), wasted_kernel.get(), 1, nullptr,
+    require_cl(clEnqueueNDRangeKernel(runtime.queue.get(), runtime.wasted_kernel.get(), 1, nullptr,
                    &frame_global_work_size, &one, 0, nullptr, nullptr),
         "clEnqueueNDRangeKernel(ldcompressFindWastedBits)");
 
-    require_cl(clSetKernelArg(autocor_kernel.get(), 0, sizeof(autocor_mem), &autocor_mem),
+    require_cl(clSetKernelArg(runtime.autocor_kernel.get(), 0, sizeof(autocor_mem), &autocor_mem),
         "clSetKernelArg(autocor.output)");
-    require_cl(clSetKernelArg(autocor_kernel.get(), 1, sizeof(samples_mem), &samples_mem),
+    require_cl(clSetKernelArg(runtime.autocor_kernel.get(), 1, sizeof(samples_mem), &samples_mem),
         "clSetKernelArg(autocor.samples)");
-    require_cl(clSetKernelArg(autocor_kernel.get(), 2, sizeof(window_mem), &window_mem),
+    require_cl(clSetKernelArg(runtime.autocor_kernel.get(), 2, sizeof(window_mem), &window_mem),
         "clSetKernelArg(autocor.window)");
-    require_cl(clSetKernelArg(autocor_kernel.get(), 3, sizeof(tasks_mem), &tasks_mem),
+    require_cl(clSetKernelArg(runtime.autocor_kernel.get(), 3, sizeof(tasks_mem), &tasks_mem),
         "clSetKernelArg(autocor.tasks)");
-    require_cl(clSetKernelArg(autocor_kernel.get(), 4, sizeof(residual_tasks_per_frame),
+    require_cl(clSetKernelArg(runtime.autocor_kernel.get(), 4, sizeof(residual_tasks_per_frame),
                    &residual_tasks_per_frame),
         "clSetKernelArg(autocor.tasksPerFrame)");
 
@@ -2617,18 +2685,18 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_impl(
         generated_window_count,
     };
     const std::array<std::size_t, 2> generation_local { 1, 1 };
-    require_cl(clEnqueueNDRangeKernel(queue.get(), autocor_kernel.get(), 2, nullptr,
+    require_cl(clEnqueueNDRangeKernel(runtime.queue.get(), runtime.autocor_kernel.get(), 2, nullptr,
                    generation_global.data(), generation_local.data(), 0, nullptr, nullptr),
         "clEnqueueNDRangeKernel(ldcompressComputeAutocor)");
 
     const auto window_count_arg = static_cast<std::int32_t>(generated_window_count);
-    require_cl(clSetKernelArg(lpc_kernel.get(), 0, sizeof(autocor_mem), &autocor_mem),
+    require_cl(clSetKernelArg(runtime.lpc_kernel.get(), 0, sizeof(autocor_mem), &autocor_mem),
         "clSetKernelArg(lpc.autocor)");
-    require_cl(clSetKernelArg(lpc_kernel.get(), 1, sizeof(lpc_mem), &lpc_mem),
+    require_cl(clSetKernelArg(runtime.lpc_kernel.get(), 1, sizeof(lpc_mem), &lpc_mem),
         "clSetKernelArg(lpc.lpcs)");
-    require_cl(clSetKernelArg(lpc_kernel.get(), 2, sizeof(window_count_arg), &window_count_arg),
+    require_cl(clSetKernelArg(runtime.lpc_kernel.get(), 2, sizeof(window_count_arg), &window_count_arg),
         "clSetKernelArg(lpc.windowCount)");
-    require_cl(clEnqueueNDRangeKernel(queue.get(), lpc_kernel.get(), 2, nullptr,
+    require_cl(clEnqueueNDRangeKernel(runtime.queue.get(), runtime.lpc_kernel.get(), 2, nullptr,
                    generation_global.data(), generation_local.data(), 0, nullptr, nullptr),
         "clEnqueueNDRangeKernel(ldcompressComputeLpc)");
 
@@ -2638,75 +2706,191 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_impl(
         static_cast<std::int32_t>(total_lpc_tasks);
     const auto lpc_coefficient_precision_arg =
         static_cast<std::int32_t>(lpc_coefficient_precision);
-    require_cl(clSetKernelArg(quantize_kernel.get(), 0, sizeof(tasks_mem), &tasks_mem),
+    require_cl(clSetKernelArg(runtime.quantize_kernel.get(), 0, sizeof(tasks_mem), &tasks_mem),
         "clSetKernelArg(quantize.tasks)");
-    require_cl(clSetKernelArg(quantize_kernel.get(), 1, sizeof(lpc_mem), &lpc_mem),
+    require_cl(clSetKernelArg(runtime.quantize_kernel.get(), 1, sizeof(lpc_mem), &lpc_mem),
         "clSetKernelArg(quantize.lpcs)");
-    require_cl(clSetKernelArg(quantize_kernel.get(), 2, sizeof(residual_tasks_per_frame),
+    require_cl(clSetKernelArg(runtime.quantize_kernel.get(), 2, sizeof(residual_tasks_per_frame),
                    &residual_tasks_per_frame),
         "clSetKernelArg(quantize.tasksPerFrame)");
-    require_cl(clSetKernelArg(quantize_kernel.get(), 3, sizeof(lpc_tasks_per_window_arg),
+    require_cl(clSetKernelArg(runtime.quantize_kernel.get(), 3, sizeof(lpc_tasks_per_window_arg),
                    &lpc_tasks_per_window_arg),
         "clSetKernelArg(quantize.lpcTasksPerWindow)");
-    require_cl(clSetKernelArg(quantize_kernel.get(), 4, sizeof(total_lpc_tasks_arg),
+    require_cl(clSetKernelArg(runtime.quantize_kernel.get(), 4, sizeof(total_lpc_tasks_arg),
                    &total_lpc_tasks_arg),
         "clSetKernelArg(quantize.totalLpcTasks)");
-    require_cl(clSetKernelArg(quantize_kernel.get(), 5, sizeof(lpc_coefficient_precision_arg),
+    require_cl(clSetKernelArg(runtime.quantize_kernel.get(), 5, sizeof(lpc_coefficient_precision_arg),
                    &lpc_coefficient_precision_arg),
         "clSetKernelArg(quantize.coefficientPrecision)");
-    require_cl(clEnqueueNDRangeKernel(queue.get(), quantize_kernel.get(), 2, nullptr,
+    require_cl(clEnqueueNDRangeKernel(runtime.queue.get(), runtime.quantize_kernel.get(), 2, nullptr,
                    generation_global.data(), generation_local.data(), 0, nullptr, nullptr),
         "clEnqueueNDRangeKernel(ldcompressQuantizeLpcOrders)");
 
     const auto max_rice_partition_order_arg =
         static_cast<std::int32_t>(max_rice_partition_order);
-    require_cl(clSetKernelArg(exact_kernel.get(), 0, sizeof(samples_mem), &samples_mem),
+    require_cl(clSetKernelArg(runtime.exact_kernel.get(), 0, sizeof(samples_mem), &samples_mem),
         "clSetKernelArg(exact.samples)");
-    require_cl(clSetKernelArg(exact_kernel.get(), 1, sizeof(selected_mem), &selected_mem),
+    require_cl(clSetKernelArg(runtime.exact_kernel.get(), 1, sizeof(selected_mem), &selected_mem),
         "clSetKernelArg(exact.selectedTasks)");
-    require_cl(clSetKernelArg(exact_kernel.get(), 2, sizeof(tasks_mem), &tasks_mem),
+    require_cl(clSetKernelArg(runtime.exact_kernel.get(), 2, sizeof(tasks_mem), &tasks_mem),
         "clSetKernelArg(exact.tasks)");
-    require_cl(clSetKernelArg(exact_kernel.get(), 3, sizeof(max_rice_partition_order_arg),
+    require_cl(clSetKernelArg(runtime.exact_kernel.get(), 3, sizeof(max_rice_partition_order_arg),
                    &max_rice_partition_order_arg),
         "clSetKernelArg(exact.maxRicePartitionOrder)");
 
     const std::size_t estimate_global_work_size = plan.selected_tasks.size();
-    require_cl(clEnqueueNDRangeKernel(queue.get(), exact_kernel.get(), 1, nullptr,
+    require_cl(clEnqueueNDRangeKernel(runtime.queue.get(), runtime.exact_kernel.get(), 1, nullptr,
                    &estimate_global_work_size, &one, 0, nullptr, nullptr),
         "clEnqueueNDRangeKernel(ldcompressAnalyzeSubframeExact)");
 
-    require_cl(clSetKernelArg(choose_kernel.get(), 0, sizeof(best_mem), &best_mem),
+    require_cl(clSetKernelArg(runtime.choose_kernel.get(), 0, sizeof(best_mem), &best_mem),
         "clSetKernelArg(choose.tasks_out)");
-    require_cl(clSetKernelArg(choose_kernel.get(), 1, sizeof(tasks_mem), &tasks_mem),
+    require_cl(clSetKernelArg(runtime.choose_kernel.get(), 1, sizeof(tasks_mem), &tasks_mem),
         "clSetKernelArg(choose.tasks)");
-    require_cl(clSetKernelArg(choose_kernel.get(), 2, sizeof(selected_mem), &selected_mem),
+    require_cl(clSetKernelArg(runtime.choose_kernel.get(), 2, sizeof(selected_mem), &selected_mem),
         "clSetKernelArg(choose.selectedTasks)");
-    require_cl(clSetKernelArg(choose_kernel.get(), 3, sizeof(estimate_tasks_per_frame),
+    require_cl(clSetKernelArg(runtime.choose_kernel.get(), 3, sizeof(estimate_tasks_per_frame),
                    &estimate_tasks_per_frame),
         "clSetKernelArg(choose.taskCount)");
 
-    require_cl(clEnqueueNDRangeKernel(queue.get(), choose_kernel.get(), 1, nullptr,
+    require_cl(clEnqueueNDRangeKernel(runtime.queue.get(), runtime.choose_kernel.get(), 1, nullptr,
                    &frame_global_work_size, nullptr, 0, nullptr, nullptr),
         "clEnqueueNDRangeKernel(ldcompressChooseBestMethod)");
 
-    require_cl(clEnqueueReadBuffer(queue.get(), tasks_buffer.get(), CL_TRUE, 0,
-                   analyzed_tasks.size() * sizeof(FlacClSubframeTask), analyzed_tasks.data(),
-                   0, nullptr, nullptr),
-        "clEnqueueReadBuffer(tasks)");
-    require_cl(clEnqueueReadBuffer(queue.get(), best_buffer.get(), CL_TRUE, 0,
+    if (read_analyzed_tasks) {
+        require_cl(clEnqueueReadBuffer(runtime.queue.get(), runtime.tasks_buffer.get(), CL_TRUE, 0,
+                       analyzed_tasks.size() * sizeof(FlacClSubframeTask), analyzed_tasks.data(),
+                       0, nullptr, nullptr),
+            "clEnqueueReadBuffer(tasks)");
+    }
+    require_cl(clEnqueueReadBuffer(runtime.queue.get(), runtime.best_buffer.get(), CL_TRUE, 0,
                    best_tasks.size() * sizeof(FlacClSubframeTask), best_tasks.data(),
                    0, nullptr, nullptr),
         "clEnqueueReadBuffer(tasks_out)");
-    require_cl(clFinish(queue.get()), "clFinish");
+    require_cl(clFinish(runtime.queue.get()), "clFinish");
 
     return OpenClMonoFixedConstantAnalysisResult {
         .analyzed_tasks = std::move(analyzed_tasks),
         .best_tasks = std::move(best_tasks),
         .best_rice_parameters = {},
-        .device_name = selected_device.name,
+        .device_name = runtime.selected_device.name,
     };
 }
+
+OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_impl(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    std::optional<std::size_t> requested_device_index,
+    unsigned lpc_coefficient_precision,
+    unsigned max_rice_partition_order,
+    std::size_t lpc_tasks_per_window,
+    std::size_t total_lpc_tasks,
+    std::size_t generated_window_count)
+{
+    auto runtime = make_opencl_generated_analysis_runtime(requested_device_index);
+    return run_opencl_mono_generated_analysis_validated(
+        samples,
+        plan,
+        lpc_coefficient_precision,
+        max_rice_partition_order,
+        lpc_tasks_per_window,
+        total_lpc_tasks,
+        generated_window_count,
+        runtime,
+        true);
+}
 #endif
+
+class OpenClMonoAnalysisSession::Impl final {
+public:
+#if LDCOMPRESS_HAVE_OPENCL
+    explicit Impl(std::optional<std::size_t> requested_device_index)
+        : runtime_(make_opencl_generated_analysis_runtime(requested_device_index))
+    {
+    }
+
+    OpenClMonoFixedConstantAnalysisResult run_generated_analysis(
+        const std::vector<std::int32_t>& samples,
+        const OpenClMonoAnalysisTaskPlan& plan,
+        unsigned lpc_coefficient_precision,
+        unsigned max_rice_partition_order,
+        const GeneratedLpcPrefixShape& lpc_shape,
+        bool read_analyzed_tasks)
+    {
+        return run_opencl_mono_generated_analysis_validated(
+            samples,
+            plan,
+            lpc_coefficient_precision,
+            max_rice_partition_order,
+            lpc_shape.lpc_tasks_per_window,
+            lpc_shape.total_lpc_tasks,
+            lpc_shape.window_count,
+            runtime_,
+            read_analyzed_tasks);
+    }
+
+private:
+    OpenClGeneratedAnalysisRuntime runtime_;
+#endif
+};
+
+OpenClMonoAnalysisSession::OpenClMonoAnalysisSession(
+    std::optional<std::size_t> requested_device_index)
+{
+#if LDCOMPRESS_HAVE_OPENCL
+    impl_ = std::make_unique<Impl>(requested_device_index);
+#else
+    (void)requested_device_index;
+    throw std::runtime_error("OpenCL support was not built");
+#endif
+}
+
+OpenClMonoAnalysisSession::~OpenClMonoAnalysisSession() = default;
+
+OpenClMonoFixedConstantAnalysisResult OpenClMonoAnalysisSession::run_generated_analysis(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    unsigned lpc_coefficient_precision,
+    unsigned max_rice_partition_order)
+{
+#if LDCOMPRESS_HAVE_OPENCL
+    const auto lpc_shape =
+        validate_generated_analysis_inputs(samples, plan, lpc_coefficient_precision);
+    return impl_->run_generated_analysis(
+        samples, plan, lpc_coefficient_precision, max_rice_partition_order, lpc_shape, true);
+#else
+    (void)samples;
+    (void)plan;
+    (void)lpc_coefficient_precision;
+    (void)max_rice_partition_order;
+    throw std::runtime_error("OpenCL support was not built");
+#endif
+}
+
+OpenClMonoBestMethodResult OpenClMonoAnalysisSession::run_generated_best_analysis(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    unsigned lpc_coefficient_precision,
+    unsigned max_rice_partition_order)
+{
+#if LDCOMPRESS_HAVE_OPENCL
+    const auto lpc_shape =
+        validate_generated_analysis_inputs(samples, plan, lpc_coefficient_precision);
+    auto analysis = impl_->run_generated_analysis(
+        samples, plan, lpc_coefficient_precision, max_rice_partition_order, lpc_shape, false);
+    return OpenClMonoBestMethodResult {
+        .best_tasks = std::move(analysis.best_tasks),
+        .best_rice_parameters = std::move(analysis.best_rice_parameters),
+        .device_name = std::move(analysis.device_name),
+    };
+#else
+    (void)samples;
+    (void)plan;
+    (void)lpc_coefficient_precision;
+    (void)max_rice_partition_order;
+    throw std::runtime_error("OpenCL support was not built");
+#endif
+}
 
 OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_generated_analysis(
     const std::vector<std::int32_t>& samples,
@@ -2763,6 +2947,18 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis(
     (void)max_rice_partition_order;
     throw std::runtime_error("OpenCL support was not built");
 #endif
+}
+
+OpenClMonoBestMethodResult run_opencl_mono_generated_best_analysis(
+    const std::vector<std::int32_t>& samples,
+    const OpenClMonoAnalysisTaskPlan& plan,
+    std::optional<std::size_t> requested_device_index,
+    unsigned lpc_coefficient_precision,
+    unsigned max_rice_partition_order)
+{
+    OpenClMonoAnalysisSession session(requested_device_index);
+    return session.run_generated_best_analysis(
+        samples, plan, lpc_coefficient_precision, max_rice_partition_order);
 }
 
 OpenClMonoGeneratedFrameAnalysisResult analyze_opencl_mono_generated_frames(
