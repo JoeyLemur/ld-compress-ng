@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -60,12 +61,24 @@ bool generated_profile_uses_subdivide_tukey3(NativeAnalysisProfile profile)
     return profile == NativeAnalysisProfile::SubdivideTukey3MeanRice;
 }
 
+std::uint64_t elapsed_ns_since(Clock::time_point start)
+{
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count());
+}
+
 LDCOMPRESS_OPENCL_ONLY_USED void add_elapsed_ns(
     std::uint64_t& counter,
     Clock::time_point start)
 {
-    counter += static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count());
+    counter += elapsed_ns_since(start);
+}
+
+std::uint64_t absolute_i64(std::int64_t value)
+{
+    return value < 0
+        ? static_cast<std::uint64_t>(-(value + 1)) + 1U
+        : static_cast<std::uint64_t>(value);
 }
 
 std::int32_t checked_i32(std::uint64_t value, const char* name)
@@ -1127,55 +1140,61 @@ std::vector<FlacClSubframeTask> choose_best_tasks(
     return best_tasks;
 }
 
-unsigned guess_fixed_predictor_order(
-    const std::vector<std::int32_t>& shifted_samples,
+unsigned guess_fixed_predictor_order_from_samples(
+    const std::int32_t* samples,
+    std::size_t count,
     unsigned max_fixed_order)
 {
-    const auto max_order = shifted_samples.size() > 1
-        ? std::min<std::size_t>(max_fixed_order, shifted_samples.size() - 1U)
+    const auto max_order = count > 1
+        ? std::min<std::size_t>(max_fixed_order, count - 1U)
         : 0;
-    unsigned best_order = 0;
-    std::uint64_t best_sum = std::numeric_limits<std::uint64_t>::max();
-    for (unsigned order = 0; order <= max_order; ++order) {
-        std::uint64_t sum = 0;
-        for (std::size_t i = order; i < shifted_samples.size(); ++i) {
-            const auto residual = fixed_prediction_residual(shifted_samples, i, order);
-            sum += residual < 0
-                ? static_cast<std::uint64_t>(-(residual + 1)) + 1U
-                : static_cast<std::uint64_t>(residual);
+    std::array<std::uint64_t, 5> sums {};
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto current = static_cast<std::int64_t>(samples[i]);
+        sums[0] += absolute_i64(current);
+        if (max_order >= 1U && i >= 1U) {
+            sums[1] += absolute_i64(current - samples[i - 1U]);
         }
-        if (sum < best_sum) {
-            best_sum = sum;
+        if (max_order >= 2U && i >= 2U) {
+            sums[2] += absolute_i64(
+                current - (2LL * samples[i - 1U]) + samples[i - 2U]);
+        }
+        if (max_order >= 3U && i >= 3U) {
+            sums[3] += absolute_i64(
+                current -
+                (3LL * samples[i - 1U]) +
+                (3LL * samples[i - 2U]) -
+                samples[i - 3U]);
+        }
+        if (max_order >= 4U && i >= 4U) {
+            sums[4] += absolute_i64(
+                current -
+                (4LL * samples[i - 1U]) +
+                (6LL * samples[i - 2U]) -
+                (4LL * samples[i - 3U]) +
+                samples[i - 4U]);
+        }
+    }
+
+    unsigned best_order = 0;
+    auto best_sum = sums[0];
+    for (unsigned order = 1; order <= max_order; ++order) {
+        if (sums[order] < best_sum) {
+            best_sum = sums[order];
             best_order = order;
         }
     }
     return best_order;
 }
 
-std::int64_t fixed_prediction_residual_at(
-    const std::vector<std::int32_t>& samples,
-    std::size_t index,
-    unsigned order)
+unsigned guess_fixed_predictor_order(
+    const std::vector<std::int32_t>& shifted_samples,
+    unsigned max_fixed_order)
 {
-    switch (order) {
-    case 0:
-        return samples[index];
-    case 1:
-        return static_cast<std::int64_t>(samples[index]) - samples[index - 1U];
-    case 2:
-        return static_cast<std::int64_t>(samples[index]) -
-            (2LL * samples[index - 1U]) + samples[index - 2U];
-    case 3:
-        return static_cast<std::int64_t>(samples[index]) -
-            (3LL * samples[index - 1U]) + (3LL * samples[index - 2U]) -
-            samples[index - 3U];
-    case 4:
-        return static_cast<std::int64_t>(samples[index]) -
-            (4LL * samples[index - 1U]) + (6LL * samples[index - 2U]) -
-            (4LL * samples[index - 3U]) + samples[index - 4U];
-    default:
-        throw std::runtime_error("OpenCL profile fixed-order guess received invalid order");
-    }
+    return guess_fixed_predictor_order_from_samples(
+        shifted_samples.data(),
+        shifted_samples.size(),
+        max_fixed_order);
 }
 
 unsigned guess_fixed_predictor_order_for_frame(
@@ -1184,28 +1203,13 @@ unsigned guess_fixed_predictor_order_for_frame(
     std::size_t count,
     unsigned max_fixed_order)
 {
-    const auto max_order = count > 1
-        ? std::min<std::size_t>(max_fixed_order, count - 1U)
-        : 0;
-    unsigned best_order = 0;
-    std::uint64_t best_sum = std::numeric_limits<std::uint64_t>::max();
-    for (unsigned order = 0; order <= max_order; ++order) {
-        std::uint64_t sum = 0;
-        for (std::size_t i = order; i < count; ++i) {
-            const auto residual = fixed_prediction_residual_at(samples, offset + i, order);
-            sum += residual < 0
-                ? static_cast<std::uint64_t>(-(residual + 1)) + 1U
-                : static_cast<std::uint64_t>(residual);
-            if (sum >= best_sum) {
-                break;
-            }
-        }
-        if (sum < best_sum) {
-            best_sum = sum;
-            best_order = order;
-        }
+    if (offset > samples.size() || count > samples.size() - offset) {
+        throw std::runtime_error("OpenCL profile fixed-order guess samples are out of range");
     }
-    return best_order;
+    return guess_fixed_predictor_order_from_samples(
+        samples.data() + offset,
+        count,
+        max_fixed_order);
 }
 
 void mark_task_pruned(FlacClSubframeTask& task)
@@ -1865,6 +1869,95 @@ uint ldcompressReduceOrUint(uint value, __local uint* scratch)
     return scratch[0];
 }
 
+ulong ldcompressAbsLong(long value)
+{
+    return value >= 0
+        ? (ulong)value
+        : (ulong)(-(value + 1)) + 1UL;
+}
+
+__kernel __attribute__((reqd_work_group_size(EXACT_WORKGROUP_SIZE, 1, 1)))
+void ldcompressPruneFixedOrderGuess(
+    __global const int* samples,
+    __global const int* selectedTasks,
+    __global FLACCLSubframeTask* tasks,
+    int taskCount)
+{
+    __local ulong reduceScratch[5 * EXACT_WORKGROUP_SIZE];
+    const int lane = (int)get_local_id(0);
+    const int frame = (int)get_group_id(0);
+    const int base = frame * taskCount;
+
+    int fixedTaskNo[5];
+    for (int order = 0; order <= 4; order++)
+        fixedTaskNo[order] = -1;
+
+    for (int i = 0; i < taskCount; i++)
+    {
+        const int taskNo = selectedTasks[base + i];
+        FLACCLSubframeTask task = tasks[taskNo];
+        const int order = task.data.residualOrder;
+        if (task.data.type == Fixed && order >= 0 && order <= 4)
+            fixedTaskNo[order] = taskNo;
+    }
+
+    FLACCLSubframeTask firstTask = tasks[selectedTasks[base]];
+    const int bs = firstTask.data.blocksize;
+    const int wbits = firstTask.data.wbits;
+    __global const int* data = &samples[firstTask.data.samplesOffs];
+
+    ulong localSums[5];
+    for (int order = 0; order <= 4; order++)
+        localSums[order] = 0UL;
+
+    for (int pos = lane; pos < bs; pos += EXACT_WORKGROUP_SIZE)
+    {
+        if (fixedTaskNo[0] >= 0)
+            localSums[0] += ldcompressAbsLong(ldcompressFixedResidual(data, pos, 0, wbits));
+        if (fixedTaskNo[1] >= 0 && pos >= 1)
+            localSums[1] += ldcompressAbsLong(ldcompressFixedResidual(data, pos, 1, wbits));
+        if (fixedTaskNo[2] >= 0 && pos >= 2)
+            localSums[2] += ldcompressAbsLong(ldcompressFixedResidual(data, pos, 2, wbits));
+        if (fixedTaskNo[3] >= 0 && pos >= 3)
+            localSums[3] += ldcompressAbsLong(ldcompressFixedResidual(data, pos, 3, wbits));
+        if (fixedTaskNo[4] >= 0 && pos >= 4)
+            localSums[4] += ldcompressAbsLong(ldcompressFixedResidual(data, pos, 4, wbits));
+    }
+
+    ulong sums[5];
+    for (int order = 0; order <= 4; order++)
+        sums[order] = ldcompressReduceSumUlong(
+            localSums[order],
+            reduceScratch + (order * EXACT_WORKGROUP_SIZE));
+
+    if (lane != 0)
+        return;
+
+    int bestOrder = -1;
+    ulong bestSum = 0xffffffffffffffffUL;
+    for (int order = 0; order <= 4; order++)
+    {
+        if (fixedTaskNo[order] >= 0 && sums[order] < bestSum)
+        {
+            bestOrder = order;
+            bestSum = sums[order];
+        }
+    }
+
+    if (bestOrder < 0)
+        return;
+
+    for (int order = 0; order <= 4; order++)
+    {
+        if (fixedTaskNo[order] >= 0 && order != bestOrder)
+        {
+            FLACCLSubframeTask task = tasks[fixedTaskNo[order]];
+            task.data.size = 0x7fffffff;
+            tasks[fixedTaskNo[order]] = task;
+        }
+    }
+}
+
 int ldcompressCooperativeAllFrameSamplesEqual(
     __global const int* data,
     int blocksize,
@@ -2423,6 +2516,7 @@ struct OpenClGeneratedAnalysisRuntime {
     ClKernel autocor_kernel;
     ClKernel lpc_kernel;
     ClKernel quantize_kernel;
+    ClKernel fixed_guess_kernel;
     ClKernel exact_kernel;
     ClKernel choose_kernel;
     ClKernel rice_kernel;
@@ -2512,6 +2606,9 @@ OpenClGeneratedAnalysisRuntime make_opencl_generated_analysis_runtime(
     runtime.quantize_kernel.reset(
         clCreateKernel(runtime.program.get(), "ldcompressQuantizeLpcOrders", &status));
     require_cl(status, "clCreateKernel(ldcompressQuantizeLpcOrders)");
+    runtime.fixed_guess_kernel.reset(
+        clCreateKernel(runtime.program.get(), "ldcompressPruneFixedOrderGuess", &status));
+    require_cl(status, "clCreateKernel(ldcompressPruneFixedOrderGuess)");
     runtime.exact_kernel.reset(
         clCreateKernel(runtime.program.get(), "ldcompressAnalyzeSubframeExact", &status));
     require_cl(status, "clCreateKernel(ldcompressAnalyzeSubframeExact)");
@@ -2679,7 +2776,8 @@ OpenClMonoAnalysisTaskPlan build_mono_analysis_task_plan(
 OpenClMonoAnalysisTaskPlan build_mono_analysis_task_plan_for_samples(
     const std::vector<std::int32_t>& samples,
     std::size_t frame_count,
-    const OpenClMonoAnalysisTaskOptions& options)
+    const OpenClMonoAnalysisTaskOptions& options,
+    OpenClTaskPlanTimings* timings)
 {
     if (!generated_profile_uses_order_guess(options.analysis_profile) ||
         options.min_fixed_order != 0) {
@@ -2701,7 +2799,11 @@ OpenClMonoAnalysisTaskPlan build_mono_analysis_task_plan_for_samples(
 
     const auto lpc_tasks_per_frame = generated_lpc_task_count(options);
     const auto available_fixed_tasks = fixed_task_count(options);
-    const auto compact_fixed_tasks = available_fixed_tasks == 0 ? 0U : 1U;
+    const bool fixed_order_guess_on_gpu =
+        options.use_gpu_fixed_order_guess && available_fixed_tasks > 1;
+    const auto compact_fixed_tasks = fixed_order_guess_on_gpu
+        ? available_fixed_tasks
+        : (available_fixed_tasks == 0 ? 0U : 1U);
     const auto tasks_per_frame =
         lpc_tasks_per_frame +
         (options.include_constant ? 1U : 0U) +
@@ -2719,38 +2821,92 @@ OpenClMonoAnalysisTaskPlan build_mono_analysis_task_plan_for_samples(
     plan.estimate_tasks_per_frame = tasks_per_frame;
     plan.analysis_profile = options.analysis_profile;
     plan.max_lpc_order = options.max_lpc_order;
-    plan.residual_tasks.reserve(frame_count * tasks_per_frame);
-    plan.selected_tasks.reserve(frame_count * tasks_per_frame);
+    plan.fixed_order_guess_on_gpu = fixed_order_guess_on_gpu;
+    const auto total_tasks = frame_count * tasks_per_frame;
+    const auto fill_started = Clock::now();
+    std::uint64_t fixed_guess_ns = 0;
+    plan.residual_tasks.resize(total_tasks);
+    plan.selected_tasks.resize(total_tasks);
+    std::iota(plan.selected_tasks.begin(), plan.selected_tasks.end(), std::int32_t {0});
 
     const auto largest_usable = static_cast<unsigned>(options.frame_samples - 1U);
     const auto max_fixed =
         options.max_fixed_order < largest_usable ? options.max_fixed_order : largest_usable;
+    const auto raw_bits = checked_i32(
+        static_cast<std::uint64_t>(options.bits_per_sample) * options.frame_samples,
+        "OpenCL mono analysis size");
+    const auto obits = checked_i32(options.bits_per_sample, "OpenCL mono analysis obits");
+    const auto blocksize = checked_i32(options.frame_samples, "OpenCL mono analysis blocksize");
+    const auto coding_method = options.bits_per_sample > 16 ? 1 : 0;
+    auto make_task_for_frame = [&](
+                                   std::int32_t samples_offset,
+                                   std::int32_t type,
+                                   unsigned residual_order) {
+        FlacClSubframeTask task;
+        task.data.residualOrder =
+            checked_i32(residual_order, "OpenCL mono analysis residualOrder");
+        task.data.samplesOffs = samples_offset;
+        task.data.shift = 0;
+        task.data.cbits = 0;
+        task.data.size = raw_bits;
+        task.data.type = type;
+        task.data.obits = obits;
+        task.data.blocksize = blocksize;
+        task.data.coding_method = coding_method;
+        task.data.channel = 0;
+        task.data.residualOffs = samples_offset;
+        task.data.wbits = 0;
+        task.data.abits = task.data.obits;
+        task.data.porder = 0;
+        task.data.headerLen = 0;
+        task.data.encodingOffset = 0;
+        return task;
+    };
     for (std::size_t frame = 0; frame < frame_count; ++frame) {
-        const auto frame_task_base = plan.residual_tasks.size();
+        const auto frame_task_base = frame * tasks_per_frame;
+        const auto samples_offset = checked_i32(
+            static_cast<std::uint64_t>(frame) * options.frame_samples,
+            "OpenCL mono analysis samplesOffs");
         for (std::size_t window = 0; window < lpc_tasks_per_frame; ++window) {
-            plan.residual_tasks.push_back(
-                make_common_task(options, frame, kFlacClSubframeLpc, 1));
+            plan.residual_tasks[frame_task_base + window] =
+                make_task_for_frame(samples_offset, kFlacClSubframeLpc, 1);
         }
 
+        auto task_index = frame_task_base + lpc_tasks_per_frame;
         if (options.include_constant) {
-            auto task = make_common_task(options, frame, kFlacClSubframeConstant, 1);
+            auto task = make_task_for_frame(samples_offset, kFlacClSubframeConstant, 1);
             task.coefs[0] = 1;
-            plan.residual_tasks.push_back(task);
+            plan.residual_tasks[task_index] = task;
+            ++task_index;
         }
 
-        if (compact_fixed_tasks != 0) {
+        if (fixed_order_guess_on_gpu) {
+            for (unsigned order = 0; order <= max_fixed; ++order) {
+                auto task = make_task_for_frame(samples_offset, kFlacClSubframeFixed, order);
+                populate_fixed_coefficients(task, order);
+                plan.residual_tasks[task_index] = task;
+                ++task_index;
+            }
+        } else if (compact_fixed_tasks != 0) {
             const auto offset = frame * static_cast<std::size_t>(options.frame_samples);
-            const auto order = guess_fixed_predictor_order_for_frame(
-                samples, offset, options.frame_samples, max_fixed);
-            auto task = make_common_task(options, frame, kFlacClSubframeFixed, order);
+            unsigned order = 0;
+            if (timings == nullptr) {
+                order = guess_fixed_predictor_order_for_frame(
+                    samples, offset, options.frame_samples, max_fixed);
+            } else {
+                const auto guess_started = Clock::now();
+                order = guess_fixed_predictor_order_for_frame(
+                    samples, offset, options.frame_samples, max_fixed);
+                fixed_guess_ns += elapsed_ns_since(guess_started);
+            }
+            auto task = make_task_for_frame(samples_offset, kFlacClSubframeFixed, order);
             populate_fixed_coefficients(task, order);
-            plan.residual_tasks.push_back(task);
+            plan.residual_tasks[task_index] = task;
         }
-
-        for (std::size_t i = 0; i < tasks_per_frame; ++i) {
-            plan.selected_tasks.push_back(
-                checked_i32(frame_task_base + i, "OpenCL mono analysis selected task"));
-        }
+    }
+    if (timings != nullptr) {
+        timings->fixed_order_guess_ns += fixed_guess_ns;
+        timings->task_fill_ns += elapsed_ns_since(fill_started) - fixed_guess_ns;
     }
 
     return plan;
@@ -3652,6 +3808,35 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
         &OpenClGeneratedAnalysisTimings::generated_quantize_ns,
         quantize_started,
         "clFinish(ldcompressQuantizeLpcOrders)");
+
+    if (plan.fixed_order_guess_on_gpu) {
+        require_cl(clSetKernelArg(runtime.fixed_guess_kernel.get(), 0, sizeof(samples_mem),
+                       &samples_mem),
+            "clSetKernelArg(fixedGuess.samples)");
+        require_cl(clSetKernelArg(runtime.fixed_guess_kernel.get(), 1, sizeof(selected_mem),
+                       &selected_mem),
+            "clSetKernelArg(fixedGuess.selectedTasks)");
+        require_cl(clSetKernelArg(runtime.fixed_guess_kernel.get(), 2, sizeof(tasks_mem),
+                       &tasks_mem),
+            "clSetKernelArg(fixedGuess.tasks)");
+        require_cl(clSetKernelArg(runtime.fixed_guess_kernel.get(), 3,
+                       sizeof(estimate_tasks_per_frame), &estimate_tasks_per_frame),
+            "clSetKernelArg(fixedGuess.taskCount)");
+
+        const std::size_t fixed_guess_local_work_size = kOpenClExactWorkgroupSize;
+        const std::size_t fixed_guess_global_work_size =
+            frame_count * fixed_guess_local_work_size;
+        const auto fixed_guess_started = Clock::now();
+        require_cl(clEnqueueNDRangeKernel(runtime.queue.get(),
+                       runtime.fixed_guess_kernel.get(), 1, nullptr,
+                       &fixed_guess_global_work_size, &fixed_guess_local_work_size,
+                       0, nullptr, nullptr),
+            "clEnqueueNDRangeKernel(ldcompressPruneFixedOrderGuess)");
+        finish_timed(
+            &OpenClGeneratedAnalysisTimings::fixed_order_guess_ns,
+            fixed_guess_started,
+            "clFinish(ldcompressPruneFixedOrderGuess)");
+    }
 
     const auto max_rice_partition_order_arg =
         static_cast<std::int32_t>(max_rice_partition_order);

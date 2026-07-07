@@ -44,6 +44,7 @@ void add_opencl_timings(
     stats.opencl_generated_autocorrelation_ns += timings.generated_autocorrelation_ns;
     stats.opencl_generated_lpc_ns += timings.generated_lpc_ns;
     stats.opencl_generated_quantize_ns += timings.generated_quantize_ns;
+    stats.opencl_fixed_order_guess_ns += timings.fixed_order_guess_ns;
     stats.opencl_exact_analysis_ns += timings.exact_analysis_ns;
     stats.opencl_choose_best_ns += timings.choose_best_ns;
     stats.opencl_readback_ns += timings.readback_ns;
@@ -59,6 +60,14 @@ void add_opencl_setup_timings(
     stats.opencl_setup_program_source_ns += timings.program_source_ns;
     stats.opencl_setup_program_build_ns += timings.program_build_ns;
     stats.opencl_setup_kernels_ns += timings.kernels_ns;
+}
+
+void add_opencl_task_plan_timings(
+    NativeCompressionStats& stats,
+    const opencl_detail::OpenClTaskPlanTimings& timings)
+{
+    stats.opencl_task_plan_fixed_guess_ns += timings.fixed_order_guess_ns;
+    stats.opencl_task_plan_fill_ns += timings.task_fill_ns;
 }
 
 AcceleratedSelectedFrameAnalysis analyze_opencl_selected_frames(
@@ -91,14 +100,20 @@ AcceleratedSelectedFrameAnalysis analyze_opencl_selected_frames(
         task_options.min_fixed_order = 0;
         task_options.max_fixed_order = 4;
         task_options.include_constant = true;
+        task_options.use_gpu_fixed_order_guess = true;
         task_options.analysis_profile = analysis_profile;
 
         const auto frame_count = samples.size() / frame_samples;
         const auto plan_started = Clock::now();
+        opencl_detail::OpenClTaskPlanTimings plan_timings;
         auto plan = opencl_detail::build_mono_analysis_task_plan_for_samples(
-            samples, frame_count, task_options);
+            samples,
+            frame_count,
+            task_options,
+            stats == nullptr ? nullptr : &plan_timings);
         if (stats != nullptr) {
             add_elapsed_ns(stats->accelerated_task_plan_ns, plan_started);
+            add_opencl_task_plan_timings(*stats, plan_timings);
         }
         const auto analysis_started = Clock::now();
         opencl_detail::OpenClGeneratedAnalysisTimings opencl_timings;
@@ -145,10 +160,15 @@ AcceleratedSelectedFrameAnalysis analyze_opencl_selected_frames(
 
     const auto frame_count = samples.size() / frame_samples;
     const auto plan_started = Clock::now();
+    opencl_detail::OpenClTaskPlanTimings plan_timings;
     auto plan = opencl_detail::build_mono_analysis_task_plan_for_samples(
-        samples, frame_count, task_options);
+        samples,
+        frame_count,
+        task_options,
+        stats == nullptr ? nullptr : &plan_timings);
     if (stats != nullptr) {
         add_elapsed_ns(stats->accelerated_task_plan_ns, plan_started);
+        add_opencl_task_plan_timings(*stats, plan_timings);
     }
     const auto analysis_started = Clock::now();
     auto result = opencl_detail::run_opencl_mono_fixed_constant_analysis(

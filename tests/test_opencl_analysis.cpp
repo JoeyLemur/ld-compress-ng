@@ -1132,6 +1132,41 @@ void test_compact_order_guess_profile_task_plan()
             "compact order-guess fixed block size mismatch");
     }
 
+    auto gpu_guess_options = options;
+    gpu_guess_options.use_gpu_fixed_order_guess = true;
+    const auto gpu_guess =
+        build_mono_analysis_task_plan_for_samples(samples, 2, gpu_guess_options);
+    require(gpu_guess.fixed_order_guess_on_gpu,
+        "GPU fixed-order guess plan did not retain prune flag");
+    require(gpu_guess.residual_tasks_per_frame == 9,
+        "GPU fixed-order guess task count mismatch");
+    require(gpu_guess.residual_tasks.size() == 18,
+        "GPU fixed-order guess residual task vector size mismatch");
+    require(gpu_guess.selected_tasks.size() == 18,
+        "GPU fixed-order guess selected task vector size mismatch");
+    for (std::size_t i = 0; i < gpu_guess.selected_tasks.size(); ++i) {
+        require(gpu_guess.selected_tasks[i] == static_cast<int>(i),
+            "GPU fixed-order guess selected task index mismatch");
+    }
+    for (std::size_t frame = 0; frame < 2; ++frame) {
+        const auto base = frame * gpu_guess.residual_tasks_per_frame;
+        for (std::size_t window = 0; window < 3; ++window) {
+            require(gpu_guess.residual_tasks[base + window].data.type ==
+                    kFlacClSubframeLpc,
+                "GPU fixed-order guess LPC prefix mismatch");
+        }
+        require(gpu_guess.residual_tasks[base + 3].data.type ==
+                kFlacClSubframeConstant,
+            "GPU fixed-order guess constant task mismatch");
+        for (unsigned order = 0; order <= 4; ++order) {
+            const auto& task = gpu_guess.residual_tasks[base + 4 + order];
+            require(task.data.type == kFlacClSubframeFixed,
+                "GPU fixed-order guess fixed task type mismatch");
+            require(task.data.residualOrder == static_cast<int>(order),
+                "GPU fixed-order guess fixed order mismatch");
+        }
+    }
+
     auto fixed_only_options = options;
     fixed_only_options.max_lpc_order = 0;
     auto fixed_only_expanded = build_mono_analysis_task_plan(2, fixed_only_options);

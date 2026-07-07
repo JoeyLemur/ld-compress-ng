@@ -1010,6 +1010,22 @@ void print_native_stats(const ldcompress::NativeCompressionStats& stats)
                       << " analyzer-other=" << seconds_from_ns(analyzer_other_ns) << "s"
                       << '\n';
         }
+        if (stats.opencl_task_plan_fixed_guess_ns != 0 ||
+            stats.opencl_task_plan_fill_ns != 0) {
+            const auto opencl_plan_detail_ns =
+                stats.opencl_task_plan_fixed_guess_ns +
+                stats.opencl_task_plan_fill_ns;
+            const auto opencl_plan_other_ns =
+                stats.accelerated_task_plan_ns > opencl_plan_detail_ns
+                ? stats.accelerated_task_plan_ns - opencl_plan_detail_ns
+                : 0;
+            std::cerr << "opencl task-plan timings: fixed-guess="
+                      << seconds_from_ns(stats.opencl_task_plan_fixed_guess_ns) << "s"
+                      << " task-fill="
+                      << seconds_from_ns(stats.opencl_task_plan_fill_ns) << "s"
+                      << " other=" << seconds_from_ns(opencl_plan_other_ns) << "s"
+                      << '\n';
+        }
         if (stats.opencl_timed_batches != 0) {
             const auto opencl_detail_ns =
                 stats.opencl_upload_ns +
@@ -1017,6 +1033,7 @@ void print_native_stats(const ldcompress::NativeCompressionStats& stats)
                 stats.opencl_generated_autocorrelation_ns +
                 stats.opencl_generated_lpc_ns +
                 stats.opencl_generated_quantize_ns +
+                stats.opencl_fixed_order_guess_ns +
                 stats.opencl_exact_analysis_ns +
                 stats.opencl_choose_best_ns +
                 stats.opencl_readback_ns;
@@ -1032,6 +1049,8 @@ void print_native_stats(const ldcompress::NativeCompressionStats& stats)
                       << " lpc=" << seconds_from_ns(stats.opencl_generated_lpc_ns) << "s"
                       << " quantize="
                       << seconds_from_ns(stats.opencl_generated_quantize_ns) << "s"
+                      << " fixed-guess="
+                      << seconds_from_ns(stats.opencl_fixed_order_guess_ns) << "s"
                       << " exact=" << seconds_from_ns(stats.opencl_exact_analysis_ns)
                       << "s"
                       << " choose=" << seconds_from_ns(stats.opencl_choose_best_ns) << "s"
@@ -1383,6 +1402,8 @@ void print_bench_result(const BenchResult& result)
     print_seconds_field(result.native_stats.accelerated_analyzer_ns);
     print_seconds_field(result.native_stats.accelerated_task_plan_ns);
     print_seconds_field(result.native_stats.accelerated_exact_analysis_ns);
+    print_seconds_field(result.native_stats.opencl_task_plan_fixed_guess_ns);
+    print_seconds_field(result.native_stats.opencl_task_plan_fill_ns);
     print_seconds_field(result.native_stats.opencl_setup_device_ns);
     print_seconds_field(result.native_stats.opencl_setup_context_ns);
     print_seconds_field(result.native_stats.opencl_setup_queue_ns);
@@ -1402,6 +1423,7 @@ void print_bench_result(const BenchResult& result)
     print_seconds_field(result.native_stats.opencl_generated_autocorrelation_ns);
     print_seconds_field(result.native_stats.opencl_generated_lpc_ns);
     print_seconds_field(result.native_stats.opencl_generated_quantize_ns);
+    print_seconds_field(result.native_stats.opencl_fixed_order_guess_ns);
     print_seconds_field(result.native_stats.opencl_exact_analysis_ns);
     print_seconds_field(result.native_stats.opencl_choose_best_ns);
     print_seconds_field(result.native_stats.opencl_readback_ns);
@@ -1604,6 +1626,8 @@ int run_bench(const Options& options)
               << std::setw(18) << "accel_analyze_s"
               << std::setw(18) << "accel_plan_s"
               << std::setw(18) << "accel_exact_s"
+              << std::setw(18) << "ocl_plan_guess_s"
+              << std::setw(18) << "ocl_plan_fill_s"
               << std::setw(18) << "ocl_setup_dev_s"
               << std::setw(18) << "ocl_setup_ctx_s"
               << std::setw(18) << "ocl_setup_q_s"
@@ -1623,6 +1647,7 @@ int run_bench(const Options& options)
               << std::setw(18) << "opencl_ac_s"
               << std::setw(18) << "opencl_lpc_s"
               << std::setw(18) << "opencl_quant_s"
+              << std::setw(18) << "opencl_fguess_s"
               << std::setw(18) << "opencl_exact_s"
               << std::setw(18) << "opencl_choose_s"
               << std::setw(18) << "opencl_read_s"

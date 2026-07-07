@@ -47,6 +47,8 @@ struct NativeCompressionStats {
     std::uint64_t accelerated_selected_frame_output_ns = 0;
     std::uint64_t accelerated_task_plan_ns = 0;
     std::uint64_t accelerated_exact_analysis_ns = 0;
+    std::uint64_t opencl_task_plan_fixed_guess_ns = 0;
+    std::uint64_t opencl_task_plan_fill_ns = 0;
     std::uint64_t opencl_setup_device_ns = 0;
     std::uint64_t opencl_setup_context_ns = 0;
     std::uint64_t opencl_setup_queue_ns = 0;
@@ -59,6 +61,7 @@ struct NativeCompressionStats {
     std::uint64_t opencl_generated_autocorrelation_ns = 0;
     std::uint64_t opencl_generated_lpc_ns = 0;
     std::uint64_t opencl_generated_quantize_ns = 0;
+    std::uint64_t opencl_fixed_order_guess_ns = 0;
     std::uint64_t opencl_exact_analysis_ns = 0;
     std::uint64_t opencl_choose_best_ns = 0;
     std::uint64_t opencl_readback_ns = 0;

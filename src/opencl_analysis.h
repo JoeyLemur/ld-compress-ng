@@ -65,6 +65,7 @@ struct OpenClMonoAnalysisTaskOptions {
     unsigned min_fixed_order = 0;
     unsigned max_fixed_order = 4;
     bool include_constant = true;
+    bool use_gpu_fixed_order_guess = false;
     NativeAnalysisProfile analysis_profile = NativeAnalysisProfile::Exact;
 };
 
@@ -75,6 +76,7 @@ struct OpenClMonoAnalysisTaskPlan {
     std::size_t estimate_tasks_per_frame = 0;
     NativeAnalysisProfile analysis_profile = NativeAnalysisProfile::Exact;
     unsigned max_lpc_order = 0;
+    bool fixed_order_guess_on_gpu = false;
 };
 
 struct OpenClMonoBestMethodResult {
@@ -99,6 +101,11 @@ struct OpenClGeneratedSetupTimings {
     std::uint64_t kernels_ns = 0;
 };
 
+struct OpenClTaskPlanTimings {
+    std::uint64_t fixed_order_guess_ns = 0;
+    std::uint64_t task_fill_ns = 0;
+};
+
 struct OpenClGeneratedAnalysisTimings {
     std::uint64_t batches = 0;
     std::uint64_t upload_ns = 0;
@@ -106,6 +113,7 @@ struct OpenClGeneratedAnalysisTimings {
     std::uint64_t generated_autocorrelation_ns = 0;
     std::uint64_t generated_lpc_ns = 0;
     std::uint64_t generated_quantize_ns = 0;
+    std::uint64_t fixed_order_guess_ns = 0;
     std::uint64_t exact_analysis_ns = 0;
     std::uint64_t choose_best_ns = 0;
     std::uint64_t readback_ns = 0;
@@ -129,7 +137,8 @@ OpenClMonoAnalysisTaskPlan build_mono_analysis_task_plan(
 OpenClMonoAnalysisTaskPlan build_mono_analysis_task_plan_for_samples(
     const std::vector<std::int32_t>& samples,
     std::size_t frame_count,
-    const OpenClMonoAnalysisTaskOptions& options);
+    const OpenClMonoAnalysisTaskOptions& options,
+    OpenClTaskPlanTimings* timings = nullptr);
 
 void apply_mono_analysis_profile_to_plan(
     const std::vector<std::int32_t>& samples,
