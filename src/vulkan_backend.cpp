@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <istream>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -235,22 +236,23 @@ VulkanDeviceInfo select_vulkan_analysis_device(std::optional<std::size_t> reques
         "no available non-CPU Vulkan compute devices with shaderInt64 found");
 }
 
-}  // namespace
+void validate_vulkan_session_device(
+    const VulkanCompressionOptions& options,
+    std::size_t session_device_index)
+{
+    if (options.device_index.has_value() && *options.device_index != session_device_index) {
+        throw std::runtime_error(
+            "Vulkan compression session device does not match requested device");
+    }
+}
 
-ConversionStats compress_lds_to_vulkan_native_flac(
+ConversionStats compress_lds_to_vulkan_native_flac_with_session(
     std::istream& lds_input,
     const std::string& output_path,
-    const VulkanCompressionOptions& options)
+    const VulkanCompressionOptions& options,
+    vulkan_detail::VulkanMonoExactAnalysisSession& session,
+    Clock::time_point total_started)
 {
-    const auto total_started = Clock::now();
-    validate_vulkan_options(options);
-    const auto selected_device = select_vulkan_analysis_device(options.device_index);
-    const auto device_index = std::optional<std::size_t>(selected_device.index);
-    vulkan_detail::VulkanMonoExactAnalysisSession session(device_index);
-    if (options.native_stats != nullptr) {
-        add_elapsed_ns(options.native_stats->accelerated_setup_ns, total_started);
-    }
-
     const AcceleratedNativeCompressionOptions accelerated_options {
         .backend_label = "Vulkan",
         .container = options.container,
@@ -280,6 +282,53 @@ ConversionStats compress_lds_to_vulkan_native_flac(
         add_elapsed_ns(options.native_stats->accelerated_total_ns, total_started);
     }
     return stats;
+}
+
+}  // namespace
+
+VulkanCompressionSession::VulkanCompressionSession(
+    std::optional<std::size_t> requested_device_index)
+{
+    const auto selected_device = select_vulkan_analysis_device(requested_device_index);
+    device_index_ = selected_device.index;
+    analysis_session_ =
+        std::make_unique<vulkan_detail::VulkanMonoExactAnalysisSession>(
+            std::optional<std::size_t>(device_index_));
+}
+
+VulkanCompressionSession::~VulkanCompressionSession() = default;
+
+ConversionStats VulkanCompressionSession::compress_lds_to_native_flac(
+    std::istream& lds_input,
+    const std::string& output_path,
+    const VulkanCompressionOptions& options)
+{
+    const auto total_started = Clock::now();
+    validate_vulkan_options(options);
+    validate_vulkan_session_device(options, device_index_);
+    if (options.native_stats != nullptr) {
+        add_elapsed_ns(options.native_stats->accelerated_setup_ns, total_started);
+    }
+    return compress_lds_to_vulkan_native_flac_with_session(
+        lds_input, output_path, options, *analysis_session_, total_started);
+}
+
+ConversionStats compress_lds_to_vulkan_native_flac(
+    std::istream& lds_input,
+    const std::string& output_path,
+    const VulkanCompressionOptions& options)
+{
+    const auto total_started = Clock::now();
+    validate_vulkan_options(options);
+    const auto selected_device = select_vulkan_analysis_device(options.device_index);
+    const auto device_index = std::optional<std::size_t>(selected_device.index);
+    vulkan_detail::VulkanMonoExactAnalysisSession session(device_index);
+    if (options.native_stats != nullptr) {
+        add_elapsed_ns(options.native_stats->accelerated_setup_ns, total_started);
+    }
+
+    return compress_lds_to_vulkan_native_flac_with_session(
+        lds_input, output_path, options, session, total_started);
 }
 
 }  // namespace ldcompress

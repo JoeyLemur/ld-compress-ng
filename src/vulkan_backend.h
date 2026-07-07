@@ -6,12 +6,17 @@
 
 #include <cstddef>
 #include <iosfwd>
+#include <memory>
 #include <optional>
 #include <string>
 
 namespace ldcompress {
 
 struct NativeCompressionStats;
+
+namespace vulkan_detail {
+class VulkanMonoExactAnalysisSession;
+}
 
 struct VulkanCompressionOptions {
     FlacContainer container = FlacContainer::Native;
@@ -24,6 +29,27 @@ struct VulkanCompressionOptions {
     NativeAnalysisProfile analysis_profile = NativeAnalysisProfile::Exact;
     std::optional<std::size_t> device_index;
     NativeCompressionStats* native_stats = nullptr;
+};
+
+class VulkanCompressionSession final {
+public:
+    explicit VulkanCompressionSession(
+        std::optional<std::size_t> requested_device_index = std::nullopt);
+    ~VulkanCompressionSession();
+
+    VulkanCompressionSession(const VulkanCompressionSession&) = delete;
+    VulkanCompressionSession& operator=(const VulkanCompressionSession&) = delete;
+
+    std::size_t device_index() const noexcept { return device_index_; }
+
+    ConversionStats compress_lds_to_native_flac(
+        std::istream& lds_input,
+        const std::string& output_path,
+        const VulkanCompressionOptions& options);
+
+private:
+    std::size_t device_index_ = 0;
+    std::unique_ptr<vulkan_detail::VulkanMonoExactAnalysisSession> analysis_session_;
 };
 
 ConversionStats compress_lds_to_vulkan_native_flac(

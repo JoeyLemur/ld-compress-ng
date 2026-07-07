@@ -3,6 +3,7 @@
 #include "hash.h"
 #include "lds_codec.h"
 #include "opencl_devices.h"
+#include "vulkan_backend.h"
 #include "vulkan_devices.h"
 
 #include <array>
@@ -13,6 +14,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -41,6 +43,7 @@ struct Options {
     bool show_stats = false;
     bool bench_include_opencl = false;
     bool bench_include_vulkan = false;
+    bool bench_reuse_vulkan_session = false;
     bool level_explicit = false;
     bool native_frame_samples_explicit = false;
     bool native_max_lpc_order_explicit = false;
@@ -80,7 +83,7 @@ struct Options {
         << "  ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng verify [--source ORIGINAL.lds] INPUT\n"
         << "  ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]\n"
-        << "  ld-compress-ng bench [--threads 8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] [--lpc-precision N[,N...]] [--rice-partition-order N[,N...]] [--analysis-profile NAME[,NAME...]] [--include-opencl] [--include-vulkan] [--device INDEX|--opencl-device INDEX|--vulkan-device INDEX] INPUT\n"
+        << "  ld-compress-ng bench [--threads 8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] [--lpc-precision N[,N...]] [--rice-partition-order N[,N...]] [--analysis-profile NAME[,NAME...]] [--include-opencl] [--include-vulkan] [--reuse-vulkan-session] [--device INDEX|--opencl-device INDEX|--vulkan-device INDEX] INPUT\n"
         << "  ld-compress-ng devices\n"
         << "  ld-compress-ng --version\n"
         << "  ld-compress-ng --help\n\n"
@@ -774,6 +777,8 @@ Options parse_bench(int argc, char** argv)
             options.bench_include_opencl = true;
         } else if (arg == "--include-vulkan") {
             options.bench_include_vulkan = true;
+        } else if (arg == "--reuse-vulkan-session") {
+            options.bench_reuse_vulkan_session = true;
         } else if (arg == "--device") {
             if (++i >= argc) {
                 throw std::runtime_error(std::string(arg) + " requires a value");
@@ -837,6 +842,9 @@ Options parse_bench(int argc, char** argv)
     }
     if (options.vulkan_device_index_explicit && !options.bench_include_vulkan) {
         throw std::runtime_error("--vulkan-device is supported by bench only with --include-vulkan");
+    }
+    if (options.bench_reuse_vulkan_session && !options.bench_include_vulkan) {
+        throw std::runtime_error("--reuse-vulkan-session requires --include-vulkan");
     }
 
     options.input = positional[0];
@@ -1289,7 +1297,8 @@ struct BenchResult {
 BenchResult run_bench_case(
     const std::string& input_path,
     const std::filesystem::path& output_path,
-    const BenchCase& bench_case)
+    const BenchCase& bench_case,
+    ldcompress::VulkanCompressionSession* vulkan_session = nullptr)
 {
     std::ifstream input(input_path, std::ios::binary);
     if (!input) {
@@ -1315,7 +1324,27 @@ BenchResult run_bench_case(
     };
 
     const auto started = std::chrono::steady_clock::now();
-    const auto stats = ldcompress::compress_lds(input, output_path.string(), compress_options);
+    ldcompress::ConversionStats stats;
+    if (vulkan_session != nullptr &&
+        bench_case.backend == ldcompress::CompressionBackend::VulkanNativeFlac) {
+        stats = vulkan_session->compress_lds_to_native_flac(
+            input,
+            output_path.string(),
+            ldcompress::VulkanCompressionOptions {
+                .container = bench_case.container,
+                .sample_rate = 40000,
+                .thread_count = bench_case.threads,
+                .frame_samples = bench_case.native_frame_samples,
+                .max_lpc_order = bench_case.native_max_lpc_order,
+                .lpc_precision = bench_case.native_lpc_precision,
+                .max_rice_partition_order = bench_case.native_max_rice_partition_order,
+                .analysis_profile = bench_case.native_analysis_profile,
+                .device_index = bench_case.vulkan_device_index,
+                .native_stats = collect_native_stats ? &native_stats : nullptr,
+            });
+    } else {
+        stats = ldcompress::compress_lds(input, output_path.string(), compress_options);
+    }
     const auto finished = std::chrono::steady_clock::now();
     const std::chrono::duration<double> elapsed = finished - started;
 
@@ -1463,6 +1492,7 @@ int run_bench(const Options& options)
             .show_analysis_profile = false,
         },
     };
+    std::optional<std::size_t> bench_vulkan_device_index;
 
     for (const unsigned frame_samples : options.bench_frame_samples) {
         cases.push_back(BenchCase {
@@ -1563,6 +1593,7 @@ int run_bench(const Options& options)
         const auto vulkan_device_index =
             available_vulkan_device_index(effective_vulkan_device_index(options));
         if (vulkan_device_index.has_value()) {
+            bench_vulkan_device_index = vulkan_device_index;
             for (const unsigned frame_samples : options.bench_frame_samples) {
                 for (const unsigned lpc_order : options.bench_lpc_orders) {
                     for (const unsigned lpc_precision : options.bench_lpc_precisions) {
@@ -1664,11 +1695,18 @@ int run_bench(const Options& options)
               << std::setw(18) << "vk_gpu_read_s"
               << '\n';
 
+    std::unique_ptr<ldcompress::VulkanCompressionSession> vulkan_session;
+    if (options.bench_reuse_vulkan_session && bench_vulkan_device_index.has_value()) {
+        vulkan_session = std::make_unique<ldcompress::VulkanCompressionSession>(
+            bench_vulkan_device_index);
+    }
+
     for (std::size_t i = 0; i < cases.size(); ++i) {
         const auto output_path = temp_dir.path() /
             ("case-" + std::to_string(i) +
                 (cases[i].container == ldcompress::FlacContainer::Native ? ".flac.ldf" : ".ldf"));
-        print_bench_result(run_bench_case(options.input, output_path, cases[i]));
+        print_bench_result(run_bench_case(
+            options.input, output_path, cases[i], vulkan_session.get()));
     }
 
     return 0;
