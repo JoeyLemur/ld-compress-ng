@@ -72,6 +72,12 @@ struct RicePartitionCost {
     uint parameter;
 };
 
+struct MeanRicePartitionCost {
+    uint64_t exact_bits;
+    uint64_t estimated_bits;
+    uint parameter;
+};
+
 layout(std430, set = 0, binding = 0) readonly buffer Samples {
     int samples[];
 };
@@ -124,6 +130,7 @@ shared uint shared_uints[64];
 shared uint64_t shared_u64s[64];
 shared float shared_floats[64];
 shared uint shared_rice_parameters[kMaxRicePartitionCount];
+shared uint64_t shared_leaf_abs_sums[kExactLeafMaxPartitionCount];
 shared uint64_t shared_leaf_rice_sums[kExactLeafMaxPartitionCount * kRiceParameterCount];
 
 uint bit_width_u32(uint value)
@@ -431,6 +438,14 @@ uint64_t fold_signed_residual(int64_t residual)
     return (uint64_t(-(residual + int64_t(1))) << 1u) + uint64_t(1);
 }
 
+uint64_t absolute_i64(int64_t value)
+{
+    if (value >= int64_t(0)) {
+        return uint64_t(value);
+    }
+    return uint64_t(-(value + int64_t(1))) + uint64_t(1);
+}
+
 uint partition_residual_count(uint block_size, uint predictor_order, uint partition_order, uint part)
 {
     const uint partition_samples = block_size >> partition_order;
@@ -599,6 +614,79 @@ RicePartitionCost cooperative_choose_rice_partition_cost(
         }
     }
     return best;
+}
+
+uint ilog2_u64(uint64_t value)
+{
+    uint result = 0u;
+    while (value > uint64_t(1u)) {
+        value >>= 1u;
+        ++result;
+    }
+    return result;
+}
+
+uint mean_rice_parameter(uint64_t abs_sum, uint sample_count)
+{
+    if (sample_count == 0u) {
+        return 0u;
+    }
+    const uint64_t divisor = uint64_t(0x40000u) / uint64_t(sample_count);
+    const uint64_t scaled_mean =
+        abs_sum < uint64_t(2u) || divisor == uint64_t(0u)
+            ? uint64_t(0u)
+            : (((abs_sum - uint64_t(1u)) * divisor) >> 18u);
+    if (scaled_mean == uint64_t(0u)) {
+        return 0u;
+    }
+    return min(kMaxRiceParameter, ilog2_u64(scaled_mean) + 1u);
+}
+
+uint64_t mean_rice_partition_bits(uint rice_parameter, uint sample_count, uint64_t abs_sum)
+{
+    uint64_t bits =
+        uint64_t(4u) + (uint64_t(1u + rice_parameter) * uint64_t(sample_count));
+    bits += rice_parameter == 0u
+        ? (abs_sum << 1u)
+        : (abs_sum >> (rice_parameter - 1u));
+    const uint64_t correction = uint64_t(sample_count >> 1u);
+    return bits > correction ? bits - correction : uint64_t(0u);
+}
+
+MeanRicePartitionCost cooperative_choose_mean_rice_partition_cost(
+    FlacClSubframeTask task,
+    uint residual_offset,
+    uint count,
+    int wasted_bits,
+    bool include_exact_bits)
+{
+    uint64_t local_abs_sum = uint64_t(0u);
+    const uint order = uint(task.data.residualOrder);
+    for (uint i = gl_LocalInvocationID.x; i < count; i += kWorkgroupSize) {
+        const int sample_index = int(order + residual_offset + i);
+        local_abs_sum += absolute_i64(residual(task, sample_index, wasted_bits));
+    }
+
+    const uint64_t abs_sum = reduce_sum_u64(local_abs_sum);
+    const uint parameter = mean_rice_parameter(abs_sum, count);
+
+    uint64_t local_exact_bits = uint64_t(0u);
+    if (include_exact_bits) {
+        for (uint i = gl_LocalInvocationID.x; i < count; i += kWorkgroupSize) {
+            const int sample_index = int(order + residual_offset + i);
+            const uint64_t folded =
+                fold_signed_residual(residual(task, sample_index, wasted_bits));
+            local_exact_bits += (folded >> parameter) + uint64_t(1u + parameter);
+        }
+    }
+
+    MeanRicePartitionCost choice;
+    choice.exact_bits = include_exact_bits
+        ? reduce_sum_u64(local_exact_bits)
+        : uint64_t(0u);
+    choice.estimated_bits = mean_rice_partition_bits(parameter, count, abs_sum);
+    choice.parameter = parameter;
+    return choice;
 }
 
 uint64_t rice_subframe_bits(
@@ -783,6 +871,104 @@ void cooperative_leaf_rice_search(
 
             if (bits < best_bits) {
                 best_bits = bits;
+                best_partition_order = partition_order;
+                const uint output_base = task_rice_parameter_base(task_index);
+                for (uint part = 0u; part < partition_count; ++part) {
+                    rice_parameters[output_base + part] = shared_rice_parameters[part];
+                }
+            }
+        }
+    }
+}
+
+void cooperative_leaf_mean_rice_search(
+    FlacClSubframeTask task,
+    uint task_index,
+    uint leaf_partition_order,
+    int wasted_bits,
+    uint effective_bits_per_sample,
+    out uint best_partition_order,
+    out uint64_t best_bits)
+{
+    const uint lane = gl_LocalInvocationID.x;
+    const uint order = uint(task.data.residualOrder);
+    const uint block_size = uint(task.data.blocksize);
+    const uint leaf_count = 1u << leaf_partition_order;
+    const uint leaf_samples = block_size >> leaf_partition_order;
+
+    for (uint leaf = lane; leaf < leaf_count; leaf += kWorkgroupSize) {
+        uint64_t abs_sum = uint64_t(0u);
+        uint64_t sums[kRiceParameterCount];
+        for (uint parameter = 0u; parameter < kRiceParameterCount; ++parameter) {
+            sums[parameter] = uint64_t(0u);
+        }
+
+        const uint start = leaf == 0u ? order : leaf * leaf_samples;
+        const uint end = (leaf + 1u) * leaf_samples;
+        for (uint pos = start; pos < end; ++pos) {
+            const int64_t sample_residual = residual(task, int(pos), wasted_bits);
+            abs_sum += absolute_i64(sample_residual);
+            const uint64_t folded = fold_signed_residual(sample_residual);
+            for (uint parameter = 0u; parameter < kRiceParameterCount; ++parameter) {
+                sums[parameter] += folded >> parameter;
+            }
+        }
+
+        shared_leaf_abs_sums[leaf] = abs_sum;
+        const uint output_base = leaf * kRiceParameterCount;
+        for (uint parameter = 0u; parameter < kRiceParameterCount; ++parameter) {
+            shared_leaf_rice_sums[output_base + parameter] = sums[parameter];
+        }
+    }
+    barrier();
+
+    if (lane == 0u) {
+        uint64_t best_estimated_bits = ~uint64_t(0);
+        best_bits = ~uint64_t(0);
+        best_partition_order = 0u;
+        const uint64_t base_bits =
+            rice_subframe_base_bits(task, wasted_bits, effective_bits_per_sample);
+        for (uint partition_order_plus_one = leaf_partition_order + 1u;
+             partition_order_plus_one > 0u;
+             --partition_order_plus_one) {
+            const uint partition_order = partition_order_plus_one - 1u;
+            if (!valid_partition_order(block_size, order, partition_order)) {
+                continue;
+            }
+
+            const uint partition_count = 1u << partition_order;
+            const uint partition_samples = block_size >> partition_order;
+            const uint leaf_group_size = 1u << (leaf_partition_order - partition_order);
+            uint64_t estimated_bits = uint64_t(2u + 4u);
+            uint64_t exact_bits = base_bits;
+            for (uint part = 0u; part < partition_count; ++part) {
+                const uint residual_count = part == 0u
+                    ? partition_samples - order
+                    : partition_samples;
+                const uint leaf_start = part * leaf_group_size;
+                uint64_t abs_sum = uint64_t(0u);
+                for (uint leaf = 0u; leaf < leaf_group_size; ++leaf) {
+                    abs_sum += shared_leaf_abs_sums[leaf_start + leaf];
+                }
+
+                const uint parameter = mean_rice_parameter(abs_sum, residual_count);
+                estimated_bits += mean_rice_partition_bits(parameter, residual_count, abs_sum);
+                shared_rice_parameters[part] = parameter;
+
+                uint64_t folded_sum = uint64_t(0u);
+                for (uint leaf = 0u; leaf < leaf_group_size; ++leaf) {
+                    const uint index =
+                        ((leaf_start + leaf) * kRiceParameterCount) + parameter;
+                    folded_sum += shared_leaf_rice_sums[index];
+                }
+                exact_bits += uint64_t(4u) +
+                    folded_sum +
+                    (uint64_t(residual_count) * uint64_t(1u + parameter));
+            }
+
+            if (estimated_bits < best_estimated_bits) {
+                best_estimated_bits = estimated_bits;
+                best_bits = exact_bits;
                 best_partition_order = partition_order;
                 const uint output_base = task_rice_parameter_base(task_index);
                 for (uint part = 0u; part < partition_count; ++part) {
@@ -993,6 +1179,10 @@ void cooperative_analyze_task(uint task_index)
         !analysis_profile_uses_mean_rice() &&
         pc.max_rice_partition_order <= kExactLeafMaxRicePartitionOrder &&
         valid_partition_order(block_size, order, pc.max_rice_partition_order);
+    const bool use_leaf_mean_rice =
+        analysis_profile_uses_mean_rice() &&
+        pc.max_rice_partition_order <= kExactLeafMaxRicePartitionOrder &&
+        valid_partition_order(block_size, order, pc.max_rice_partition_order);
     if (use_leaf_rice) {
         cooperative_leaf_rice_search(
             task,
@@ -1009,8 +1199,84 @@ void cooperative_analyze_task(uint task_index)
         }
         return;
     }
+    if (use_leaf_mean_rice) {
+        cooperative_leaf_mean_rice_search(
+            task,
+            task_index,
+            pc.max_rice_partition_order,
+            wasted_bits,
+            effective_bits_per_sample,
+            best_partition_order,
+            best_bits);
+        if (gl_LocalInvocationID.x == 0u) {
+            task.data.porder = int(best_partition_order);
+            task.data.size = clamp_size_bits(best_bits);
+            tasks[task_index] = task;
+        }
+        return;
+    }
 
     const uint rice_output_base = task_rice_parameter_base(task_index);
+    if (analysis_profile_uses_mean_rice()) {
+        uint64_t best_estimated_bits = ~uint64_t(0);
+        const uint max_partition_order = min(pc.max_rice_partition_order, 8u);
+        for (uint partition_order_plus_one = max_partition_order + 1u;
+             partition_order_plus_one > 0u;
+             --partition_order_plus_one) {
+            const uint partition_order = partition_order_plus_one - 1u;
+            if (!valid_partition_order(block_size, order, partition_order)) {
+                continue;
+            }
+
+            const uint partition_count = 1u << partition_order;
+            uint64_t estimated_bits = uint64_t(2u + 4u);
+            uint residual_offset = 0u;
+            for (uint part = 0u; part < partition_count; ++part) {
+                const uint residual_count =
+                    partition_residual_count(block_size, order, partition_order, part);
+                const MeanRicePartitionCost partition_cost =
+                    cooperative_choose_mean_rice_partition_cost(
+                        task, residual_offset, residual_count, wasted_bits, false);
+                estimated_bits += partition_cost.estimated_bits;
+                if (gl_LocalInvocationID.x == 0u) {
+                    shared_rice_parameters[part] = partition_cost.parameter;
+                }
+                residual_offset += residual_count;
+            }
+
+            if (estimated_bits < best_estimated_bits) {
+                best_estimated_bits = estimated_bits;
+                best_partition_order = partition_order;
+                if (gl_LocalInvocationID.x == 0u) {
+                    for (uint part = 0u; part < partition_count; ++part) {
+                        rice_parameters[rice_output_base + part] =
+                            shared_rice_parameters[part];
+                    }
+                }
+            }
+        }
+
+        best_bits = rice_subframe_base_bits(task, wasted_bits, effective_bits_per_sample);
+        const uint partition_count = 1u << best_partition_order;
+        uint residual_offset = 0u;
+        for (uint part = 0u; part < partition_count; ++part) {
+            const uint residual_count =
+                partition_residual_count(block_size, order, best_partition_order, part);
+            const MeanRicePartitionCost partition_cost =
+                cooperative_choose_mean_rice_partition_cost(
+                    task, residual_offset, residual_count, wasted_bits, true);
+            best_bits += uint64_t(4u) + partition_cost.exact_bits;
+            residual_offset += residual_count;
+        }
+
+        task.data.porder = int(best_partition_order);
+        task.data.size = clamp_size_bits(best_bits);
+        if (gl_LocalInvocationID.x == 0u) {
+            tasks[task_index] = task;
+        }
+        return;
+    }
+
     for (uint partition_order = 0u;
          partition_order <= pc.max_rice_partition_order;
          ++partition_order) {

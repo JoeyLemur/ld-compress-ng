@@ -432,6 +432,14 @@ std::vector<std::int32_t> make_generated_mixed_samples()
     return samples;
 }
 
+std::vector<std::int32_t> make_order_guess_profile_samples()
+{
+    auto samples = make_generated_mixed_samples();
+    const auto alternate = make_lpc_friendly_alternate_samples();
+    samples.insert(samples.end(), alternate.begin(), alternate.end());
+    return samples;
+}
+
 ldcompress::opencl_detail::OpenClMonoAnalysisTaskPlan make_single_lpc_task_plan(
     const ldcompress::opencl_detail::FlacClSubframeTask& task)
 {
@@ -779,6 +787,76 @@ void test_vulkan_generated_lpc_analysis(const Options& options)
     }
 }
 
+void test_vulkan_order_guess_mean_rice_profile_smoke(const Options& options)
+{
+    using namespace ldcompress::opencl_detail;
+
+    if (!ldcompress::vulkan_support_built()) {
+        std::cout << "Vulkan order-guess mean Rice profile skipped: Vulkan support was not built\n";
+        return;
+    }
+
+    const auto device_index =
+        first_available_vulkan_analysis_device_index(options.device_index);
+    if (!device_index.has_value()) {
+        std::cout << "Vulkan order-guess mean Rice profile skipped: no suitable Vulkan device\n";
+        return;
+    }
+
+    const auto samples = make_order_guess_profile_samples();
+
+    OpenClMonoAnalysisTaskOptions task_options;
+    task_options.frame_samples = 512;
+    task_options.max_lpc_order = 12;
+    task_options.include_constant = true;
+    task_options.min_fixed_order = 0;
+    task_options.max_fixed_order = 4;
+    task_options.use_gpu_fixed_order_guess = true;
+    task_options.analysis_profile = ldcompress::NativeAnalysisProfile::OrderGuessMeanRice;
+    const auto plan =
+        build_mono_analysis_task_plan_for_samples(samples, 4, task_options);
+
+    require(plan.fixed_order_guess_on_gpu,
+        "Vulkan mean Rice smoke did not retain GPU fixed-order pruning");
+    require(plan.analysis_profile == ldcompress::NativeAnalysisProfile::OrderGuessMeanRice,
+        "Vulkan mean Rice smoke did not retain analysis profile");
+    require(plan.residual_tasks_per_frame == 9,
+        "Vulkan mean Rice smoke task shape mismatch");
+    require(plan.selected_tasks.size() == plan.residual_tasks.size(),
+        "Vulkan mean Rice smoke selected task count mismatch");
+
+    const auto result = ldcompress::vulkan_detail::run_vulkan_mono_generated_analysis(
+        samples, plan, device_index, 12, 5);
+    require(result.best_tasks.size() == 4,
+        "Vulkan mean Rice smoke best task count mismatch");
+    require_rice_parameters_valid(result.best_tasks, result.best_rice_parameters,
+        "Vulkan mean Rice smoke sidecar was invalid");
+
+    ldcompress::vulkan_detail::VulkanMonoExactAnalysisSession session(device_index);
+    const auto best_only = session.run_generated_best_analysis(samples, plan, 12, 5);
+    require(best_only.best_tasks.size() == result.best_tasks.size(),
+        "Vulkan mean Rice smoke best-only task count mismatch");
+    require_rice_parameters_match(
+        result.best_tasks,
+        best_only.best_rice_parameters,
+        result.best_rice_parameters,
+        "Vulkan mean Rice smoke Rice parameter sidecar mismatch");
+
+    for (std::size_t i = 0; i < result.best_tasks.size(); ++i) {
+        require_task_matches_task(best_only.best_tasks[i], result.best_tasks[i],
+            "Vulkan mean Rice smoke best-only task diverged from full result");
+        require(result.best_tasks[i].data.size > 0,
+            "Vulkan mean Rice smoke did not populate selected task size");
+        require(result.best_tasks[i].data.porder >= 0 && result.best_tasks[i].data.porder <= 5,
+            "Vulkan mean Rice smoke partition order out of range");
+        if (result.best_tasks[i].data.type == kFlacClSubframeFixed ||
+            result.best_tasks[i].data.type == kFlacClSubframeLpc) {
+            (void)flaccl_task_to_selected_rice_parameters(
+                result.best_tasks[i], result.best_rice_parameters[i]);
+        }
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -788,6 +866,7 @@ int main(int argc, char** argv)
         test_vulkan_fixed_constant_analysis(options);
         test_vulkan_lpc_analysis(options);
         test_vulkan_generated_lpc_analysis(options);
+        test_vulkan_order_guess_mean_rice_profile_smoke(options);
     } catch (const std::exception& ex) {
         std::cerr << "test_vulkan_analysis: " << ex.what() << '\n';
         return 1;
