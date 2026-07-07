@@ -439,14 +439,15 @@ Remaining Vulkan work:
   the primary bottleneck; the remaining writer time is mostly bitstream
   construction, validation/shift/wasted-bit checking, residual generation, and
   ordinary frame output/CRC.
-- The latest six-fixture sweep at frame size `4608`, LPC order `12`,
+- The earlier six-fixture sweep at frame size `4608`, LPC order `12`,
   coefficient precision `12`, Rice partition order `5`, native-fixed `8`
-  threads, OpenCL device `1`, and Vulkan device `1` produced aggregate sizes:
-  CPU/libFLAC `80,086,984` bytes, scalar native-fixed `79,867,690` bytes in
-  `30.168` seconds, OpenCL `79,952,087` bytes in `180.523` seconds, and Vulkan
-  `79,892,217` bytes in `37.469` seconds. Vulkan is `24,527` bytes larger than
-  scalar native-fixed, `59,870` bytes smaller than OpenCL, and much faster than
-  OpenCL on the NVIDIA validation device.
+  threads, OpenCL device `1`, and Vulkan device `1`, before the OpenCL
+  throughput cleanup, produced aggregate sizes: CPU/libFLAC `80,086,984`
+  bytes, scalar native-fixed `79,867,690` bytes in `30.168` seconds, OpenCL
+  `79,952,087` bytes in `180.523` seconds, and Vulkan `79,892,217` bytes in
+  `37.469` seconds. At that point Vulkan was `24,527` bytes larger than scalar
+  native-fixed, `59,870` bytes smaller than OpenCL, and much faster than OpenCL
+  on the NVIDIA validation device.
 - Move back to broader 1.1 hardening instead of chasing small writer buckets.
   The readback, trusted-decision, sidecar, bit-writer, and selected
   validation/shift changes are also useful for OpenCL: normal OpenCL
@@ -506,6 +507,17 @@ Remaining Vulkan work:
   This confirms the OpenCL autocorrelation speedup holds across the local real
   fixtures; OpenCL is now near native-fixed size and materially faster than
   scalar native-fixed on this validation set.
+- A refreshed combined six-fixture sweep with OpenCL and Vulkan enabled wrote
+  `build/real-fixture-sweeps/real-fixture-sweep-20260706-232419.{csv,md}`.
+  With OpenCL device `1` and Vulkan device `1` both selecting the RTX 5070 Ti,
+  aggregate output sizes were CPU/libFLAC `80,086,984` bytes, scalar
+  native-fixed `79,867,690` bytes in `29.997` seconds, OpenCL `79,892,119`
+  bytes in `7.938` seconds, and Vulkan `79,892,217` bytes in `9.370` seconds.
+  Vulkan remains source-compatible and essentially tied with OpenCL on
+  compressed size (`98` bytes larger across all fixtures), but OpenCL is now
+  faster on this validation sweep after the cooperative autocorrelation work.
+  Continue Vulkan 1.1 hardening and compatibility coverage before reopening
+  performance work.
 
 Immediate engineering focus:
 
