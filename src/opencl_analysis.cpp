@@ -43,6 +43,8 @@ constexpr std::size_t kGeneratedWelchCandidateTargetCount = 2;
 constexpr double kGeneratedTukeyTaperFraction = 0.5;
 constexpr double kSubdivideTukey3TaperFraction = 0.5 / 3.0;
 constexpr std::size_t kSubdivideTukey3WindowCount = 9;
+constexpr unsigned kOpenClExactLeafMaxRicePartitionOrder = 6;
+constexpr unsigned kOpenClExactLeafRiceParameterCount = 15;
 using Clock = std::chrono::steady_clock;
 
 struct GeneratedLpcPrefixShape {
@@ -59,6 +61,12 @@ bool generated_profile_uses_order_guess(NativeAnalysisProfile profile)
 bool generated_profile_uses_subdivide_tukey3(NativeAnalysisProfile profile)
 {
     return profile == NativeAnalysisProfile::SubdivideTukey3MeanRice;
+}
+
+bool analysis_profile_uses_mean_rice(NativeAnalysisProfile profile)
+{
+    return profile == NativeAnalysisProfile::OrderGuessMeanRice ||
+        profile == NativeAnalysisProfile::SubdivideTukey3MeanRice;
 }
 
 std::int32_t opencl_analysis_profile_arg(NativeAnalysisProfile profile)
@@ -1336,6 +1344,8 @@ const char* mono_analysis_kernel_source()
 #define EXACT_WORKGROUP_SIZE 64
 #define AUTOCOR_WORKGROUP_SIZE 64
 #define MAX_RICE_PARTITION_COUNT 256
+#define EXACT_LEAF_MAX_RICE_PARTITION_ORDER 6
+#define EXACT_LEAF_RICE_PARAMETER_COUNT 15
 #define ANALYSIS_PROFILE_EXACT 0
 #define ANALYSIS_PROFILE_ORDER_GUESS_MEAN_RICE 2
 #define ANALYSIS_PROFILE_SUBDIVIDE_TUKEY3_MEAN_RICE 3
@@ -2199,7 +2209,8 @@ void ldcompressAnalyzeSubframeExact(
     __global FLACCLSubframeTask* tasks,
     int maxRicePartitionOrder,
     int analysisProfile,
-    __global uint* taskRiceParameters)
+    __global uint* taskRiceParameters,
+    __local ulong* exactRiceLeafSums)
 {
     __local ulong reduceScratchUlong[EXACT_WORKGROUP_SIZE];
     __local uint reduceScratchUint[EXACT_WORKGROUP_SIZE];
@@ -2217,6 +2228,7 @@ void ldcompressAnalyzeSubframeExact(
 
     for (int i = lane; i < MAX_RICE_PARTITION_COUNT; i += EXACT_WORKGROUP_SIZE)
         taskRiceParameters[riceOutputBase + i] = 0U;
+    barrier(CLK_GLOBAL_MEM_FENCE);
 
     if (task.data.size == 0x7fffffff)
     {
@@ -2274,6 +2286,10 @@ void ldcompressAnalyzeSubframeExact(
     int bestPartitionOrder = 0;
     const int maxPartitionOrder = min(maxRicePartitionOrder, 8);
     const int useMeanRice = ldcompressProfileUsesMeanRice(analysisProfile);
+    const int useLeafExactRice =
+        !useMeanRice &&
+        maxPartitionOrder <= EXACT_LEAF_MAX_RICE_PARTITION_ORDER &&
+        ldcompressValidPartitionOrder(bs, ro, maxPartitionOrder);
     const ulong baseBits = task.data.type == LPC
         ? 8UL +
             (wbits == 0 ? 0UL : (ulong)wbits) +
@@ -2288,6 +2304,92 @@ void ldcompressAnalyzeSubframeExact(
             2UL +
             4UL +
             (wbits == 0 ? 0UL : (ulong)wbits);
+
+    if (useLeafExactRice)
+    {
+        const int leafPartitionOrder = maxPartitionOrder;
+        const int leafCount = 1 << leafPartitionOrder;
+        const int leafSamples = bs >> leafPartitionOrder;
+        for (int leaf = lane; leaf < leafCount; leaf += EXACT_WORKGROUP_SIZE)
+        {
+            ulong sums[EXACT_LEAF_RICE_PARAMETER_COUNT];
+            for (int parameter = 0; parameter < EXACT_LEAF_RICE_PARAMETER_COUNT; parameter++)
+                sums[parameter] = 0UL;
+
+            const int start = leaf == 0 ? ro : leaf * leafSamples;
+            const int end = (leaf + 1) * leafSamples;
+            for (int pos = start; pos < end; pos++)
+            {
+                const long residual = ldcompressResidual(data, pos, task);
+                const ulong folded = ldcompressFoldResidual(residual);
+                for (int parameter = 0; parameter < EXACT_LEAF_RICE_PARAMETER_COUNT; parameter++)
+                    sums[parameter] += folded >> parameter;
+            }
+
+            const int outputBase = leaf * EXACT_LEAF_RICE_PARAMETER_COUNT;
+            for (int parameter = 0; parameter < EXACT_LEAF_RICE_PARAMETER_COUNT; parameter++)
+                exactRiceLeafSums[outputBase + parameter] = sums[parameter];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+
+        if (lane == 0)
+        {
+            for (int partitionOrder = 0; partitionOrder <= leafPartitionOrder; partitionOrder++)
+            {
+                if (!ldcompressValidPartitionOrder(bs, ro, partitionOrder))
+                    continue;
+
+                const int partitionCount = 1 << partitionOrder;
+                const int partitionSamples = bs >> partitionOrder;
+                const int leafGroupSize = 1 << (leafPartitionOrder - partitionOrder);
+                ulong bits = baseBits;
+                for (int partition = 0; partition < partitionCount; partition++)
+                {
+                    const int residualCount = partition == 0
+                        ? partitionSamples - ro
+                        : partitionSamples;
+                    const int leafStart = partition * leafGroupSize;
+                    ulong bestParameterBits = 0xffffffffffffffffUL;
+                    uint bestParameter = 0U;
+                    for (int parameter = 0; parameter <= MAX_RICE_PARAM; parameter++)
+                    {
+                        ulong sum = 0UL;
+                        for (int leaf = 0; leaf < leafGroupSize; leaf++)
+                        {
+                            const int index =
+                                ((leafStart + leaf) * EXACT_LEAF_RICE_PARAMETER_COUNT) +
+                                parameter;
+                            sum += exactRiceLeafSums[index];
+                        }
+                        const ulong parameterBits =
+                            sum + ((ulong)residualCount * (ulong)(1 + parameter));
+                        if (parameterBits < bestParameterBits)
+                        {
+                            bestParameterBits = parameterBits;
+                            bestParameter = (uint)parameter;
+                        }
+                    }
+                    bits += 4UL + bestParameterBits;
+                    candidateRiceParameters[partition] = bestParameter;
+                }
+
+                if (bits < bestBits)
+                {
+                    bestBits = bits;
+                    bestPartitionOrder = partitionOrder;
+                    for (int partition = 0; partition < partitionCount; partition++)
+                        taskRiceParameters[riceOutputBase + partition] =
+                            candidateRiceParameters[partition];
+                }
+            }
+
+            task.data.porder = bestPartitionOrder;
+            task.data.size = bestBits > 0x7fffffffUL ? 0x7fffffff : (int)bestBits;
+            tasks[selectedTask] = task;
+        }
+        return;
+    }
+
     for (int partitionOrder = useMeanRice ? maxPartitionOrder : 0;
          useMeanRice ? partitionOrder >= 0 : partitionOrder <= maxPartitionOrder;
          partitionOrder += useMeanRice ? -1 : 1)
@@ -2335,6 +2437,7 @@ void ldcompressAnalyzeSubframeExact(
             for (int partition = lane; partition < partitionCount; partition += EXACT_WORKGROUP_SIZE)
                 bestRiceParameters[partition] = candidateRiceParameters[partition];
         }
+        barrier(CLK_LOCAL_MEM_FENCE);
     }
 
     if (useMeanRice)
@@ -2801,6 +2904,21 @@ void write_opencl_buffer(
     require_cl(clEnqueueWriteBuffer(
                    queue.get(), buffer.get(), CL_TRUE, 0, bytes, data, 0, nullptr, nullptr),
         (std::string("clEnqueueWriteBuffer(") + name + ")").c_str());
+}
+
+std::size_t exact_leaf_rice_local_bytes(
+    const OpenClMonoAnalysisTaskPlan& plan,
+    NativeAnalysisProfile analysis_profile,
+    unsigned max_rice_partition_order)
+{
+    if (analysis_profile_uses_mean_rice(analysis_profile) ||
+        max_rice_partition_order > kOpenClExactLeafMaxRicePartitionOrder ||
+        plan.residual_tasks.empty()) {
+        return sizeof(std::uint64_t);
+    }
+    return (std::size_t {1} << max_rice_partition_order) *
+        kOpenClExactLeafRiceParameterCount *
+        sizeof(std::uint64_t);
 }
 
 void enqueue_opencl_best_rice_parameters(
@@ -3503,6 +3621,9 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
         static_cast<std::int32_t>(max_rice_partition_order);
     const auto exact_analysis_profile_arg =
         opencl_analysis_profile_arg(NativeAnalysisProfile::Exact);
+    const auto exact_leaf_rice_bytes =
+        exact_leaf_rice_local_bytes(
+            plan, NativeAnalysisProfile::Exact, max_rice_partition_order);
     require_cl(clSetKernelArg(exact_kernel.get(), 0, sizeof(samples_mem), &samples_mem),
         "clSetKernelArg(exact.samples)");
     require_cl(clSetKernelArg(exact_kernel.get(), 1, sizeof(selected_mem), &selected_mem),
@@ -3517,6 +3638,8 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
         "clSetKernelArg(exact.analysisProfile)");
     require_cl(clSetKernelArg(exact_kernel.get(), 5, sizeof(task_rice_mem), &task_rice_mem),
         "clSetKernelArg(exact.taskRiceParameters)");
+    require_cl(clSetKernelArg(exact_kernel.get(), 6, exact_leaf_rice_bytes, nullptr),
+        "clSetKernelArg(exact.leafRiceSums)");
 
     const std::size_t exact_local_work_size = kOpenClExactWorkgroupSize;
     const std::size_t estimate_global_work_size =
@@ -3690,6 +3813,9 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_analysis(
         static_cast<std::int32_t>(max_rice_partition_order);
     const auto exact_analysis_profile_arg =
         opencl_analysis_profile_arg(NativeAnalysisProfile::Exact);
+    const auto exact_leaf_rice_bytes =
+        exact_leaf_rice_local_bytes(
+            plan, NativeAnalysisProfile::Exact, max_rice_partition_order);
     require_cl(clSetKernelArg(exact_kernel.get(), 0, sizeof(samples_mem), &samples_mem),
         "clSetKernelArg(exact.samples)");
     require_cl(clSetKernelArg(exact_kernel.get(), 1, sizeof(selected_mem), &selected_mem),
@@ -3704,6 +3830,8 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_analysis(
         "clSetKernelArg(exact.analysisProfile)");
     require_cl(clSetKernelArg(exact_kernel.get(), 5, sizeof(task_rice_mem), &task_rice_mem),
         "clSetKernelArg(exact.taskRiceParameters)");
+    require_cl(clSetKernelArg(exact_kernel.get(), 6, exact_leaf_rice_bytes, nullptr),
+        "clSetKernelArg(exact.leafRiceSums)");
 
     const std::size_t exact_local_work_size = kOpenClExactWorkgroupSize;
     const std::size_t estimate_global_work_size =
@@ -4041,6 +4169,9 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
 
     const auto max_rice_partition_order_arg =
         static_cast<std::int32_t>(max_rice_partition_order);
+    const auto exact_leaf_rice_bytes =
+        exact_leaf_rice_local_bytes(
+            plan, plan.analysis_profile, max_rice_partition_order);
     require_cl(clSetKernelArg(runtime.exact_kernel.get(), 0, sizeof(samples_mem), &samples_mem),
         "clSetKernelArg(exact.samples)");
     require_cl(clSetKernelArg(runtime.exact_kernel.get(), 1, sizeof(selected_mem), &selected_mem),
@@ -4056,6 +4187,8 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
     require_cl(clSetKernelArg(runtime.exact_kernel.get(), 5, sizeof(task_rice_mem),
                    &task_rice_mem),
         "clSetKernelArg(exact.taskRiceParameters)");
+    require_cl(clSetKernelArg(runtime.exact_kernel.get(), 6, exact_leaf_rice_bytes, nullptr),
+        "clSetKernelArg(exact.leafRiceSums)");
 
     const std::size_t exact_local_work_size = kOpenClExactWorkgroupSize;
     const std::size_t estimate_global_work_size =
