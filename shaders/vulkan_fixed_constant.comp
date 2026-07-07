@@ -17,6 +17,7 @@ const int kSubframeFixed = 8;
 const int kSubframeLpc = 32;
 const int kIntMax = 2147483647;
 const uint kMaxRiceParameter = 14u;
+const uint kRiceParameterCount = kMaxRiceParameter + 1u;
 
 struct FlacClSubframeData {
     int residualOrder;
@@ -40,6 +41,10 @@ struct FlacClSubframeData {
 struct FlacClSubframeTask {
     FlacClSubframeData data;
     int coefs[32];
+};
+
+struct RicePartitionCost {
+    uint64_t bits;
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer Samples {
@@ -454,6 +459,92 @@ uint cooperative_choose_rice_parameter(
     return best_parameter;
 }
 
+RicePartitionCost cooperative_choose_rice_partition_cost(
+    FlacClSubframeTask task,
+    uint residual_offset,
+    uint count,
+    int wasted_bits)
+{
+    uint64_t bits0 = uint64_t(0);
+    uint64_t bits1 = uint64_t(0);
+    uint64_t bits2 = uint64_t(0);
+    uint64_t bits3 = uint64_t(0);
+    uint64_t bits4 = uint64_t(0);
+    uint64_t bits5 = uint64_t(0);
+    uint64_t bits6 = uint64_t(0);
+    uint64_t bits7 = uint64_t(0);
+    uint64_t bits8 = uint64_t(0);
+    uint64_t bits9 = uint64_t(0);
+    uint64_t bits10 = uint64_t(0);
+    uint64_t bits11 = uint64_t(0);
+    uint64_t bits12 = uint64_t(0);
+    uint64_t bits13 = uint64_t(0);
+    uint64_t bits14 = uint64_t(0);
+
+    const uint order = uint(task.data.residualOrder);
+    for (uint i = gl_LocalInvocationID.x; i < count; i += kWorkgroupSize) {
+        const int sample_index = int(order + residual_offset + i);
+        const uint64_t folded =
+            fold_signed_residual(residual(task, sample_index, wasted_bits));
+        bits0 += folded + uint64_t(1);
+        bits1 += (folded >> 1u) + uint64_t(2);
+        bits2 += (folded >> 2u) + uint64_t(3);
+        bits3 += (folded >> 3u) + uint64_t(4);
+        bits4 += (folded >> 4u) + uint64_t(5);
+        bits5 += (folded >> 5u) + uint64_t(6);
+        bits6 += (folded >> 6u) + uint64_t(7);
+        bits7 += (folded >> 7u) + uint64_t(8);
+        bits8 += (folded >> 8u) + uint64_t(9);
+        bits9 += (folded >> 9u) + uint64_t(10);
+        bits10 += (folded >> 10u) + uint64_t(11);
+        bits11 += (folded >> 11u) + uint64_t(12);
+        bits12 += (folded >> 12u) + uint64_t(13);
+        bits13 += (folded >> 13u) + uint64_t(14);
+        bits14 += (folded >> 14u) + uint64_t(15);
+    }
+
+    RicePartitionCost best;
+    best.bits = ~uint64_t(0);
+
+    for (uint parameter = 0u; parameter < kRiceParameterCount; ++parameter) {
+        uint64_t local_bits = bits0;
+        if (parameter == 1u) {
+            local_bits = bits1;
+        } else if (parameter == 2u) {
+            local_bits = bits2;
+        } else if (parameter == 3u) {
+            local_bits = bits3;
+        } else if (parameter == 4u) {
+            local_bits = bits4;
+        } else if (parameter == 5u) {
+            local_bits = bits5;
+        } else if (parameter == 6u) {
+            local_bits = bits6;
+        } else if (parameter == 7u) {
+            local_bits = bits7;
+        } else if (parameter == 8u) {
+            local_bits = bits8;
+        } else if (parameter == 9u) {
+            local_bits = bits9;
+        } else if (parameter == 10u) {
+            local_bits = bits10;
+        } else if (parameter == 11u) {
+            local_bits = bits11;
+        } else if (parameter == 12u) {
+            local_bits = bits12;
+        } else if (parameter == 13u) {
+            local_bits = bits13;
+        } else if (parameter == 14u) {
+            local_bits = bits14;
+        }
+        const uint64_t bits = reduce_sum_u64(local_bits);
+        if (bits < best.bits) {
+            best.bits = bits;
+        }
+    }
+    return best;
+}
+
 uint64_t rice_subframe_bits(
     FlacClSubframeTask task,
     uint partition_order,
@@ -515,11 +606,11 @@ uint64_t cooperative_rice_subframe_bits(
     for (uint part = 0u; part < partition_count; ++part) {
         const uint residual_count =
             partition_residual_count(block_size, order, partition_order, part);
-        const uint rice_parameter =
-            cooperative_choose_rice_parameter(task, residual_offset, residual_count, wasted_bits);
+        const RicePartitionCost partition_cost =
+            cooperative_choose_rice_partition_cost(
+                task, residual_offset, residual_count, wasted_bits);
         bits += uint64_t(4u);
-        bits += cooperative_rice_bits(
-            task, residual_offset, residual_count, rice_parameter, wasted_bits);
+        bits += partition_cost.bits;
         residual_offset += residual_count;
     }
     return bits;
