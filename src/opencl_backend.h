@@ -2,6 +2,7 @@
 
 #include "flac_codec.h"
 #include "lds_codec.h"
+#include "native_analysis_profile.h"
 
 #include <cstddef>
 #include <iosfwd>
@@ -20,6 +21,7 @@ struct OpenClCompressionOptions {
     unsigned max_lpc_order = 12;
     unsigned lpc_precision = 12;
     unsigned max_rice_partition_order = 5;
+    NativeAnalysisProfile analysis_profile = NativeAnalysisProfile::Exact;
     std::optional<std::size_t> device_index;
     NativeCompressionStats* native_stats = nullptr;
 };

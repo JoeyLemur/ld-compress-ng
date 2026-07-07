@@ -55,6 +55,7 @@ AcceleratedSelectedFrameAnalysis analyze_opencl_selected_frames(
     unsigned frame_samples,
     std::optional<std::size_t> device_index,
     opencl_detail::OpenClMonoAnalysisSession* generated_session,
+    NativeAnalysisProfile analysis_profile,
     NativeCompressionStats* stats)
 {
     if (frame_info.max_lpc_order > 0) {
@@ -78,10 +79,12 @@ AcceleratedSelectedFrameAnalysis analyze_opencl_selected_frames(
         task_options.min_fixed_order = 0;
         task_options.max_fixed_order = 4;
         task_options.include_constant = true;
+        task_options.analysis_profile = analysis_profile;
 
         const auto frame_count = samples.size() / frame_samples;
         const auto plan_started = Clock::now();
-        const auto plan = opencl_detail::build_mono_analysis_task_plan(frame_count, task_options);
+        auto plan = opencl_detail::build_mono_analysis_task_plan(frame_count, task_options);
+        opencl_detail::apply_mono_analysis_profile_to_plan(samples, plan);
         if (stats != nullptr) {
             add_elapsed_ns(stats->accelerated_task_plan_ns, plan_started);
         }
@@ -126,10 +129,12 @@ AcceleratedSelectedFrameAnalysis analyze_opencl_selected_frames(
     task_options.include_constant = true;
     task_options.min_fixed_order = 0;
     task_options.max_fixed_order = 4;
+    task_options.analysis_profile = analysis_profile;
 
     const auto frame_count = samples.size() / frame_samples;
     const auto plan_started = Clock::now();
-    const auto plan = opencl_detail::build_mono_analysis_task_plan(frame_count, task_options);
+    auto plan = opencl_detail::build_mono_analysis_task_plan(frame_count, task_options);
+    opencl_detail::apply_mono_analysis_profile_to_plan(samples, plan);
     if (stats != nullptr) {
         add_elapsed_ns(stats->accelerated_task_plan_ns, plan_started);
     }
@@ -219,13 +224,14 @@ ConversionStats compress_lds_to_opencl_native_flac(
         output_path,
         accelerated_options,
         [device_index, generated_session_ptr = generated_session.get(),
+            analysis_profile = options.analysis_profile,
             native_stats = options.native_stats](
             const std::vector<std::int32_t>& samples,
             const FlacFrameInfo& frame_info,
             unsigned frame_samples) {
             return analyze_opencl_selected_frames(
                 samples, frame_info, frame_samples, device_index, generated_session_ptr,
-                native_stats);
+                analysis_profile, native_stats);
         });
     if (options.native_stats != nullptr) {
         add_elapsed_ns(options.native_stats->accelerated_total_ns, total_started);

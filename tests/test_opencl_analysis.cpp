@@ -965,6 +965,81 @@ void test_default_mono_task_plan()
     require_common_task_fields(plan.residual_tasks[63], kFlacClSubframeFixed, 4, 4608);
 }
 
+void test_subdivide_tukey3_profile_task_plan()
+{
+    using namespace ldcompress::opencl_detail;
+
+    OpenClMonoAnalysisTaskOptions options;
+    options.frame_samples = 512;
+    options.max_lpc_order = 12;
+    options.include_constant = true;
+    options.min_fixed_order = 0;
+    options.max_fixed_order = 4;
+    options.analysis_profile = ldcompress::NativeAnalysisProfile::SubdivideTukey3MeanRice;
+
+    auto plan = build_mono_analysis_task_plan(2, options);
+    require(plan.analysis_profile == ldcompress::NativeAnalysisProfile::SubdivideTukey3MeanRice,
+        "profile task plan did not retain analysis profile");
+    require(plan.max_lpc_order == 12, "profile task plan did not retain max LPC order");
+    require(plan.residual_tasks_per_frame == 15,
+        "subdivide Tukey profile task count mismatch");
+    require(plan.residual_tasks.size() == 30,
+        "subdivide Tukey profile residual task vector size mismatch");
+    require(plan.selected_tasks.size() == 30,
+        "subdivide Tukey profile selected task vector size mismatch");
+
+    for (std::size_t frame = 0; frame < 2; ++frame) {
+        const auto base = frame * plan.residual_tasks_per_frame;
+        for (std::size_t window = 0; window < 9; ++window) {
+            const auto& task = plan.residual_tasks[base + window];
+            require(task.data.type == kFlacClSubframeLpc,
+                "subdivide Tukey profile LPC task type mismatch");
+            require(task.data.residualOrder == 1,
+                "subdivide Tukey profile LPC placeholder order mismatch");
+            require(task.data.samplesOffs == static_cast<int>(frame * options.frame_samples),
+                "subdivide Tukey profile LPC sample offset mismatch");
+            require(task.data.blocksize == static_cast<int>(options.frame_samples),
+                "subdivide Tukey profile LPC block size mismatch");
+        }
+        require(plan.residual_tasks[base + 9].data.type == kFlacClSubframeConstant,
+            "subdivide Tukey profile constant task index mismatch");
+        for (unsigned order = 0; order <= 4; ++order) {
+            const auto& task = plan.residual_tasks[base + 10 + order];
+            require(task.data.type == kFlacClSubframeFixed,
+                "subdivide Tukey profile fixed task type mismatch");
+            require(task.data.residualOrder == static_cast<int>(order),
+                "subdivide Tukey profile fixed order mismatch");
+            require(task.data.samplesOffs == static_cast<int>(frame * options.frame_samples),
+                "subdivide Tukey profile fixed sample offset mismatch");
+            require(task.data.blocksize == static_cast<int>(options.frame_samples),
+                "subdivide Tukey profile fixed block size mismatch");
+        }
+    }
+
+    std::vector<std::int32_t> samples;
+    samples.reserve(1024);
+    for (int i = 0; i < 512; ++i) {
+        samples.push_back(i * 64);
+    }
+    for (int i = 0; i < 512; ++i) {
+        samples.push_back(((i % 32) * (i % 16)) * 64);
+    }
+
+    apply_mono_analysis_profile_to_plan(samples, plan);
+    for (std::size_t frame = 0; frame < 2; ++frame) {
+        const auto base = frame * plan.residual_tasks_per_frame;
+        unsigned live_fixed = 0;
+        for (unsigned order = 0; order <= 4; ++order) {
+            const auto& task = plan.residual_tasks[base + 10 + order];
+            if (task.data.size != std::numeric_limits<std::int32_t>::max()) {
+                ++live_fixed;
+            }
+        }
+        require(live_fixed == 1,
+            "subdivide Tukey profile did not leave exactly one fixed predictor live");
+    }
+}
+
 void test_small_custom_task_plan()
 {
     using namespace ldcompress::opencl_detail;
@@ -2127,6 +2202,7 @@ int main()
     try {
         test_flaccl_abi_layout();
         test_default_mono_task_plan();
+        test_subdivide_tukey3_profile_task_plan();
         test_small_custom_task_plan();
         test_invalid_options();
         test_flaccl_task_decision_mapping();

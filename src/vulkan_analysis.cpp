@@ -39,6 +39,8 @@ constexpr unsigned kVulkanExactMaxRicePartitionOrder = 8;
 constexpr std::uint32_t kWorkGroupSize = 64;
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kGeneratedTukeyTaperFraction = 0.5;
+constexpr double kSubdivideTukey3TaperFraction = 0.5 / 3.0;
+constexpr std::size_t kSubdivideTukey3WindowCount = 9;
 constexpr std::uint32_t kTimestampBegin = 0;
 constexpr std::uint32_t kTimestampAfterUpload = 1;
 constexpr std::uint32_t kTimestampAfterPrepare = 2;
@@ -55,6 +57,8 @@ struct GeneratedLpcConfig {
     std::size_t window_count = 0;
     std::size_t total_lpc_tasks = 0;
     unsigned coefficient_precision = 0;
+    NativeAnalysisProfile analysis_profile = NativeAnalysisProfile::Exact;
+    unsigned max_lpc_order = 0;
 };
 
 [[maybe_unused]] std::uint64_t checked_buffer_bytes(
@@ -178,33 +182,167 @@ bool signed_value_fits_bits(std::int32_t value, unsigned bits)
     return value >= min_value && value <= max_value;
 }
 
+bool generated_profile_uses_subdivide_tukey3(NativeAnalysisProfile profile)
+{
+    return profile == NativeAnalysisProfile::SubdivideTukey3MeanRice;
+}
+
+float tukey_weight(std::size_t n, std::size_t blocksize, double taper_fraction)
+{
+    if (blocksize <= 1 || taper_fraction <= 0.0) {
+        return 1.0F;
+    }
+    if (taper_fraction >= 1.0) {
+        const auto denominator = static_cast<double>(blocksize - 1U);
+        const auto phase = 2.0 * kPi * static_cast<double>(n) / denominator;
+        return static_cast<float>(0.5 - (0.5 * std::cos(phase)));
+    }
+
+    const auto edge_width = static_cast<std::size_t>(
+        (taper_fraction / 2.0) * static_cast<double>(blocksize));
+    if (edge_width == 0) {
+        return 1.0F;
+    }
+    const auto np = edge_width - 1U;
+    if (np == 0) {
+        return (n == 0 || n + 1U == blocksize) ? 0.0F : 1.0F;
+    }
+    if (n <= np) {
+        return static_cast<float>(
+            0.5 - (0.5 * std::cos(kPi * static_cast<double>(n) / static_cast<double>(np))));
+    }
+    if (n >= blocksize - np - 1U) {
+        const auto right_n = n - (blocksize - np - 1U);
+        return static_cast<float>(0.5 -
+            (0.5 * std::cos(
+                kPi * static_cast<double>(right_n + np) / static_cast<double>(np))));
+    }
+    return 1.0F;
+}
+
+float partial_tukey_weight(
+    std::size_t n,
+    std::size_t blocksize,
+    double taper_fraction,
+    double start,
+    double end)
+{
+    if (blocksize == 0 || end <= start) {
+        return 0.0F;
+    }
+    const auto start_n = std::min<std::size_t>(
+        blocksize, static_cast<std::size_t>(start * static_cast<double>(blocksize)));
+    const auto end_n = std::min<std::size_t>(
+        blocksize, static_cast<std::size_t>(end * static_cast<double>(blocksize)));
+    const auto width = end_n > start_n ? end_n - start_n : 0;
+    if (width == 0 || n < start_n || n >= end_n) {
+        return 0.0F;
+    }
+
+    const auto taper = std::clamp(taper_fraction, 0.05, 0.95);
+    const auto edge_width = static_cast<std::size_t>(
+        (taper / 2.0) * static_cast<double>(width));
+    double weight = 1.0;
+    if (edge_width != 0 && n < start_n + edge_width) {
+        const auto i = n - start_n + 1U;
+        weight = 0.5 -
+            (0.5 * std::cos(kPi * static_cast<double>(i) / static_cast<double>(edge_width)));
+    } else if (edge_width != 0 && n >= end_n - edge_width) {
+        const auto i = end_n - n;
+        weight = 0.5 -
+            (0.5 * std::cos(kPi * static_cast<double>(i) / static_cast<double>(edge_width)));
+    }
+    return static_cast<float>(weight);
+}
+
+float punchout_tukey_weight(
+    std::size_t n,
+    std::size_t blocksize,
+    double taper_fraction,
+    double start,
+    double end)
+{
+    if (blocksize == 0 || end <= start) {
+        return 1.0F;
+    }
+
+    const auto start_n = std::min<std::size_t>(
+        blocksize, static_cast<std::size_t>(start * static_cast<double>(blocksize)));
+    const auto end_n = std::min<std::size_t>(
+        blocksize, static_cast<std::size_t>(end * static_cast<double>(blocksize)));
+    const auto taper = std::clamp(taper_fraction, 0.05, 0.95);
+    const auto left_edge = static_cast<std::size_t>(
+        (taper / 2.0) * static_cast<double>(start_n));
+    const auto right_span = blocksize > end_n ? blocksize - end_n : 0;
+    const auto right_edge = static_cast<std::size_t>(
+        (taper / 2.0) * static_cast<double>(right_span));
+
+    double weight = 1.0;
+    if (n >= start_n && n < end_n) {
+        weight = 0.0;
+    } else if (left_edge != 0 && n < left_edge) {
+        weight = 0.5 -
+            (0.5 * std::cos(kPi * static_cast<double>(n + 1U) / static_cast<double>(left_edge)));
+    } else if (left_edge != 0 && n >= start_n - left_edge && n < start_n) {
+        const auto i = start_n - n;
+        weight = 0.5 -
+            (0.5 * std::cos(kPi * static_cast<double>(i) / static_cast<double>(left_edge)));
+    } else if (right_edge != 0 && n >= end_n && n < end_n + right_edge) {
+        const auto i = n - end_n + 1U;
+        weight = 0.5 -
+            (0.5 * std::cos(kPi * static_cast<double>(i) / static_cast<double>(right_edge)));
+    } else if (right_edge != 0 && n >= blocksize - right_edge) {
+        const auto i = blocksize - n;
+        weight = 0.5 -
+            (0.5 * std::cos(kPi * static_cast<double>(i) / static_cast<double>(right_edge)));
+    }
+    return static_cast<float>(weight);
+}
+
 [[maybe_unused]] std::vector<float> make_generated_lpc_windows(
     std::size_t blocksize,
-    std::size_t window_count)
+    std::size_t window_count,
+    NativeAnalysisProfile profile)
 {
     std::vector<float> windows(blocksize * window_count, 1.0F);
+    if (generated_profile_uses_subdivide_tukey3(profile)) {
+        if (window_count != kSubdivideTukey3WindowCount || blocksize == 0) {
+            return windows;
+        }
+        for (std::size_t n = 0; n < blocksize; ++n) {
+            windows[n] = tukey_weight(n, blocksize, kSubdivideTukey3TaperFraction);
+        }
+        std::size_t window = 1;
+        for (unsigned parts : {2U, 3U}) {
+            for (unsigned part = 0; part < parts; ++part, ++window) {
+                const auto start = static_cast<double>(part) / static_cast<double>(parts);
+                const auto end = static_cast<double>(part + 1U) / static_cast<double>(parts);
+                auto* values = windows.data() + (window * blocksize);
+                for (std::size_t n = 0; n < blocksize; ++n) {
+                    values[n] = partial_tukey_weight(
+                        n, blocksize, kSubdivideTukey3TaperFraction, start, end);
+                }
+            }
+        }
+        for (unsigned part = 0; part < 3; ++part, ++window) {
+            const auto start = static_cast<double>(part) / 3.0;
+            const auto end = static_cast<double>(part + 1U) / 3.0;
+            auto* values = windows.data() + (window * blocksize);
+            for (std::size_t n = 0; n < blocksize; ++n) {
+                values[n] = punchout_tukey_weight(
+                    n, blocksize, kSubdivideTukey3TaperFraction, start, end);
+            }
+        }
+        return windows;
+    }
+
     if (window_count < 2 || blocksize <= 1) {
         return windows;
     }
 
     auto* tukey = windows.data() + blocksize;
-    const auto edge_width = static_cast<std::size_t>(
-        (kGeneratedTukeyTaperFraction / 2.0) * static_cast<double>(blocksize));
-    if (edge_width != 0) {
-        const auto np = edge_width - 1U;
-        if (np == 0) {
-            tukey[0] = 0.0F;
-            tukey[blocksize - 1U] = 0.0F;
-        } else {
-            for (std::size_t n = 0; n <= np; ++n) {
-                const auto left_weight =
-                    0.5 - (0.5 * std::cos(kPi * static_cast<double>(n) / static_cast<double>(np)));
-                const auto right_weight =
-                    0.5 - (0.5 * std::cos(kPi * static_cast<double>(n + np) / static_cast<double>(np)));
-                tukey[n] = static_cast<float>(left_weight);
-                tukey[blocksize - np - 1U + n] = static_cast<float>(right_weight);
-            }
-        }
+    for (std::size_t n = 0; n < blocksize; ++n) {
+        tukey[n] = tukey_weight(n, blocksize, kGeneratedTukeyTaperFraction);
     }
     if (window_count < 3) {
         return windows;
@@ -275,6 +413,8 @@ GeneratedLpcConfig generated_lpc_prefix_shape(
         .window_count = window_count,
         .total_lpc_tasks = total_lpc_tasks,
         .coefficient_precision = coefficient_precision,
+        .analysis_profile = plan.analysis_profile,
+        .max_lpc_order = plan.max_lpc_order,
     };
 }
 
@@ -879,6 +1019,8 @@ struct PushConstants {
     std::uint32_t lpc_tasks_per_window = 0;
     std::uint32_t total_lpc_tasks = 0;
     std::uint32_t generated_window_count = 0;
+    std::uint32_t max_lpc_order = 0;
+    std::uint32_t analysis_profile = 0;
 };
 
 std::uint32_t dispatch_groups(std::uint32_t items)
@@ -1124,6 +1266,12 @@ public:
             .generated_window_count = generated_lpc.has_value()
                 ? checked_u32(generated_lpc->window_count, "generated LPC window count")
                 : 0,
+            .max_lpc_order = generated_lpc.has_value()
+                ? checked_u32(generated_lpc->max_lpc_order, "max LPC order")
+                : 0,
+            .analysis_profile = generated_lpc.has_value()
+                ? static_cast<std::uint32_t>(generated_lpc->analysis_profile)
+                : 0,
         };
 
         std::vector<FlacClSubframeTask> best_tasks(frame_count);
@@ -1136,7 +1284,8 @@ public:
         if (generated_lpc.has_value()) {
             const auto blocksize =
                 static_cast<std::size_t>(plan.residual_tasks.front().data.blocksize);
-            generated_windows = make_generated_lpc_windows(blocksize, generated_lpc->window_count);
+            generated_windows = make_generated_lpc_windows(
+                blocksize, generated_lpc->window_count, generated_lpc->analysis_profile);
             window_values = &generated_windows;
             autocor_count =
                 frame_count * generated_lpc->window_count * (opencl_detail::kFlacClMaxOrder + 1U);

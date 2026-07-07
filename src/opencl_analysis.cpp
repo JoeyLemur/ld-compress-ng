@@ -40,6 +40,8 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr std::size_t kGeneratedLpcBaseWindowCount = 2;
 constexpr std::size_t kGeneratedWelchCandidateTargetCount = 2;
 constexpr double kGeneratedTukeyTaperFraction = 0.5;
+constexpr double kSubdivideTukey3TaperFraction = 0.5 / 3.0;
+constexpr std::size_t kSubdivideTukey3WindowCount = 9;
 using Clock = std::chrono::steady_clock;
 
 struct GeneratedLpcPrefixShape {
@@ -47,6 +49,16 @@ struct GeneratedLpcPrefixShape {
     std::size_t window_count = 0;
     std::size_t total_lpc_tasks = 0;
 };
+
+bool generated_profile_uses_order_guess(NativeAnalysisProfile profile)
+{
+    return profile != NativeAnalysisProfile::Exact;
+}
+
+bool generated_profile_uses_subdivide_tukey3(NativeAnalysisProfile profile)
+{
+    return profile == NativeAnalysisProfile::SubdivideTukey3MeanRice;
+}
 
 LDCOMPRESS_OPENCL_ONLY_USED void add_elapsed_ns(
     std::uint64_t& counter,
@@ -128,33 +140,180 @@ std::size_t generated_welch_candidate_count(const OpenClMonoAnalysisTaskOptions&
         {kGeneratedWelchCandidateTargetCount, options.max_lpc_order, spare_tasks});
 }
 
+std::size_t generated_lpc_task_count(const OpenClMonoAnalysisTaskOptions& options)
+{
+    if (options.max_lpc_order == 0) {
+        return 0;
+    }
+    if (generated_profile_uses_subdivide_tukey3(options.analysis_profile)) {
+        return kSubdivideTukey3WindowCount;
+    }
+    if (generated_profile_uses_order_guess(options.analysis_profile)) {
+        return 3;
+    }
+    return (static_cast<std::size_t>(options.max_lpc_order) * kGeneratedLpcBaseWindowCount) +
+        generated_welch_candidate_count(options);
+}
+
+float tukey_weight(std::size_t n, std::size_t blocksize, double taper_fraction)
+{
+    if (blocksize <= 1 || taper_fraction <= 0.0) {
+        return 1.0F;
+    }
+    if (taper_fraction >= 1.0) {
+        const auto denominator = static_cast<double>(blocksize - 1U);
+        const auto phase = 2.0 * kPi * static_cast<double>(n) / denominator;
+        return static_cast<float>(0.5 - (0.5 * std::cos(phase)));
+    }
+
+    const auto edge_width = static_cast<std::size_t>(
+        (taper_fraction / 2.0) * static_cast<double>(blocksize));
+    if (edge_width == 0) {
+        return 1.0F;
+    }
+    const auto np = edge_width - 1U;
+    if (np == 0) {
+        return (n == 0 || n + 1U == blocksize) ? 0.0F : 1.0F;
+    }
+    if (n <= np) {
+        return static_cast<float>(
+            0.5 - (0.5 * std::cos(kPi * static_cast<double>(n) / static_cast<double>(np))));
+    }
+    if (n >= blocksize - np - 1U) {
+        const auto right_n = n - (blocksize - np - 1U);
+        return static_cast<float>(0.5 -
+            (0.5 * std::cos(
+                kPi * static_cast<double>(right_n + np) / static_cast<double>(np))));
+    }
+    return 1.0F;
+}
+
+float partial_tukey_weight(
+    std::size_t n,
+    std::size_t blocksize,
+    double taper_fraction,
+    double start,
+    double end)
+{
+    if (blocksize == 0 || end <= start) {
+        return 0.0F;
+    }
+
+    const auto start_n = std::min<std::size_t>(
+        blocksize, static_cast<std::size_t>(start * static_cast<double>(blocksize)));
+    const auto end_n = std::min<std::size_t>(
+        blocksize, static_cast<std::size_t>(end * static_cast<double>(blocksize)));
+    const auto width = end_n > start_n ? end_n - start_n : 0;
+    if (width == 0 || n < start_n || n >= end_n) {
+        return 0.0F;
+    }
+
+    const auto taper = std::clamp(taper_fraction, 0.05, 0.95);
+    const auto edge_width = static_cast<std::size_t>(
+        (taper / 2.0) * static_cast<double>(width));
+    double weight = 1.0;
+    if (edge_width != 0 && n < start_n + edge_width) {
+        const auto i = n - start_n + 1U;
+        weight = 0.5 -
+            (0.5 * std::cos(kPi * static_cast<double>(i) / static_cast<double>(edge_width)));
+    } else if (edge_width != 0 && n >= end_n - edge_width) {
+        const auto i = end_n - n;
+        weight = 0.5 -
+            (0.5 * std::cos(kPi * static_cast<double>(i) / static_cast<double>(edge_width)));
+    }
+    return static_cast<float>(weight);
+}
+
+float punchout_tukey_weight(
+    std::size_t n,
+    std::size_t blocksize,
+    double taper_fraction,
+    double start,
+    double end)
+{
+    if (blocksize == 0 || end <= start) {
+        return 1.0F;
+    }
+
+    const auto start_n = std::min<std::size_t>(
+        blocksize, static_cast<std::size_t>(start * static_cast<double>(blocksize)));
+    const auto end_n = std::min<std::size_t>(
+        blocksize, static_cast<std::size_t>(end * static_cast<double>(blocksize)));
+    const auto taper = std::clamp(taper_fraction, 0.05, 0.95);
+    const auto left_edge = static_cast<std::size_t>(
+        (taper / 2.0) * static_cast<double>(start_n));
+    const auto right_span = blocksize > end_n ? blocksize - end_n : 0;
+    const auto right_edge = static_cast<std::size_t>(
+        (taper / 2.0) * static_cast<double>(right_span));
+
+    double weight = 1.0;
+    if (n >= start_n && n < end_n) {
+        weight = 0.0;
+    } else if (left_edge != 0 && n < left_edge) {
+        weight = 0.5 -
+            (0.5 * std::cos(kPi * static_cast<double>(n + 1U) / static_cast<double>(left_edge)));
+    } else if (left_edge != 0 && n >= start_n - left_edge && n < start_n) {
+        const auto i = start_n - n;
+        weight = 0.5 -
+            (0.5 * std::cos(kPi * static_cast<double>(i) / static_cast<double>(left_edge)));
+    } else if (right_edge != 0 && n >= end_n && n < end_n + right_edge) {
+        const auto i = n - end_n + 1U;
+        weight = 0.5 -
+            (0.5 * std::cos(kPi * static_cast<double>(i) / static_cast<double>(right_edge)));
+    } else if (right_edge != 0 && n >= blocksize - right_edge) {
+        const auto i = blocksize - n;
+        weight = 0.5 -
+            (0.5 * std::cos(kPi * static_cast<double>(i) / static_cast<double>(right_edge)));
+    }
+    return static_cast<float>(weight);
+}
+
 LDCOMPRESS_OPENCL_ONLY_USED std::vector<float> make_generated_lpc_windows(
     std::size_t blocksize,
-    std::size_t window_count)
+    std::size_t window_count,
+    NativeAnalysisProfile profile)
 {
     std::vector<float> windows(blocksize * window_count, 1.0f);
+    if (generated_profile_uses_subdivide_tukey3(profile)) {
+        if (window_count != kSubdivideTukey3WindowCount || blocksize == 0) {
+            return windows;
+        }
+
+        for (std::size_t n = 0; n < blocksize; ++n) {
+            windows[n] = tukey_weight(n, blocksize, kSubdivideTukey3TaperFraction);
+        }
+
+        std::size_t window = 1;
+        for (unsigned parts : {2U, 3U}) {
+            for (unsigned part = 0; part < parts; ++part, ++window) {
+                const auto start = static_cast<double>(part) / static_cast<double>(parts);
+                const auto end = static_cast<double>(part + 1U) / static_cast<double>(parts);
+                auto* values = windows.data() + (window * blocksize);
+                for (std::size_t n = 0; n < blocksize; ++n) {
+                    values[n] = partial_tukey_weight(
+                        n, blocksize, kSubdivideTukey3TaperFraction, start, end);
+                }
+            }
+        }
+        for (unsigned part = 0; part < 3; ++part, ++window) {
+            const auto start = static_cast<double>(part) / 3.0;
+            const auto end = static_cast<double>(part + 1U) / 3.0;
+            auto* values = windows.data() + (window * blocksize);
+            for (std::size_t n = 0; n < blocksize; ++n) {
+                values[n] = punchout_tukey_weight(
+                    n, blocksize, kSubdivideTukey3TaperFraction, start, end);
+            }
+        }
+        return windows;
+    }
+
     if (window_count < 2 || blocksize <= 1) {
         return windows;
     }
 
     auto* tukey = windows.data() + blocksize;
-    const auto edge_width = static_cast<std::size_t>(
-        (kGeneratedTukeyTaperFraction / 2.0) * static_cast<double>(blocksize));
-    if (edge_width != 0) {
-        const auto np = edge_width - 1U;
-        if (np == 0) {
-            tukey[0] = 0.0f;
-            tukey[blocksize - 1U] = 0.0f;
-        } else {
-            for (std::size_t n = 0; n <= np; ++n) {
-                const auto left_weight =
-                    0.5 - (0.5 * std::cos(kPi * static_cast<double>(n) / static_cast<double>(np)));
-                const auto right_weight =
-                    0.5 - (0.5 * std::cos(kPi * static_cast<double>(n + np) / static_cast<double>(np)));
-                tukey[n] = static_cast<float>(left_weight);
-                tukey[blocksize - np - 1U + n] = static_cast<float>(right_weight);
-            }
-        }
+    for (std::size_t n = 0; n < blocksize; ++n) {
+        tukey[n] = tukey_weight(n, blocksize, kGeneratedTukeyTaperFraction);
     }
     if (window_count < 3) {
         return windows;
@@ -913,6 +1072,9 @@ void analyze_fixed_constant_task_exact(
     task.data.abits = checked_i32(
         frame_amplitude_bits(samples, offset, block_size, wasted_bits),
         "OpenCL exact analysis abits");
+    if (task.data.size == std::numeric_limits<std::int32_t>::max()) {
+        return;
+    }
     task.data.porder = 0;
 
     if (task.data.type == kFlacClSubframeConstant) {
@@ -963,6 +1125,36 @@ std::vector<FlacClSubframeTask> choose_best_tasks(
         best_tasks.push_back(tasks.at(static_cast<std::size_t>(best_index)));
     }
     return best_tasks;
+}
+
+unsigned guess_fixed_predictor_order(
+    const std::vector<std::int32_t>& shifted_samples,
+    unsigned max_fixed_order)
+{
+    const auto max_order = shifted_samples.size() > 1
+        ? std::min<std::size_t>(max_fixed_order, shifted_samples.size() - 1U)
+        : 0;
+    unsigned best_order = 0;
+    std::uint64_t best_sum = std::numeric_limits<std::uint64_t>::max();
+    for (unsigned order = 0; order <= max_order; ++order) {
+        std::uint64_t sum = 0;
+        for (std::size_t i = order; i < shifted_samples.size(); ++i) {
+            const auto residual = fixed_prediction_residual(shifted_samples, i, order);
+            sum += residual < 0
+                ? static_cast<std::uint64_t>(-(residual + 1)) + 1U
+                : static_cast<std::uint64_t>(residual);
+        }
+        if (sum < best_sum) {
+            best_sum = sum;
+            best_order = order;
+        }
+    }
+    return best_order;
+}
+
+void mark_task_pruned(FlacClSubframeTask& task)
+{
+    task.data.size = std::numeric_limits<std::int32_t>::max();
 }
 
 FlacClRiceParameterSet exact_rice_parameters_for_best_fixed_task(
@@ -1069,6 +1261,7 @@ const char* mono_analysis_kernel_source()
 #define EXACT_WORKGROUP_SIZE 64
 #define AUTOCOR_WORKGROUP_SIZE 64
 #define MAX_RICE_PARTITION_COUNT 256
+#define ANALYSIS_PROFILE_EXACT 0
 
 typedef enum
 {
@@ -1260,7 +1453,9 @@ void ldcompressQuantizeLpcOrders(
     int tasksPerFrame,
     int lpcTasksPerWindow,
     int totalLpcTasks,
-    int coefficientPrecision)
+    int coefficientPrecision,
+    int maxLpcOrder,
+    int analysisProfile)
 {
     const int frame = get_group_id(0);
     const int window = get_group_id(1);
@@ -1269,11 +1464,56 @@ void ldcompressQuantizeLpcOrders(
     const int windowTaskOffset = window * lpcTasksPerWindow;
     const int slotsThisWindow = min(lpcTasksPerWindow, totalLpcTasks - windowTaskOffset);
 
+    int guessedOrder = 1;
+    if (analysisProfile != ANALYSIS_PROFILE_EXACT)
+    {
+        const int maxOrder = clamp(maxLpcOrder, 1, MAX_ORDER);
+        const float errorScale = 0.5f / (float)tasks[frame * tasksPerFrame].data.blocksize;
+        float bestBits = 3.402823466e+38f;
+        const int overheadBitsPerOrder =
+            max(1, tasks[frame * tasksPerFrame].data.obits -
+                tasks[frame * tasksPerFrame].data.wbits) +
+            clamp(coefficientPrecision, 1, 15);
+        for (int order = 1; order <= maxOrder; order++)
+        {
+            const float error = lpcs[lpcOffset + MAX_ORDER * 32 + order - 1];
+            float bitsPerResidual = 0.0f;
+            if (error > 0.0f)
+                bitsPerResidual = max(0.0f, 0.5f * log2(errorScale * error));
+            else if (error < 0.0f)
+                bitsPerResidual = 8.507058665e+37f;
+            const float residualSamples =
+                max(0.0f, (float)(tasks[frame * tasksPerFrame].data.blocksize - order));
+            const float bits =
+                (bitsPerResidual * residualSamples) +
+                (float)(order * overheadBitsPerOrder);
+            if (bits < bestBits)
+            {
+                bestBits = bits;
+                guessedOrder = order;
+            }
+        }
+    }
+
     for (int slot = 0; slot < slotsThisWindow; slot++)
     {
         const int taskNo = frame * tasksPerFrame + windowTaskOffset + slot;
         FLACCLSubframeTask task = tasks[taskNo];
-        const int order = task.data.residualOrder;
+        int order = task.data.residualOrder;
+        if (analysisProfile != ANALYSIS_PROFILE_EXACT)
+        {
+            if (lpcTasksPerWindow == 1)
+            {
+                order = guessedOrder;
+                task.data.residualOrder = guessedOrder;
+            }
+            else if (order != guessedOrder)
+            {
+                task.data.size = 0x7fffffff;
+                tasks[taskNo] = task;
+                continue;
+            }
+        }
 
         int maxCoefficient = 0;
         for (int i = 0; i < order; i++)
@@ -1715,6 +1955,13 @@ void ldcompressAnalyzeSubframeExact(
     const int wbits = task.data.wbits;
     const int obits = task.data.obits - wbits;
     __global const int* data = &samples[task.data.samplesOffs];
+
+    if (task.data.size == 0x7fffffff)
+    {
+        if (get_local_id(0) == 0)
+            tasks[selectedTask] = task;
+        return;
+    }
 
     task.data.porder = 0;
 
@@ -2265,8 +2512,7 @@ std::size_t mono_analysis_tasks_per_frame(const OpenClMonoAnalysisTaskOptions& o
         return 0;
     }
 
-    return (static_cast<std::size_t>(options.max_lpc_order) * kGeneratedLpcBaseWindowCount) +
-        generated_welch_candidate_count(options) +
+    return generated_lpc_task_count(options) +
         (options.include_constant ? 1U : 0U) +
         fixed_task_count(options);
 }
@@ -2290,25 +2536,36 @@ OpenClMonoAnalysisTaskPlan build_mono_analysis_task_plan(
     OpenClMonoAnalysisTaskPlan plan;
     plan.residual_tasks_per_frame = tasks_per_frame;
     plan.estimate_tasks_per_frame = tasks_per_frame;
+    plan.analysis_profile = options.analysis_profile;
+    plan.max_lpc_order = options.max_lpc_order;
     plan.residual_tasks.reserve(frame_count * tasks_per_frame);
     plan.selected_tasks.reserve(frame_count * tasks_per_frame);
 
     for (std::size_t frame = 0; frame < frame_count; ++frame) {
         const auto frame_task_base = plan.residual_tasks.size();
-        for (std::size_t window = 0; window < kGeneratedLpcBaseWindowCount; ++window) {
-            for (unsigned order = 1; order <= options.max_lpc_order; ++order) {
-                plan.residual_tasks.push_back(make_common_task(options, frame, kFlacClSubframeLpc, order));
+        if (generated_profile_uses_order_guess(options.analysis_profile)) {
+            const auto lpc_window_count = generated_lpc_task_count(options);
+            for (std::size_t window = 0; window < lpc_window_count; ++window) {
+                plan.residual_tasks.push_back(
+                    make_common_task(options, frame, kFlacClSubframeLpc, 1));
             }
-        }
-        const auto welch_candidate_count = generated_welch_candidate_count(options);
-        const auto first_welch_order =
-            options.max_lpc_order - static_cast<unsigned>(welch_candidate_count) + 1U;
-        for (std::size_t i = 0; i < welch_candidate_count; ++i) {
-            plan.residual_tasks.push_back(make_common_task(
-                options,
-                frame,
-                kFlacClSubframeLpc,
-                first_welch_order + static_cast<unsigned>(i)));
+        } else {
+            for (std::size_t window = 0; window < kGeneratedLpcBaseWindowCount; ++window) {
+                for (unsigned order = 1; order <= options.max_lpc_order; ++order) {
+                    plan.residual_tasks.push_back(
+                        make_common_task(options, frame, kFlacClSubframeLpc, order));
+                }
+            }
+            const auto welch_candidate_count = generated_welch_candidate_count(options);
+            const auto first_welch_order =
+                options.max_lpc_order - static_cast<unsigned>(welch_candidate_count) + 1U;
+            for (std::size_t i = 0; i < welch_candidate_count; ++i) {
+                plan.residual_tasks.push_back(make_common_task(
+                    options,
+                    frame,
+                    kFlacClSubframeLpc,
+                    first_welch_order + static_cast<unsigned>(i)));
+            }
         }
 
         if (options.include_constant) {
@@ -2331,6 +2588,53 @@ OpenClMonoAnalysisTaskPlan build_mono_analysis_task_plan(
     }
 
     return plan;
+}
+
+void apply_mono_analysis_profile_to_plan(
+    const std::vector<std::int32_t>& samples,
+    OpenClMonoAnalysisTaskPlan& plan)
+{
+    if (!generated_profile_uses_order_guess(plan.analysis_profile)) {
+        return;
+    }
+
+    const auto frame_count = mono_plan_frame_count(plan);
+    for (std::size_t frame = 0; frame < frame_count; ++frame) {
+        const auto task_base = frame * plan.residual_tasks_per_frame;
+        const auto& first_task = plan.residual_tasks.at(task_base);
+        if (first_task.data.samplesOffs < 0 || first_task.data.blocksize <= 0) {
+            throw std::runtime_error("OpenCL mono profile pruning received invalid frame task");
+        }
+        const auto offset = static_cast<std::size_t>(first_task.data.samplesOffs);
+        const auto block_size = static_cast<std::size_t>(first_task.data.blocksize);
+        if (offset > samples.size() || block_size > samples.size() - offset) {
+            throw std::runtime_error("OpenCL mono profile pruning task samples are out of range");
+        }
+        const auto bits_per_sample = static_cast<unsigned>(first_task.data.obits);
+        const auto wasted_bits = common_wasted_bits(samples, offset, block_size, bits_per_sample);
+        const auto shifted = shifted_frame_samples(samples, offset, block_size, wasted_bits);
+
+        unsigned max_fixed_order = 0;
+        for (std::size_t i = 0; i < plan.residual_tasks_per_frame; ++i) {
+            const auto& task = plan.residual_tasks[task_base + i];
+            if (task.data.type == kFlacClSubframeFixed &&
+                task.data.residualOrder >= 0 &&
+                task.data.residualOrder <= 4) {
+                max_fixed_order = std::max(
+                    max_fixed_order,
+                    static_cast<unsigned>(task.data.residualOrder));
+            }
+        }
+        const auto guessed_fixed_order =
+            guess_fixed_predictor_order(shifted, max_fixed_order);
+        for (std::size_t i = 0; i < plan.residual_tasks_per_frame; ++i) {
+            auto& task = plan.residual_tasks[task_base + i];
+            if (task.data.type == kFlacClSubframeFixed &&
+                static_cast<unsigned>(task.data.residualOrder) != guessed_fixed_order) {
+                mark_task_pruned(task);
+            }
+        }
+    }
 }
 
 FlacSubframeDecision flaccl_task_to_subframe_decision(
@@ -3008,7 +3312,7 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
     const auto frame_count = plan.selected_tasks.size() / plan.estimate_tasks_per_frame;
     const auto blocksize = static_cast<std::size_t>(plan.residual_tasks.front().data.blocksize);
     std::vector<float> window =
-        make_generated_lpc_windows(blocksize, generated_window_count);
+        make_generated_lpc_windows(blocksize, generated_window_count, plan.analysis_profile);
     const auto window_bytes = window.size() * sizeof(float);
     ensure_opencl_buffer(runtime.context, runtime.window_buffer,
         runtime.window_buffer_bytes, CL_MEM_READ_ONLY, window_bytes, "window");
@@ -3133,6 +3437,10 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
         static_cast<std::int32_t>(total_lpc_tasks);
     const auto lpc_coefficient_precision_arg =
         static_cast<std::int32_t>(lpc_coefficient_precision);
+    const auto max_lpc_order_arg =
+        static_cast<std::int32_t>(plan.max_lpc_order);
+    const auto analysis_profile_arg =
+        static_cast<std::int32_t>(plan.analysis_profile);
     require_cl(clSetKernelArg(runtime.quantize_kernel.get(), 0, sizeof(tasks_mem), &tasks_mem),
         "clSetKernelArg(quantize.tasks)");
     require_cl(clSetKernelArg(runtime.quantize_kernel.get(), 1, sizeof(lpc_mem), &lpc_mem),
@@ -3149,6 +3457,12 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
     require_cl(clSetKernelArg(runtime.quantize_kernel.get(), 5, sizeof(lpc_coefficient_precision_arg),
                    &lpc_coefficient_precision_arg),
         "clSetKernelArg(quantize.coefficientPrecision)");
+    require_cl(clSetKernelArg(runtime.quantize_kernel.get(), 6, sizeof(max_lpc_order_arg),
+                   &max_lpc_order_arg),
+        "clSetKernelArg(quantize.maxLpcOrder)");
+    require_cl(clSetKernelArg(runtime.quantize_kernel.get(), 7, sizeof(analysis_profile_arg),
+                   &analysis_profile_arg),
+        "clSetKernelArg(quantize.analysisProfile)");
     const auto quantize_started = Clock::now();
     require_cl(clEnqueueNDRangeKernel(runtime.queue.get(), runtime.quantize_kernel.get(), 2, nullptr,
                    generation_global.data(), generation_local.data(), 0, nullptr, nullptr),

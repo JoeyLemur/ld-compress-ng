@@ -27,6 +27,7 @@ const uint kModeComputeAutocorrelation = 3u;
 const uint kModeComputeLpc = 4u;
 const uint kModeQuantizeLpc = 5u;
 const uint kModeWriteBestRiceParameters = 6u;
+const uint kAnalysisProfileExact = 0u;
 const int kSubframeConstant = 0;
 const int kSubframeVerbatim = 1;
 const int kSubframeFixed = 8;
@@ -107,6 +108,8 @@ layout(push_constant) uniform PushConstants {
     uint lpc_tasks_per_window;
     uint total_lpc_tasks;
     uint generated_window_count;
+    uint max_lpc_order;
+    uint analysis_profile;
 } pc;
 
 shared int shared_ints[64];
@@ -658,6 +661,10 @@ void analyze_task(uint task_index)
     const int wasted_bits = common_wasted_bits(task);
     task.data.wbits = wasted_bits;
     task.data.abits = frame_amplitude_bits(task, wasted_bits);
+    if (task.data.size == kIntMax) {
+        tasks[task_index] = task;
+        return;
+    }
     task.data.porder = 0;
 
     if (task.data.type == kSubframeConstant) {
@@ -737,6 +744,12 @@ void cooperative_analyze_task(uint task_index)
 {
     FlacClSubframeTask task = tasks[task_index];
     const int wasted_bits = task.data.wbits;
+    if (task.data.size == kIntMax) {
+        if (gl_LocalInvocationID.x == 0u) {
+            tasks[task_index] = task;
+        }
+        return;
+    }
     task.data.porder = 0;
 
     if (task.data.type == kSubframeConstant) {
@@ -915,11 +928,51 @@ void quantize_generated_lpc(uint frame, uint window)
     const uint lpc_offset =
         (frame * pc.generated_window_count + window) * (kMaxLpcOrder + 1u) * kMaxLpcOrder;
 
+    int guessed_order = 1;
+    if (pc.analysis_profile != kAnalysisProfileExact) {
+        const int max_order = clamp(int(pc.max_lpc_order), 1, int(kMaxLpcOrder));
+        const FlacClSubframeTask first_task = tasks[frame * pc.residual_tasks_per_frame];
+        const float error_scale = 0.5 / float(first_task.data.blocksize);
+        const int overhead_bits_per_order =
+            max(1, first_task.data.obits - first_task.data.wbits) +
+            clamp(int(pc.lpc_coefficient_precision), 1, 15);
+        float best_bits = 3.402823466e+38;
+        for (int order = 1; order <= max_order; ++order) {
+            const float error =
+                lpcs[lpc_offset + (kMaxLpcOrder * kMaxLpcOrder) + uint(order - 1)];
+            float bits_per_residual = 0.0;
+            if (error > 0.0) {
+                bits_per_residual = max(0.0, 0.5 * log2(error_scale * error));
+            } else if (error < 0.0) {
+                bits_per_residual = 8.507058665e+37;
+            }
+            const float residual_samples =
+                max(0.0, float(first_task.data.blocksize - order));
+            const float bits =
+                (bits_per_residual * residual_samples) +
+                float(order * overhead_bits_per_order);
+            if (bits < best_bits) {
+                best_bits = bits;
+                guessed_order = order;
+            }
+        }
+    }
+
     for (uint slot = 0u; slot < slots_this_window; ++slot) {
         const uint task_index =
             (frame * pc.residual_tasks_per_frame) + window_task_offset + slot;
         FlacClSubframeTask task = tasks[task_index];
-        const int order = task.data.residualOrder;
+        int order = task.data.residualOrder;
+        if (pc.analysis_profile != kAnalysisProfileExact) {
+            if (pc.lpc_tasks_per_window == 1u) {
+                order = guessed_order;
+                task.data.residualOrder = guessed_order;
+            } else if (order != guessed_order) {
+                task.data.size = kIntMax;
+                tasks[task_index] = task;
+                continue;
+            }
+        }
 
         int max_coefficient = 0;
         for (int i = 0; i < order; ++i) {

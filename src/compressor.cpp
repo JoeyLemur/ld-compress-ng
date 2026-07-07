@@ -69,6 +69,7 @@ ConversionStats compress_lds(
             .max_lpc_order = options.native_max_lpc_order,
             .lpc_precision = options.native_lpc_precision,
             .max_rice_partition_order = options.native_max_rice_partition_order,
+            .analysis_profile = options.native_analysis_profile,
             .device_index = options.opencl_device_index,
             .native_stats = options.native_stats,
         });
@@ -81,6 +82,7 @@ ConversionStats compress_lds(
             .max_lpc_order = options.native_max_lpc_order,
             .lpc_precision = options.native_lpc_precision,
             .max_rice_partition_order = options.native_max_rice_partition_order,
+            .analysis_profile = options.native_analysis_profile,
             .device_index = options.vulkan_device_index,
             .native_stats = options.native_stats,
         });

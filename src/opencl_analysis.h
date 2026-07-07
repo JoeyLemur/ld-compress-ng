@@ -65,6 +65,7 @@ struct OpenClMonoAnalysisTaskOptions {
     unsigned min_fixed_order = 0;
     unsigned max_fixed_order = 4;
     bool include_constant = true;
+    NativeAnalysisProfile analysis_profile = NativeAnalysisProfile::Exact;
 };
 
 struct OpenClMonoAnalysisTaskPlan {
@@ -72,6 +73,8 @@ struct OpenClMonoAnalysisTaskPlan {
     std::vector<std::int32_t> selected_tasks;
     std::size_t residual_tasks_per_frame = 0;
     std::size_t estimate_tasks_per_frame = 0;
+    NativeAnalysisProfile analysis_profile = NativeAnalysisProfile::Exact;
+    unsigned max_lpc_order = 0;
 };
 
 struct OpenClMonoBestMethodResult {
@@ -113,6 +116,10 @@ std::size_t mono_analysis_tasks_per_frame(const OpenClMonoAnalysisTaskOptions& o
 OpenClMonoAnalysisTaskPlan build_mono_analysis_task_plan(
     std::size_t frame_count,
     const OpenClMonoAnalysisTaskOptions& options);
+
+void apply_mono_analysis_profile_to_plan(
+    const std::vector<std::int32_t>& samples,
+    OpenClMonoAnalysisTaskPlan& plan);
 
 OpenClMonoBestMethodResult run_opencl_mono_best_method(
     const OpenClMonoAnalysisTaskPlan& plan,
