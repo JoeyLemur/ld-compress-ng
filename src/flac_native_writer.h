@@ -7,6 +7,8 @@
 #include <span>
 #include <vector>
 
+#include "native_analysis_profile.h"
+
 namespace ldcompress {
 
 struct FlacStreamInfo {
@@ -156,5 +158,11 @@ FlacSubframeDecision write_mono_best_frame(
     std::ostream& output,
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& info);
+
+FlacSubframeDecision write_mono_best_frame(
+    std::ostream& output,
+    const std::vector<std::int32_t>& samples,
+    const FlacFrameInfo& info,
+    NativeAnalysisProfile profile);
 
 }  // namespace ldcompress

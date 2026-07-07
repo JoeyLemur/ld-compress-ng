@@ -2,6 +2,7 @@
 
 #include "compressor.h"
 #include "lds_codec.h"
+#include "native_analysis_profile.h"
 
 #include <iosfwd>
 #include <string>
@@ -28,6 +29,7 @@ ConversionStats compress_lds_to_native_fixed_flac(
     unsigned max_lpc_order,
     unsigned lpc_precision,
     unsigned max_rice_partition_order,
+    NativeAnalysisProfile analysis_profile = NativeAnalysisProfile::Exact,
     NativeCompressionStats* stats = nullptr);
 
 }  // namespace ldcompress

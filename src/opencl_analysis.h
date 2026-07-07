@@ -186,6 +186,10 @@ ldcompress::FlacSubframeDecision flaccl_task_to_subframe_decision(
 ldcompress::FlacSelectedSubframe flaccl_task_to_selected_subframe(
     const FlacClSubframeTask& task);
 
+std::vector<unsigned> flaccl_task_to_selected_rice_parameters(
+    const FlacClSubframeTask& task,
+    const FlacClRiceParameterSet& rice_parameters);
+
 OpenClMonoGeneratedFrameAnalysisResult analyze_opencl_mono_generated_frames(
     const std::vector<std::int32_t>& samples,
     const ldcompress::FlacFrameInfo& frame_info,

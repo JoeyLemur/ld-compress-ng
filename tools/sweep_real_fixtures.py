@@ -26,6 +26,7 @@ CSV_COLUMNS = [
     "lpc_order",
     "lpc_precision",
     "rice_order",
+    "profile",
     "input_bytes",
     "output_bytes",
     "samples",
@@ -44,6 +45,7 @@ BENCH_COLUMNS = [
     "lpc_order",
     "lpc_prec",
     "rice_order",
+    "profile",
     "input_bytes",
     "output_bytes",
     "samples",
@@ -64,6 +66,7 @@ class SweepConfig:
     lpc_order: str
     lpc_precision: str
     rice_partition_order: str
+    analysis_profile: str
     include_opencl: bool
     opencl_device: str | None
     include_vulkan: bool
@@ -95,6 +98,23 @@ def uint_list_arg(name: str, minimum: int, maximum: int):
     return parse
 
 
+VALID_ANALYSIS_PROFILES = {
+    "exact",
+    "order-guess-exact-rice",
+    "order-guess-mean-rice",
+    "subdivide-tukey3-mean-rice",
+}
+
+
+def analysis_profile_arg(text: str) -> str:
+    if not text:
+        raise argparse.ArgumentTypeError("analysis profile list cannot be empty")
+    for item in text.split(","):
+        if item not in VALID_ANALYSIS_PROFILES:
+            raise argparse.ArgumentTypeError(f"unknown analysis profile: {item}")
+    return text
+
+
 def find_fixtures(root: Path, limit: int | None) -> list[Path]:
     fixtures = sorted(path for path in root.rglob("*.lds") if path.is_file())
     if limit is not None:
@@ -116,6 +136,8 @@ def bench_command(binary: Path, config: SweepConfig, fixture: Path) -> list[str]
         config.lpc_precision,
         "--rice-partition-order",
         config.rice_partition_order,
+        "--analysis-profile",
+        config.analysis_profile,
     ]
     if config.include_opencl:
         command.append("--include-opencl")
@@ -178,13 +200,14 @@ def int_field(row: dict[str, str], column: str) -> int:
     return int(row[column])
 
 
-def native_key(row: dict[str, str]) -> tuple[str, str, str, str, str]:
+def native_key(row: dict[str, str]) -> tuple[str, str, str, str, str, str]:
     return (
         row["threads"],
         row["frame_samples"],
         row["lpc_order"],
         row["lpc_precision"],
         row["rice_order"],
+        row["profile"],
     )
 
 
@@ -237,7 +260,7 @@ def write_markdown(
         for name in fixture_names
     }
 
-    native_groups: dict[tuple[str, str, str, str, str], list[dict[str, str]]] = defaultdict(list)
+    native_groups: dict[tuple[str, str, str, str, str, str], list[dict[str, str]]] = defaultdict(list)
     for row in rows:
         if row["backend"] == "native-fixed":
             native_groups[native_key(row)].append(row)
@@ -252,7 +275,7 @@ def write_markdown(
         sum(numeric(row, "elapsed_s") for row in item[1]),
     ))
 
-    opencl_groups: dict[tuple[str, str, str, str, str], list[dict[str, str]]] = defaultdict(list)
+    opencl_groups: dict[tuple[str, str, str, str, str, str], list[dict[str, str]]] = defaultdict(list)
     for row in rows:
         if row["backend"] == "opencl":
             opencl_groups[native_key(row)].append(row)
@@ -266,7 +289,7 @@ def write_markdown(
         sum(numeric(row, "elapsed_s") for row in item[1]),
     ))
 
-    vulkan_groups: dict[tuple[str, str, str, str, str], list[dict[str, str]]] = defaultdict(list)
+    vulkan_groups: dict[tuple[str, str, str, str, str, str], list[dict[str, str]]] = defaultdict(list)
     for row in rows:
         if row["backend"] == "vulkan":
             vulkan_groups[native_key(row)].append(row)
@@ -291,6 +314,7 @@ def write_markdown(
         output.write(f"- LPC orders: `{config.lpc_order}`\n")
         output.write(f"- LPC precisions: `{config.lpc_precision}`\n")
         output.write(f"- Rice partition orders: `{config.rice_partition_order}`\n")
+        output.write(f"- Analysis profiles: `{config.analysis_profile}`\n")
         output.write(f"- OpenCL included: `{str(config.include_opencl).lower()}`\n")
         if config.opencl_device is not None:
             output.write(f"- OpenCL device: `{config.opencl_device}`\n")
@@ -311,7 +335,7 @@ def write_markdown(
             settings = (
                 f"threads={best['threads']}, frame={best['frame_samples']}, "
                 f"lpc={best['lpc_order']}, prec={best['lpc_precision']}, "
-                f"rice={best['rice_order']}"
+                f"rice={best['rice_order']}, profile={best['profile']}"
             )
             output.write(
                 f"| `{name}` | {format_bytes(cpu_bytes)} | {format_bytes(native_bytes)} | "
@@ -365,10 +389,10 @@ def write_markdown(
             native_bytes = sum(int_field(row, "output_bytes") for row in group)
             elapsed = sum(numeric(row, "elapsed_s") for row in group)
             gap = ((native_bytes / total_cpu_bytes) - 1.0) * 100.0 if total_cpu_bytes else 0.0
-            threads, frame_samples, lpc_order, lpc_precision, rice_order = key
+            threads, frame_samples, lpc_order, lpc_precision, rice_order, profile = key
             settings = (
                 f"threads={threads}, frame={frame_samples}, lpc={lpc_order}, "
-                f"prec={lpc_precision}, rice={rice_order}"
+                f"prec={lpc_precision}, rice={rice_order}, profile={profile}"
             )
             output.write(
                 f"| {rank} | {format_bytes(native_bytes)} | {gap:+.2f}% | "
@@ -383,10 +407,10 @@ def write_markdown(
                 opencl_bytes = sum(int_field(row, "output_bytes") for row in group)
                 elapsed = sum(numeric(row, "elapsed_s") for row in group)
                 gap = ((opencl_bytes / total_cpu_bytes) - 1.0) * 100.0 if total_cpu_bytes else 0.0
-                threads, frame_samples, lpc_order, lpc_precision, rice_order = key
+                threads, frame_samples, lpc_order, lpc_precision, rice_order, profile = key
                 settings = (
                     f"threads={threads}, frame={frame_samples}, lpc={lpc_order}, "
-                    f"prec={lpc_precision}, rice={rice_order}"
+                    f"prec={lpc_precision}, rice={rice_order}, profile={profile}"
                 )
                 output.write(
                     f"| {rank} | {format_bytes(opencl_bytes)} | {gap:+.2f}% | "
@@ -401,10 +425,10 @@ def write_markdown(
                 vulkan_bytes = sum(int_field(row, "output_bytes") for row in group)
                 elapsed = sum(numeric(row, "elapsed_s") for row in group)
                 gap = ((vulkan_bytes / total_cpu_bytes) - 1.0) * 100.0 if total_cpu_bytes else 0.0
-                threads, frame_samples, lpc_order, lpc_precision, rice_order = key
+                threads, frame_samples, lpc_order, lpc_precision, rice_order, profile = key
                 settings = (
                     f"threads={threads}, frame={frame_samples}, lpc={lpc_order}, "
-                    f"prec={lpc_precision}, rice={rice_order}"
+                    f"prec={lpc_precision}, rice={rice_order}, profile={profile}"
                 )
                 output.write(
                     f"| {rank} | {format_bytes(vulkan_bytes)} | {gap:+.2f}% | "
@@ -428,6 +452,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=uint_list_arg("LPC precision", 1, 15))
     parser.add_argument("--rice-partition-order", default="5",
         type=uint_list_arg("Rice partition order", 0, 8))
+    parser.add_argument("--analysis-profile", default="exact",
+        type=analysis_profile_arg)
     parser.add_argument("--include-opencl", action="store_true",
         help="include OpenCL backend rows in each bench run")
     parser.add_argument("--opencl-device",
@@ -465,6 +491,7 @@ def main(argv: list[str]) -> int:
         lpc_order=args.lpc_order,
         lpc_precision=args.lpc_precision,
         rice_partition_order=args.rice_partition_order,
+        analysis_profile=args.analysis_profile,
         include_opencl=args.include_opencl,
         opencl_device=args.opencl_device,
         include_vulkan=args.include_vulkan,
@@ -497,7 +524,7 @@ def main(argv: list[str]) -> int:
             f"{best['output_bytes']} bytes, ratio {best['ratio']}, "
             f"frame={best['frame_samples']} lpc={best['lpc_order']} "
             f"prec={best['lpc_precision']} rice={best['rice_order']} "
-            f"threads={best['threads']}",
+            f"profile={best['profile']} threads={best['threads']}",
             flush=True,
         )
         opencl_rows = sorted_opencl_rows(fixture_rows)

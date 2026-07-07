@@ -965,6 +965,56 @@ std::vector<FlacClSubframeTask> choose_best_tasks(
     return best_tasks;
 }
 
+FlacClRiceParameterSet exact_rice_parameters_for_best_fixed_task(
+    const std::vector<std::int32_t>& samples,
+    const FlacClSubframeTask& task)
+{
+    FlacClRiceParameterSet rice_parameters;
+    if (task.data.type != kFlacClSubframeFixed) {
+        return rice_parameters;
+    }
+    if (task.data.porder < 0 ||
+        task.data.porder >
+            static_cast<std::int32_t>(kFlacClMaxRicePartitionOrder)) {
+        throw std::runtime_error("OpenCL scalar exact best task has invalid Rice partition order");
+    }
+
+    const auto offset = static_cast<std::size_t>(task.data.samplesOffs);
+    const auto block_size = static_cast<std::size_t>(task.data.blocksize);
+    const auto order = static_cast<unsigned>(task.data.residualOrder);
+    const auto partition_order = static_cast<unsigned>(task.data.porder);
+    const auto shifted = shifted_frame_samples(
+        samples, offset, block_size, static_cast<unsigned>(task.data.wbits));
+    const auto residuals = fixed_residuals(shifted, order);
+
+    std::size_t residual_offset = 0;
+    const auto partition_count = std::size_t {1} << partition_order;
+    for (std::size_t partition = 0; partition < partition_count; ++partition) {
+        const auto residual_count = partition_residual_count(
+            block_size, order, partition_order, partition);
+        rice_parameters.parameters[partition] = choose_rice_parameter(
+            residuals, residual_offset, residual_count);
+        residual_offset += residual_count;
+    }
+    if (residual_offset != residuals.size()) {
+        throw std::runtime_error("OpenCL scalar exact Rice sidecar partition accounting error");
+    }
+    return rice_parameters;
+}
+
+std::vector<FlacClRiceParameterSet> exact_rice_parameters_for_best_fixed_tasks(
+    const std::vector<std::int32_t>& samples,
+    const std::vector<FlacClSubframeTask>& best_tasks)
+{
+    std::vector<FlacClRiceParameterSet> best_rice_parameters;
+    best_rice_parameters.reserve(best_tasks.size());
+    for (const auto& task : best_tasks) {
+        best_rice_parameters.push_back(
+            exact_rice_parameters_for_best_fixed_task(samples, task));
+    }
+    return best_rice_parameters;
+}
+
 #if LDCOMPRESS_HAVE_OPENCL
 
 constexpr cl_int kPlatformNotFound = -1001;
@@ -992,8 +1042,8 @@ const char* mono_analysis_kernel_source()
  *
  * Local modifications for ld-compress-ng, 2026-07-04:
  * - Reduced to mono analysis kernels used by the native LaserDisc RF encoder.
- * - Uses the FLACCLSubframeTask ABI but omits stereo, Rice-output, and
- *   bitstream output kernels.
+ * - Uses the FLACCLSubframeTask ABI but omits stereo and bitstream output
+ *   kernels.
  * - Adds a mono LPC autocorrelation/coefficient-generation path with
  *   rectangular and Tukey-window candidates that feeds the exact residual
  *   analyzer without FLACCL's order-pruning pass.
@@ -1018,6 +1068,7 @@ const char* mono_analysis_kernel_source()
 #endif
 #define EXACT_WORKGROUP_SIZE 64
 #define AUTOCOR_WORKGROUP_SIZE 64
+#define MAX_RICE_PARTITION_COUNT 256
 
 typedef enum
 {
@@ -1539,6 +1590,20 @@ ulong ldcompressCooperativeBestRiceBitsForPartition(
     int residualCount,
     FLACCLSubframeTask task,
     __local ulong* reduceScratch)
+;
+
+typedef struct
+{
+    ulong bits;
+    uint parameter;
+} RiceChoice;
+
+RiceChoice ldcompressCooperativeBestRiceForPartition(
+    __global const int* data,
+    int partitionStart,
+    int residualCount,
+    FLACCLSubframeTask task,
+    __local ulong* reduceScratch)
 {
     ulong bits0 = 0UL;
     ulong bits1 = 0UL;
@@ -1577,7 +1642,9 @@ ulong ldcompressCooperativeBestRiceBitsForPartition(
         bits14 += (folded >> 14) + 15UL;
     }
 
-    ulong bestBits = 0xffffffffffffffffUL;
+    RiceChoice best;
+    best.bits = 0xffffffffffffffffUL;
+    best.parameter = 0U;
     for (int parameter = 0; parameter <= MAX_RICE_PARAM; parameter++)
     {
         ulong localBits = bits0;
@@ -1611,10 +1678,25 @@ ulong ldcompressCooperativeBestRiceBitsForPartition(
             localBits = bits14;
 
         const ulong bits = ldcompressReduceSumUlong(localBits, reduceScratch);
-        if (bits < bestBits)
-            bestBits = bits;
+        if (bits < best.bits)
+        {
+            best.bits = bits;
+            best.parameter = (uint)parameter;
+        }
     }
-    return bestBits;
+    return best;
+}
+
+ulong ldcompressCooperativeBestRiceBitsForPartition(
+    __global const int* data,
+    int partitionStart,
+    int residualCount,
+    FLACCLSubframeTask task,
+    __local ulong* reduceScratch)
+{
+    const RiceChoice choice = ldcompressCooperativeBestRiceForPartition(
+        data, partitionStart, residualCount, task, reduceScratch);
+    return choice.bits;
 }
 
 __kernel __attribute__((reqd_work_group_size(EXACT_WORKGROUP_SIZE, 1, 1)))
@@ -1751,6 +1833,53 @@ __kernel void ldcompressChooseBestMethod(
     }
 
     tasks_out[get_global_id(0)] = tasks[best_no];
+}
+
+__kernel __attribute__((reqd_work_group_size(EXACT_WORKGROUP_SIZE, 1, 1)))
+void ldcompressWriteBestRiceParameters(
+    __global const int* samples,
+    __global const FLACCLSubframeTask* bestTasks,
+    __global uint* bestRiceParameters)
+{
+    __local ulong reduceScratchUlong[EXACT_WORKGROUP_SIZE];
+    const int lane = (int)get_local_id(0);
+    const int frame = (int)get_group_id(0);
+    const int outputBase = frame * MAX_RICE_PARTITION_COUNT;
+
+    for (int i = lane; i < MAX_RICE_PARTITION_COUNT; i += EXACT_WORKGROUP_SIZE)
+        bestRiceParameters[outputBase + i] = 0U;
+    barrier(CLK_GLOBAL_MEM_FENCE);
+
+    FLACCLSubframeTask task = bestTasks[frame];
+    const int ro = task.data.residualOrder;
+    const int bs = task.data.blocksize;
+    const int partitionOrder = task.data.porder;
+    if ((task.data.type != Fixed && task.data.type != LPC) ||
+        partitionOrder < 0 ||
+        partitionOrder > 8 ||
+        ro < 0 ||
+        ro >= bs ||
+        !ldcompressValidPartitionOrder(bs, ro, partitionOrder))
+    {
+        return;
+    }
+
+    __global const int* data = &samples[task.data.samplesOffs];
+    const int partitionCount = 1 << partitionOrder;
+    const int partitionSamples = bs >> partitionOrder;
+    for (int partition = 0; partition < partitionCount; partition++)
+    {
+        const int residualCount = partition == 0
+            ? partitionSamples - ro
+            : partitionSamples;
+        const int partitionStart = partition == 0
+            ? ro
+            : partition * partitionSamples;
+        const RiceChoice choice = ldcompressCooperativeBestRiceForPartition(
+            data, partitionStart, residualCount, task, reduceScratchUlong);
+        if (lane == 0)
+            bestRiceParameters[outputBase + partition] = choice.parameter;
+    }
 }
 )CLC";
 }
@@ -1993,6 +2122,7 @@ struct OpenClGeneratedAnalysisRuntime {
     ClKernel quantize_kernel;
     ClKernel exact_kernel;
     ClKernel choose_kernel;
+    ClKernel rice_kernel;
     ClMem samples_buffer;
     ClMem tasks_buffer;
     ClMem selected_buffer;
@@ -2000,6 +2130,7 @@ struct OpenClGeneratedAnalysisRuntime {
     ClMem autocor_buffer;
     ClMem lpc_buffer;
     ClMem best_buffer;
+    ClMem best_rice_parameters_buffer;
     std::size_t samples_buffer_bytes = 0;
     std::size_t tasks_buffer_bytes = 0;
     std::size_t selected_buffer_bytes = 0;
@@ -2007,6 +2138,7 @@ struct OpenClGeneratedAnalysisRuntime {
     std::size_t autocor_buffer_bytes = 0;
     std::size_t lpc_buffer_bytes = 0;
     std::size_t best_buffer_bytes = 0;
+    std::size_t best_rice_parameters_buffer_bytes = 0;
 };
 
 OpenClGeneratedAnalysisRuntime make_opencl_generated_analysis_runtime(
@@ -2056,6 +2188,9 @@ OpenClGeneratedAnalysisRuntime make_opencl_generated_analysis_runtime(
     runtime.choose_kernel.reset(
         clCreateKernel(runtime.program.get(), "ldcompressChooseBestMethod", &status));
     require_cl(status, "clCreateKernel(ldcompressChooseBestMethod)");
+    runtime.rice_kernel.reset(
+        clCreateKernel(runtime.program.get(), "ldcompressWriteBestRiceParameters", &status));
+    require_cl(status, "clCreateKernel(ldcompressWriteBestRiceParameters)");
 
     return runtime;
 }
@@ -2091,6 +2226,32 @@ void write_opencl_buffer(
     require_cl(clEnqueueWriteBuffer(
                    queue.get(), buffer.get(), CL_TRUE, 0, bytes, data, 0, nullptr, nullptr),
         (std::string("clEnqueueWriteBuffer(") + name + ")").c_str());
+}
+
+void enqueue_opencl_best_rice_parameters(
+    const ClCommandQueue& queue,
+    const ClKernel& kernel,
+    const ClMem& samples_buffer,
+    const ClMem& best_buffer,
+    const ClMem& best_rice_parameters_buffer,
+    std::size_t frame_count)
+{
+    cl_mem samples_mem = samples_buffer.get();
+    cl_mem best_mem = best_buffer.get();
+    cl_mem best_rice_mem = best_rice_parameters_buffer.get();
+
+    require_cl(clSetKernelArg(kernel.get(), 0, sizeof(samples_mem), &samples_mem),
+        "clSetKernelArg(rice.samples)");
+    require_cl(clSetKernelArg(kernel.get(), 1, sizeof(best_mem), &best_mem),
+        "clSetKernelArg(rice.bestTasks)");
+    require_cl(clSetKernelArg(kernel.get(), 2, sizeof(best_rice_mem), &best_rice_mem),
+        "clSetKernelArg(rice.bestRiceParameters)");
+
+    const std::size_t local_work_size = kOpenClExactWorkgroupSize;
+    const std::size_t global_work_size = frame_count * local_work_size;
+    require_cl(clEnqueueNDRangeKernel(queue.get(), kernel.get(), 1, nullptr,
+                   &global_work_size, &local_work_size, 0, nullptr, nullptr),
+        "clEnqueueNDRangeKernel(ldcompressWriteBestRiceParameters)");
 }
 
 #endif
@@ -2251,6 +2412,34 @@ FlacSelectedSubframe flaccl_task_to_selected_subframe(
     return selected;
 }
 
+std::vector<unsigned> flaccl_task_to_selected_rice_parameters(
+    const FlacClSubframeTask& task,
+    const FlacClRiceParameterSet& rice_parameters)
+{
+    if (task.data.type != kFlacClSubframeFixed &&
+        task.data.type != kFlacClSubframeLpc) {
+        return {};
+    }
+    if (task.data.porder < 0 ||
+        task.data.porder >
+            static_cast<std::int32_t>(kFlacClMaxRicePartitionOrder)) {
+        throw std::runtime_error("OpenCL selected task has invalid Rice partition order");
+    }
+
+    const auto partition_count =
+        std::size_t {1} << static_cast<unsigned>(task.data.porder);
+    std::vector<unsigned> selected;
+    selected.reserve(partition_count);
+    for (std::size_t i = 0; i < partition_count; ++i) {
+        const auto parameter = rice_parameters.parameters.at(i);
+        if (parameter > kExactMaxRiceParameter) {
+            throw std::runtime_error("OpenCL selected task has invalid Rice parameter");
+        }
+        selected.push_back(static_cast<unsigned>(parameter));
+    }
+    return selected;
+}
+
 OpenClMonoFixedConstantAnalysisResult analyze_mono_fixed_constant_exact(
     const std::vector<std::int32_t>& samples,
     const OpenClMonoAnalysisTaskPlan& plan,
@@ -2263,11 +2452,13 @@ OpenClMonoFixedConstantAnalysisResult analyze_mono_fixed_constant_exact(
         analyze_fixed_constant_task_exact(samples, task, max_rice_partition_order);
     }
     auto best_tasks = choose_best_tasks(analyzed_tasks, plan);
+    auto best_rice_parameters =
+        exact_rice_parameters_for_best_fixed_tasks(samples, best_tasks);
 
     return OpenClMonoFixedConstantAnalysisResult {
         .analyzed_tasks = std::move(analyzed_tasks),
         .best_tasks = std::move(best_tasks),
-        .best_rice_parameters = {},
+        .best_rice_parameters = std::move(best_rice_parameters),
         .device_name = "scalar-exact",
     };
 }
@@ -2459,6 +2650,9 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
     require_cl(status, "clCreateKernel(ldcompressAnalyzeSubframeExact)");
     ClKernel choose_kernel(clCreateKernel(program.get(), "ldcompressChooseBestMethod", &status));
     require_cl(status, "clCreateKernel(ldcompressChooseBestMethod)");
+    ClKernel rice_kernel(
+        clCreateKernel(program.get(), "ldcompressWriteBestRiceParameters", &status));
+    require_cl(status, "clCreateKernel(ldcompressWriteBestRiceParameters)");
 
     ClMem samples_buffer(clCreateBuffer(context.get(),
         CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
@@ -2484,12 +2678,19 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
     const auto frame_count = plan.selected_tasks.size() / plan.estimate_tasks_per_frame;
     std::vector<FlacClSubframeTask> analyzed_tasks(plan.residual_tasks.size());
     std::vector<FlacClSubframeTask> best_tasks(frame_count);
+    std::vector<FlacClRiceParameterSet> best_rice_parameters(frame_count);
     ClMem best_buffer(clCreateBuffer(context.get(),
         CL_MEM_WRITE_ONLY,
         best_tasks.size() * sizeof(FlacClSubframeTask),
         nullptr,
         &status));
     require_cl(status, "clCreateBuffer(tasks_out)");
+    ClMem best_rice_parameters_buffer(clCreateBuffer(context.get(),
+        CL_MEM_WRITE_ONLY,
+        best_rice_parameters.size() * sizeof(FlacClRiceParameterSet),
+        nullptr,
+        &status));
+    require_cl(status, "clCreateBuffer(bestRiceParameters)");
 
     cl_mem tasks_mem = tasks_buffer.get();
     cl_mem samples_mem = samples_buffer.get();
@@ -2542,6 +2743,14 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
                    &frame_global_work_size, nullptr, 0, nullptr, nullptr),
         "clEnqueueNDRangeKernel(ldcompressChooseBestMethod)");
 
+    enqueue_opencl_best_rice_parameters(
+        queue,
+        rice_kernel,
+        samples_buffer,
+        best_buffer,
+        best_rice_parameters_buffer,
+        frame_count);
+
     require_cl(clEnqueueReadBuffer(queue.get(), tasks_buffer.get(), CL_TRUE, 0,
                    analyzed_tasks.size() * sizeof(FlacClSubframeTask), analyzed_tasks.data(),
                    0, nullptr, nullptr),
@@ -2550,12 +2759,16 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
                    best_tasks.size() * sizeof(FlacClSubframeTask), best_tasks.data(),
                    0, nullptr, nullptr),
         "clEnqueueReadBuffer(tasks_out)");
+    require_cl(clEnqueueReadBuffer(queue.get(), best_rice_parameters_buffer.get(), CL_TRUE, 0,
+                   best_rice_parameters.size() * sizeof(FlacClRiceParameterSet),
+                   best_rice_parameters.data(), 0, nullptr, nullptr),
+        "clEnqueueReadBuffer(bestRiceParameters)");
     require_cl(clFinish(queue.get()), "clFinish");
 
     return OpenClMonoFixedConstantAnalysisResult {
         .analyzed_tasks = std::move(analyzed_tasks),
         .best_tasks = std::move(best_tasks),
-        .best_rice_parameters = {},
+        .best_rice_parameters = std::move(best_rice_parameters),
         .device_name = selected_device.name,
     };
 #else
@@ -2606,6 +2819,9 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_analysis(
     require_cl(status, "clCreateKernel(ldcompressAnalyzeSubframeExact)");
     ClKernel choose_kernel(clCreateKernel(program.get(), "ldcompressChooseBestMethod", &status));
     require_cl(status, "clCreateKernel(ldcompressChooseBestMethod)");
+    ClKernel rice_kernel(
+        clCreateKernel(program.get(), "ldcompressWriteBestRiceParameters", &status));
+    require_cl(status, "clCreateKernel(ldcompressWriteBestRiceParameters)");
 
     ClMem samples_buffer(clCreateBuffer(context.get(),
         CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
@@ -2631,12 +2847,19 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_analysis(
     const auto frame_count = plan.selected_tasks.size() / plan.estimate_tasks_per_frame;
     std::vector<FlacClSubframeTask> analyzed_tasks(plan.residual_tasks.size());
     std::vector<FlacClSubframeTask> best_tasks(frame_count);
+    std::vector<FlacClRiceParameterSet> best_rice_parameters(frame_count);
     ClMem best_buffer(clCreateBuffer(context.get(),
         CL_MEM_WRITE_ONLY,
         best_tasks.size() * sizeof(FlacClSubframeTask),
         nullptr,
         &status));
     require_cl(status, "clCreateBuffer(tasks_out)");
+    ClMem best_rice_parameters_buffer(clCreateBuffer(context.get(),
+        CL_MEM_WRITE_ONLY,
+        best_rice_parameters.size() * sizeof(FlacClRiceParameterSet),
+        nullptr,
+        &status));
+    require_cl(status, "clCreateBuffer(bestRiceParameters)");
 
     cl_mem tasks_mem = tasks_buffer.get();
     cl_mem samples_mem = samples_buffer.get();
@@ -2689,6 +2912,14 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_analysis(
                    &frame_global_work_size, nullptr, 0, nullptr, nullptr),
         "clEnqueueNDRangeKernel(ldcompressChooseBestMethod)");
 
+    enqueue_opencl_best_rice_parameters(
+        queue,
+        rice_kernel,
+        samples_buffer,
+        best_buffer,
+        best_rice_parameters_buffer,
+        frame_count);
+
     require_cl(clEnqueueReadBuffer(queue.get(), tasks_buffer.get(), CL_TRUE, 0,
                    analyzed_tasks.size() * sizeof(FlacClSubframeTask), analyzed_tasks.data(),
                    0, nullptr, nullptr),
@@ -2697,12 +2928,16 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_analysis(
                    best_tasks.size() * sizeof(FlacClSubframeTask), best_tasks.data(),
                    0, nullptr, nullptr),
         "clEnqueueReadBuffer(tasks_out)");
+    require_cl(clEnqueueReadBuffer(queue.get(), best_rice_parameters_buffer.get(), CL_TRUE, 0,
+                   best_rice_parameters.size() * sizeof(FlacClRiceParameterSet),
+                   best_rice_parameters.data(), 0, nullptr, nullptr),
+        "clEnqueueReadBuffer(bestRiceParameters)");
     require_cl(clFinish(queue.get()), "clFinish");
 
     return OpenClMonoFixedConstantAnalysisResult {
         .analyzed_tasks = std::move(analyzed_tasks),
         .best_tasks = std::move(best_tasks),
-        .best_rice_parameters = {},
+        .best_rice_parameters = std::move(best_rice_parameters),
         .device_name = selected_device.name,
     };
 #else
@@ -2802,6 +3037,12 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
     const auto best_bytes = best_tasks.size() * sizeof(FlacClSubframeTask);
     ensure_opencl_buffer(runtime.context, runtime.best_buffer,
         runtime.best_buffer_bytes, CL_MEM_WRITE_ONLY, best_bytes, "tasks_out");
+    std::vector<FlacClRiceParameterSet> best_rice_parameters(frame_count);
+    const auto best_rice_parameters_bytes =
+        best_rice_parameters.size() * sizeof(FlacClRiceParameterSet);
+    ensure_opencl_buffer(runtime.context, runtime.best_rice_parameters_buffer,
+        runtime.best_rice_parameters_buffer_bytes, CL_MEM_WRITE_ONLY,
+        best_rice_parameters_bytes, "bestRiceParameters");
 
     cl_mem tasks_mem = runtime.tasks_buffer.get();
     cl_mem samples_mem = runtime.samples_buffer.get();
@@ -2960,6 +3201,19 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
         choose_started,
         "clFinish(ldcompressChooseBestMethod)");
 
+    const auto rice_started = Clock::now();
+    enqueue_opencl_best_rice_parameters(
+        runtime.queue,
+        runtime.rice_kernel,
+        runtime.samples_buffer,
+        runtime.best_buffer,
+        runtime.best_rice_parameters_buffer,
+        frame_count);
+    finish_timed(
+        &OpenClGeneratedAnalysisTimings::choose_best_ns,
+        rice_started,
+        "clFinish(ldcompressWriteBestRiceParameters)");
+
     const auto readback_started = Clock::now();
     if (read_analyzed_tasks) {
         require_cl(clEnqueueReadBuffer(runtime.queue.get(), runtime.tasks_buffer.get(), CL_TRUE, 0,
@@ -2971,6 +3225,11 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
                    best_tasks.size() * sizeof(FlacClSubframeTask), best_tasks.data(),
                    0, nullptr, nullptr),
         "clEnqueueReadBuffer(tasks_out)");
+    require_cl(clEnqueueReadBuffer(
+                   runtime.queue.get(), runtime.best_rice_parameters_buffer.get(), CL_TRUE, 0,
+                   best_rice_parameters.size() * sizeof(FlacClRiceParameterSet),
+                   best_rice_parameters.data(), 0, nullptr, nullptr),
+        "clEnqueueReadBuffer(bestRiceParameters)");
     require_cl(clFinish(runtime.queue.get()), "clFinish");
     if (timings != nullptr) {
         add_elapsed_ns(timings->readback_ns, readback_started);
@@ -2979,7 +3238,7 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
     return OpenClMonoFixedConstantAnalysisResult {
         .analyzed_tasks = std::move(analyzed_tasks),
         .best_tasks = std::move(best_tasks),
-        .best_rice_parameters = {},
+        .best_rice_parameters = std::move(best_rice_parameters),
         .device_name = runtime.selected_device.name,
     };
 }
@@ -3223,11 +3482,22 @@ OpenClMonoGeneratedFrameAnalysisResult analyze_opencl_mono_generated_frames(
 
     std::vector<FlacSubframeDecision> decisions;
     std::vector<FlacSelectedSubframe> selected_subframes;
+    if (!analysis.best_rice_parameters.empty() &&
+        analysis.best_rice_parameters.size() != analysis.best_tasks.size()) {
+        throw std::runtime_error("OpenCL Rice parameter result count did not match best task count");
+    }
     decisions.reserve(analysis.best_tasks.size());
     selected_subframes.reserve(analysis.best_tasks.size());
-    for (const auto& task : analysis.best_tasks) {
+    for (std::size_t i = 0; i < analysis.best_tasks.size(); ++i) {
+        const auto& task = analysis.best_tasks[i];
         decisions.push_back(flaccl_task_to_subframe_decision(task));
-        selected_subframes.push_back(flaccl_task_to_selected_subframe(task));
+        auto selected = flaccl_task_to_selected_subframe(task);
+        if (!analysis.best_rice_parameters.empty()) {
+            selected.rice_parameters =
+                flaccl_task_to_selected_rice_parameters(
+                    task, analysis.best_rice_parameters[i]);
+        }
+        selected_subframes.push_back(std::move(selected));
     }
 
     return OpenClMonoGeneratedFrameAnalysisResult {

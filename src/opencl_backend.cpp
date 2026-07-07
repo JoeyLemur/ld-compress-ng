@@ -99,12 +99,22 @@ AcceleratedSelectedFrameAnalysis analyze_opencl_selected_frames(
         }
 
         AcceleratedSelectedFrameAnalysis selected;
+        if (!result.best_rice_parameters.empty() &&
+            result.best_rice_parameters.size() != result.best_tasks.size()) {
+            throw std::runtime_error("OpenCL Rice parameter result count did not match best task count");
+        }
         selected.decisions.reserve(result.best_tasks.size());
         selected.selected_subframes.reserve(result.best_tasks.size());
-        for (const auto& task : result.best_tasks) {
+        for (std::size_t i = 0; i < result.best_tasks.size(); ++i) {
+            const auto& task = result.best_tasks[i];
             selected.decisions.push_back(opencl_detail::flaccl_task_to_subframe_decision(task));
-            selected.selected_subframes.push_back(
-                opencl_detail::flaccl_task_to_selected_subframe(task));
+            auto selected_subframe = opencl_detail::flaccl_task_to_selected_subframe(task);
+            if (!result.best_rice_parameters.empty()) {
+                selected_subframe.rice_parameters =
+                    opencl_detail::flaccl_task_to_selected_rice_parameters(
+                        task, result.best_rice_parameters[i]);
+            }
+            selected.selected_subframes.push_back(std::move(selected_subframe));
         }
         return selected;
     }
@@ -131,11 +141,22 @@ AcceleratedSelectedFrameAnalysis analyze_opencl_selected_frames(
     }
 
     AcceleratedSelectedFrameAnalysis selected;
+    if (!result.best_rice_parameters.empty() &&
+        result.best_rice_parameters.size() != result.best_tasks.size()) {
+        throw std::runtime_error("OpenCL Rice parameter result count did not match best task count");
+    }
     selected.decisions.reserve(result.best_tasks.size());
     selected.selected_subframes.reserve(result.best_tasks.size());
-    for (const auto& task : result.best_tasks) {
+    for (std::size_t i = 0; i < result.best_tasks.size(); ++i) {
+        const auto& task = result.best_tasks[i];
         selected.decisions.push_back(opencl_detail::flaccl_task_to_subframe_decision(task));
-        selected.selected_subframes.push_back(opencl_detail::flaccl_task_to_selected_subframe(task));
+        auto selected_subframe = opencl_detail::flaccl_task_to_selected_subframe(task);
+        if (!result.best_rice_parameters.empty()) {
+            selected_subframe.rice_parameters =
+                opencl_detail::flaccl_task_to_selected_rice_parameters(
+                    task, result.best_rice_parameters[i]);
+        }
+        selected.selected_subframes.push_back(std::move(selected_subframe));
     }
     return selected;
 }

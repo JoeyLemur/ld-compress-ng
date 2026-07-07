@@ -279,6 +279,131 @@ unsigned choose_rice_parameter(
     return best_parameter;
 }
 
+enum class RiceSelectionMode {
+    Exact,
+    MeanEstimate,
+};
+
+bool valid_partition_order(std::size_t block_size, unsigned predictor_order, unsigned partition_order);
+unsigned checked_max_rice_partition_order(unsigned max_rice_partition_order);
+std::size_t partition_residual_count(
+    std::size_t block_size,
+    unsigned predictor_order,
+    unsigned partition_order,
+    std::size_t partition);
+
+struct RicePartitionChoice {
+    unsigned partition_order = 0;
+    std::vector<unsigned> parameters;
+    std::uint64_t estimated_bits = std::numeric_limits<std::uint64_t>::max();
+};
+
+unsigned ilog2_u64(std::uint64_t value)
+{
+    unsigned result = 0;
+    while (value > 1) {
+        value >>= 1U;
+        ++result;
+    }
+    return result;
+}
+
+std::uint64_t abs_residual_sum(
+    const std::vector<std::int64_t>& residuals,
+    std::size_t offset,
+    std::size_t count)
+{
+    if (offset > residuals.size() || count > residuals.size() - offset) {
+        throw std::runtime_error("internal FLAC residual partition range error");
+    }
+
+    std::uint64_t sum = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto residual = residuals[offset + i];
+        sum += residual < 0
+            ? static_cast<std::uint64_t>(-(residual + 1)) + 1U
+            : static_cast<std::uint64_t>(residual);
+    }
+    return sum;
+}
+
+unsigned mean_rice_parameter(std::uint64_t abs_sum, std::size_t sample_count)
+{
+    if (sample_count == 0) {
+        return 0;
+    }
+
+    const auto divisor = 0x40000ULL / sample_count;
+    const auto scaled_mean =
+        abs_sum < 2 || divisor == 0 ? 0 : (((abs_sum - 1U) * divisor) >> 18U);
+    if (scaled_mean == 0) {
+        return 0;
+    }
+    return std::min(kMaxRiceParameter, ilog2_u64(scaled_mean) + 1U);
+}
+
+std::uint64_t mean_rice_partition_bits(
+    unsigned rice_parameter,
+    std::size_t sample_count,
+    std::uint64_t abs_sum)
+{
+    std::uint64_t bits = 4U +
+        (static_cast<std::uint64_t>(1U + rice_parameter) * sample_count);
+    bits += rice_parameter == 0
+        ? (abs_sum << 1U)
+        : (abs_sum >> (rice_parameter - 1U));
+    const auto correction = sample_count >> 1U;
+    return bits > correction ? bits - correction : 0;
+}
+
+RicePartitionChoice choose_mean_rice_partition_order(
+    const std::vector<std::int64_t>& residuals,
+    std::size_t block_size,
+    unsigned predictor_order,
+    unsigned max_rice_partition_order)
+{
+    RicePartitionChoice best;
+    const auto max_partition_order =
+        checked_max_rice_partition_order(max_rice_partition_order);
+    for (int partition_order = static_cast<int>(max_partition_order);
+         partition_order >= 0;
+         --partition_order) {
+        const auto current_partition_order = static_cast<unsigned>(partition_order);
+        if (!valid_partition_order(block_size, predictor_order, current_partition_order)) {
+            continue;
+        }
+
+        RicePartitionChoice current;
+        current.partition_order = current_partition_order;
+        current.estimated_bits = 2U + 4U;
+        const auto partition_count = std::size_t {1} << current_partition_order;
+        current.parameters.reserve(partition_count);
+
+        std::size_t residual_offset = 0;
+        for (std::size_t partition = 0; partition < partition_count; ++partition) {
+            const auto residual_count = partition_residual_count(
+                block_size, predictor_order, current_partition_order, partition);
+            const auto abs_sum = abs_residual_sum(residuals, residual_offset, residual_count);
+            const auto parameter = mean_rice_parameter(abs_sum, residual_count);
+            current.parameters.push_back(parameter);
+            current.estimated_bits +=
+                mean_rice_partition_bits(parameter, residual_count, abs_sum);
+            residual_offset += residual_count;
+        }
+        if (residual_offset != residuals.size()) {
+            throw std::runtime_error("internal FLAC residual partition accounting error");
+        }
+
+        if (current.estimated_bits < best.estimated_bits) {
+            best = std::move(current);
+        }
+    }
+    if (best.estimated_bits == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::runtime_error("internal FLAC mean Rice partition search found no valid partition order");
+    }
+    return best;
+}
+
 struct FixedRiceSubframe {
     unsigned order = 0;
     unsigned partition_order = 0;
@@ -834,6 +959,248 @@ std::vector<double> levinson_durbin_coefficients(
     return coefficients;
 }
 
+std::vector<double> levinson_durbin_prediction_errors(
+    const std::vector<double>& autoc,
+    unsigned max_order)
+{
+    std::vector<double> errors;
+    if (max_order == 0 || autoc.size() <= max_order || autoc[0] <= 0.0) {
+        return errors;
+    }
+
+    std::vector<double> coefficients(max_order, 0.0);
+    double error = autoc[0];
+    errors.reserve(max_order);
+    for (unsigned i = 0; i < max_order; ++i) {
+        double reflection = autoc[i + 1U];
+        for (unsigned j = 0; j < i; ++j) {
+            reflection -= coefficients[j] * autoc[i - j];
+        }
+        reflection /= error;
+        if (!std::isfinite(reflection)) {
+            break;
+        }
+
+        auto next = coefficients;
+        for (unsigned j = 0; j < i; ++j) {
+            next[j] = coefficients[j] - (reflection * coefficients[i - j - 1U]);
+        }
+        next[i] = reflection;
+        coefficients = std::move(next);
+
+        error *= 1.0 - (reflection * reflection);
+        if (!std::isfinite(error) || error < 0.0) {
+            error = 0.0;
+        }
+        errors.push_back(error);
+        if (error <= 1.0e-9) {
+            break;
+        }
+    }
+    return errors;
+}
+
+double expected_bits_per_residual_sample(double lpc_error, double error_scale)
+{
+    if (lpc_error > 0.0) {
+        const auto bits = 0.5 * std::log(error_scale * lpc_error) / std::log(2.0);
+        return bits >= 0.0 ? bits : 0.0;
+    }
+    if (lpc_error < 0.0) {
+        return 1.0e32;
+    }
+    return 0.0;
+}
+
+std::optional<unsigned> guess_lpc_order_from_autocorrelation(
+    const std::vector<double>& autoc,
+    unsigned max_order,
+    std::size_t total_samples,
+    unsigned overhead_bits_per_order)
+{
+    const auto errors = levinson_durbin_prediction_errors(autoc, max_order);
+    if (errors.empty() || total_samples == 0) {
+        return std::nullopt;
+    }
+
+    unsigned best_order = 1;
+    double best_bits = std::numeric_limits<double>::infinity();
+    const auto error_scale = 0.5 / static_cast<double>(total_samples);
+    for (unsigned order = 1; order <= errors.size(); ++order) {
+        const auto residual_samples =
+            total_samples > order ? total_samples - order : 0;
+        const auto bits =
+            expected_bits_per_residual_sample(errors[order - 1U], error_scale) *
+                static_cast<double>(residual_samples) +
+            static_cast<double>(order * overhead_bits_per_order);
+        if (bits < best_bits) {
+            best_bits = bits;
+            best_order = order;
+        }
+    }
+    return best_order;
+}
+
+std::vector<double> partial_tukey_windowed_samples(
+    SampleSpan samples,
+    double taper_fraction,
+    double start,
+    double end)
+{
+    std::vector<double> windowed(samples.size(), 0.0);
+    if (samples.empty() || end <= start) {
+        return windowed;
+    }
+
+    const auto start_n = std::min<std::size_t>(
+        samples.size(), static_cast<std::size_t>(start * static_cast<double>(samples.size())));
+    const auto end_n = std::min<std::size_t>(
+        samples.size(), static_cast<std::size_t>(end * static_cast<double>(samples.size())));
+    const auto width = end_n > start_n ? end_n - start_n : 0;
+    if (width == 0) {
+        return windowed;
+    }
+
+    const auto taper = std::clamp(taper_fraction, 0.05, 0.95);
+    const auto edge_width = static_cast<std::size_t>(
+        (taper / 2.0) * static_cast<double>(width));
+    for (std::size_t n = start_n; n < end_n; ++n) {
+        double weight = 1.0;
+        if (edge_width != 0 && n < start_n + edge_width) {
+            const auto i = n - start_n + 1U;
+            weight = 0.5 - (0.5 * std::cos(kPi * static_cast<double>(i) /
+                static_cast<double>(edge_width)));
+        } else if (edge_width != 0 && n >= end_n - edge_width) {
+            const auto i = end_n - n;
+            weight = 0.5 - (0.5 * std::cos(kPi * static_cast<double>(i) /
+                static_cast<double>(edge_width)));
+        }
+        windowed[n] = static_cast<double>(samples[n]) * weight;
+    }
+    return windowed;
+}
+
+std::vector<double> punchout_tukey_windowed_samples(
+    SampleSpan samples,
+    double taper_fraction,
+    double start,
+    double end)
+{
+    std::vector<double> windowed;
+    windowed.reserve(samples.size());
+    for (const auto sample : samples) {
+        windowed.push_back(static_cast<double>(sample));
+    }
+    if (samples.empty() || end <= start) {
+        return windowed;
+    }
+
+    const auto start_n = std::min<std::size_t>(
+        samples.size(), static_cast<std::size_t>(start * static_cast<double>(samples.size())));
+    const auto end_n = std::min<std::size_t>(
+        samples.size(), static_cast<std::size_t>(end * static_cast<double>(samples.size())));
+    const auto taper = std::clamp(taper_fraction, 0.05, 0.95);
+    const auto left_edge = static_cast<std::size_t>(
+        (taper / 2.0) * static_cast<double>(start_n));
+    const auto right_span = samples.size() > end_n ? samples.size() - end_n : 0;
+    const auto right_edge = static_cast<std::size_t>(
+        (taper / 2.0) * static_cast<double>(right_span));
+
+    for (std::size_t n = 0; n < samples.size(); ++n) {
+        double weight = 1.0;
+        if (n >= start_n && n < end_n) {
+            weight = 0.0;
+        } else if (left_edge != 0 && n < left_edge) {
+            weight = 0.5 - (0.5 * std::cos(kPi * static_cast<double>(n + 1U) /
+                static_cast<double>(left_edge)));
+        } else if (left_edge != 0 && n >= start_n - left_edge && n < start_n) {
+            const auto i = start_n - n;
+            weight = 0.5 - (0.5 * std::cos(kPi * static_cast<double>(i) /
+                static_cast<double>(left_edge)));
+        } else if (right_edge != 0 && n >= end_n && n < end_n + right_edge) {
+            const auto i = n - end_n + 1U;
+            weight = 0.5 - (0.5 * std::cos(kPi * static_cast<double>(i) /
+                static_cast<double>(right_edge)));
+        } else if (right_edge != 0 && n >= samples.size() - right_edge) {
+            const auto i = samples.size() - n;
+            weight = 0.5 - (0.5 * std::cos(kPi * static_cast<double>(i) /
+                static_cast<double>(right_edge)));
+        }
+        windowed[n] *= weight;
+    }
+    return windowed;
+}
+
+struct LpcAutocorrelationCandidate {
+    FlacLpcWindowKind window = FlacLpcWindowKind::Rectangular;
+    std::vector<double> autocorrelation;
+};
+
+std::vector<LpcAutocorrelationCandidate> lpc_order_guess_autocorrelations(
+    const std::vector<std::int32_t>& shifted_samples,
+    unsigned max_order)
+{
+    std::vector<LpcAutocorrelationCandidate> candidates;
+    candidates.push_back(LpcAutocorrelationCandidate {
+        .window = FlacLpcWindowKind::Rectangular,
+        .autocorrelation = autocorrelation(shifted_samples, max_order),
+    });
+    candidates.push_back(LpcAutocorrelationCandidate {
+        .window = FlacLpcWindowKind::Tukey,
+        .autocorrelation =
+            autocorrelation(tukey_windowed_samples(shifted_samples, 0.5), max_order),
+    });
+    candidates.push_back(LpcAutocorrelationCandidate {
+        .window = FlacLpcWindowKind::Welch,
+        .autocorrelation =
+            autocorrelation(welch_windowed_samples(shifted_samples), max_order),
+    });
+    return candidates;
+}
+
+std::vector<LpcAutocorrelationCandidate> subdivide_tukey3_autocorrelations(
+    const std::vector<std::int32_t>& shifted_samples,
+    unsigned max_order)
+{
+    std::vector<LpcAutocorrelationCandidate> candidates;
+    constexpr unsigned kParts = 3;
+    const double taper_fraction = 0.5 / static_cast<double>(kParts);
+
+    candidates.push_back(LpcAutocorrelationCandidate {
+        .window = FlacLpcWindowKind::Tukey,
+        .autocorrelation =
+            autocorrelation(tukey_windowed_samples(shifted_samples, taper_fraction), max_order),
+    });
+
+    for (unsigned parts : {2U, 3U}) {
+        for (unsigned part = 0; part < parts; ++part) {
+            const auto start = static_cast<double>(part) / static_cast<double>(parts);
+            const auto end = static_cast<double>(part + 1U) / static_cast<double>(parts);
+            candidates.push_back(LpcAutocorrelationCandidate {
+                .window = FlacLpcWindowKind::Tukey,
+                .autocorrelation = autocorrelation(
+                    partial_tukey_windowed_samples(
+                        shifted_samples, taper_fraction, start, end),
+                    max_order),
+            });
+        }
+    }
+
+    for (unsigned part = 0; part < kParts; ++part) {
+        const auto start = static_cast<double>(part) / static_cast<double>(kParts);
+        const auto end = static_cast<double>(part + 1U) / static_cast<double>(kParts);
+        candidates.push_back(LpcAutocorrelationCandidate {
+            .window = FlacLpcWindowKind::Tukey,
+            .autocorrelation = autocorrelation(
+                punchout_tukey_windowed_samples(
+                    shifted_samples, taper_fraction, start, end),
+                max_order),
+        });
+    }
+
+    return candidates;
+}
+
 void append_quantized_lpc_candidate(
     std::vector<QuantizedLpcCoefficients>& candidates,
     int quantization_shift,
@@ -1002,6 +1369,99 @@ FixedRiceSubframe choose_fixed_rice_subframe(
     return best;
 }
 
+unsigned guess_fixed_predictor_order(const std::vector<std::int32_t>& shifted_samples)
+{
+    const auto max_order = shifted_samples.size() > 1
+        ? std::min<std::size_t>(4, shifted_samples.size() - 1)
+        : 0;
+    unsigned best_order = 0;
+    std::uint64_t best_sum = std::numeric_limits<std::uint64_t>::max();
+    for (unsigned order = 0; order <= max_order; ++order) {
+        std::uint64_t sum = 0;
+        for (std::size_t i = order; i < shifted_samples.size(); ++i) {
+            const auto residual = fixed_prediction_residual(shifted_samples, i, order);
+            sum += residual < 0
+                ? static_cast<std::uint64_t>(-(residual + 1)) + 1U
+                : static_cast<std::uint64_t>(residual);
+        }
+        if (sum < best_sum) {
+            best_sum = sum;
+            best_order = order;
+        }
+    }
+    return best_order;
+}
+
+FixedRiceSubframe analyze_fixed_rice_order(
+    const std::vector<std::int32_t>& shifted_samples,
+    unsigned bits_per_sample,
+    unsigned wasted_bits,
+    unsigned order,
+    unsigned max_rice_partition_order,
+    RiceSelectionMode rice_mode)
+{
+    max_rice_partition_order = checked_max_rice_partition_order(max_rice_partition_order);
+    const auto effective_bits_per_sample = bits_per_sample - wasted_bits;
+    auto residuals = fixed_residuals(shifted_samples, order);
+
+    FixedRiceSubframe best;
+    best.bits = std::numeric_limits<std::uint64_t>::max();
+    if (rice_mode == RiceSelectionMode::MeanEstimate) {
+        const auto rice_choice = choose_mean_rice_partition_order(
+            residuals, shifted_samples.size(), order, max_rice_partition_order);
+        best.order = order;
+        best.partition_order = rice_choice.partition_order;
+        best.wasted_bits = wasted_bits;
+        best.effective_bits_per_sample = effective_bits_per_sample;
+        best.shifted_samples = shifted_samples;
+        best.rice_parameters = rice_choice.parameters;
+        best.residuals = std::move(residuals);
+        best.bits = fixed_rice_subframe_bits(
+            order, best.partition_order, wasted_bits, best.rice_parameters,
+            best.residuals, shifted_samples.size(), effective_bits_per_sample);
+        return best;
+    }
+
+    for (unsigned partition_order = 0; partition_order <= max_rice_partition_order; ++partition_order) {
+        if (!valid_partition_order(shifted_samples.size(), order, partition_order)) {
+            continue;
+        }
+
+        const auto rice_parameters = rice_parameters_for_partition_order(
+            residuals, shifted_samples.size(), order, partition_order);
+        const auto bits = fixed_rice_subframe_bits(
+            order, partition_order, wasted_bits, rice_parameters, residuals,
+            shifted_samples.size(), effective_bits_per_sample);
+        if (bits < best.bits) {
+            best.order = order;
+            best.partition_order = partition_order;
+            best.wasted_bits = wasted_bits;
+            best.effective_bits_per_sample = effective_bits_per_sample;
+            best.shifted_samples = shifted_samples;
+            best.rice_parameters = rice_parameters;
+            best.residuals = residuals;
+            best.bits = bits;
+        }
+    }
+
+    return best;
+}
+
+FixedRiceSubframe choose_fixed_rice_subframe_order_guess(
+    SampleSpan samples,
+    unsigned bits_per_sample,
+    unsigned max_rice_partition_order,
+    RiceSelectionMode rice_mode)
+{
+    max_rice_partition_order = checked_max_rice_partition_order(max_rice_partition_order);
+    const auto wasted_bits = common_wasted_bits(samples, bits_per_sample);
+    auto shifted_samples = shift_samples(samples, wasted_bits);
+    const auto order = guess_fixed_predictor_order(shifted_samples);
+    return analyze_fixed_rice_order(
+        shifted_samples, bits_per_sample, wasted_bits, order,
+        max_rice_partition_order, rice_mode);
+}
+
 std::optional<LpcRiceSubframe> analyze_lpc_rice_candidate(
     const std::vector<std::int32_t>& shifted_samples,
     const QuantizedLpcCoefficients& quantized,
@@ -1010,7 +1470,8 @@ std::optional<LpcRiceSubframe> analyze_lpc_rice_candidate(
     unsigned wasted_bits,
     unsigned effective_bits_per_sample,
     unsigned lpc_coefficient_precision,
-    unsigned max_rice_partition_order)
+    unsigned max_rice_partition_order,
+    RiceSelectionMode rice_mode = RiceSelectionMode::Exact)
 {
     if (quantized.coefficients.size() != order ||
         quantized.quantization_shift < 0 ||
@@ -1024,6 +1485,28 @@ std::optional<LpcRiceSubframe> analyze_lpc_rice_candidate(
 
     LpcRiceSubframe best;
     best.bits = std::numeric_limits<std::uint64_t>::max();
+    if (rice_mode == RiceSelectionMode::MeanEstimate) {
+        const auto rice_choice = choose_mean_rice_partition_order(
+            residuals, shifted_samples.size(), order, max_rice_partition_order);
+        best.order = order;
+        best.partition_order = rice_choice.partition_order;
+        best.wasted_bits = wasted_bits;
+        best.effective_bits_per_sample = effective_bits_per_sample;
+        best.coefficient_precision = lpc_coefficient_precision;
+        best.quantization_shift = quantized.quantization_shift;
+        best.window = window;
+        best.quantization = quantized.quantization;
+        best.shifted_samples = shifted_samples;
+        best.coefficients = quantized.coefficients;
+        best.rice_parameters = rice_choice.parameters;
+        best.residuals = std::move(residuals);
+        best.bits = lpc_rice_subframe_bits(
+            order, best.partition_order, wasted_bits, lpc_coefficient_precision,
+            best.rice_parameters, best.residuals, shifted_samples.size(),
+            effective_bits_per_sample);
+        return best;
+    }
+
     for (unsigned partition_order = 0; partition_order <= max_rice_partition_order; ++partition_order) {
         if (!valid_partition_order(shifted_samples.size(), order, partition_order)) {
             continue;
@@ -1080,6 +1563,7 @@ void append_lpc_rice_order_candidates(
     unsigned effective_bits_per_sample,
     unsigned lpc_coefficient_precision,
     unsigned max_rice_partition_order,
+    RiceSelectionMode rice_mode,
     std::vector<LpcRiceSubframe>& candidates)
 {
     auto coefficients = levinson_durbin_coefficients(autocorrelation_candidate, order);
@@ -1098,7 +1582,8 @@ void append_lpc_rice_order_candidates(
             wasted_bits,
             effective_bits_per_sample,
             lpc_coefficient_precision,
-            max_rice_partition_order);
+            max_rice_partition_order,
+            rice_mode);
         if (candidate.has_value()) {
             candidates.push_back(std::move(*candidate));
         }
@@ -1114,6 +1599,7 @@ void consider_lpc_rice_order(
     unsigned effective_bits_per_sample,
     unsigned lpc_coefficient_precision,
     unsigned max_rice_partition_order,
+    RiceSelectionMode rice_mode,
     LpcRiceSubframe& best)
 {
     std::vector<LpcRiceSubframe> candidates;
@@ -1126,6 +1612,7 @@ void consider_lpc_rice_order(
         effective_bits_per_sample,
         lpc_coefficient_precision,
         max_rice_partition_order,
+        rice_mode,
         candidates);
     for (auto& candidate : candidates) {
         if (candidate.bits < best.bits) {
@@ -1170,7 +1657,7 @@ LpcRiceSubframe choose_lpc_rice_subframe_for_order(
         FlacLpcWindowKind::Rectangular,
         lpc_order,
         wasted_bits, effective_bits_per_sample, lpc_coefficient_precision,
-        max_rice_partition_order, best);
+        max_rice_partition_order, RiceSelectionMode::Exact, best);
     const auto tukey_autocorrelation =
         autocorrelation(tukey_windowed_samples(shifted_samples, 0.5), lpc_order);
     consider_lpc_rice_order(
@@ -1179,7 +1666,7 @@ LpcRiceSubframe choose_lpc_rice_subframe_for_order(
         FlacLpcWindowKind::Tukey,
         lpc_order,
         wasted_bits, effective_bits_per_sample, lpc_coefficient_precision,
-        max_rice_partition_order, best);
+        max_rice_partition_order, RiceSelectionMode::Exact, best);
 
     if (should_consider_welch_lpc_order(lpc_order, static_cast<unsigned>(max_order))) {
         const auto welch_autocorrelation =
@@ -1190,7 +1677,7 @@ LpcRiceSubframe choose_lpc_rice_subframe_for_order(
             FlacLpcWindowKind::Welch,
             lpc_order,
             wasted_bits, effective_bits_per_sample, lpc_coefficient_precision,
-            max_rice_partition_order, best);
+            max_rice_partition_order, RiceSelectionMode::Exact, best);
     }
     return best;
 }
@@ -1234,14 +1721,14 @@ LpcRiceSubframe choose_lpc_rice_subframe(
             FlacLpcWindowKind::Rectangular,
             order,
             wasted_bits, effective_bits_per_sample, lpc_coefficient_precision,
-            max_rice_partition_order, best);
+            max_rice_partition_order, RiceSelectionMode::Exact, best);
         consider_lpc_rice_order(
             shifted_samples,
             tukey_autocorrelation,
             FlacLpcWindowKind::Tukey,
             order,
             wasted_bits, effective_bits_per_sample, lpc_coefficient_precision,
-            max_rice_partition_order, best);
+            max_rice_partition_order, RiceSelectionMode::Exact, best);
         if (should_consider_welch_lpc_order(order, static_cast<unsigned>(max_order))) {
             consider_lpc_rice_order(
                 shifted_samples,
@@ -1249,10 +1736,67 @@ LpcRiceSubframe choose_lpc_rice_subframe(
                 FlacLpcWindowKind::Welch,
                 order,
                 wasted_bits, effective_bits_per_sample, lpc_coefficient_precision,
-                max_rice_partition_order, best);
+                max_rice_partition_order, RiceSelectionMode::Exact, best);
         }
     }
 
+    return best;
+}
+
+LpcRiceSubframe choose_lpc_rice_subframe_order_guess(
+    SampleSpan samples,
+    unsigned bits_per_sample,
+    unsigned max_lpc_order,
+    unsigned lpc_coefficient_precision,
+    unsigned max_rice_partition_order,
+    RiceSelectionMode rice_mode,
+    bool use_subdivide_tukey3)
+{
+    max_rice_partition_order = checked_max_rice_partition_order(max_rice_partition_order);
+    if (lpc_coefficient_precision == 0 || lpc_coefficient_precision > 15) {
+        throw std::runtime_error("native FLAC LPC coefficient precision must be 1..15");
+    }
+
+    LpcRiceSubframe best;
+    best.bits = std::numeric_limits<std::uint64_t>::max();
+    if (samples.size() < kMinLpcBlockSize || max_lpc_order == 0) {
+        return best;
+    }
+
+    const auto wasted_bits = common_wasted_bits(samples, bits_per_sample);
+    auto shifted_samples = shift_samples(samples, wasted_bits);
+    const auto effective_bits_per_sample = bits_per_sample - wasted_bits;
+    const auto max_order = static_cast<unsigned>(std::min<std::size_t>(
+        std::min(max_lpc_order, kMaxLpcOrder), shifted_samples.size() - 1U));
+    if (max_order == 0) {
+        return best;
+    }
+
+    const auto autocorrelations = use_subdivide_tukey3
+        ? subdivide_tukey3_autocorrelations(shifted_samples, max_order)
+        : lpc_order_guess_autocorrelations(shifted_samples, max_order);
+    const auto overhead_bits_per_order =
+        effective_bits_per_sample + lpc_coefficient_precision;
+    for (const auto& candidate : autocorrelations) {
+        const auto guessed_order = guess_lpc_order_from_autocorrelation(
+            candidate.autocorrelation, max_order, shifted_samples.size(),
+            overhead_bits_per_order);
+        if (!guessed_order.has_value() || *guessed_order == 0 ||
+            *guessed_order > max_order) {
+            continue;
+        }
+        consider_lpc_rice_order(
+            shifted_samples,
+            candidate.autocorrelation,
+            candidate.window,
+            *guessed_order,
+            wasted_bits,
+            effective_bits_per_sample,
+            lpc_coefficient_precision,
+            max_rice_partition_order,
+            rice_mode,
+            best);
+    }
     return best;
 }
 
@@ -1906,6 +2450,7 @@ std::vector<FlacLpcSubframeAnalysis> analyze_mono_lpc_order_candidates(
         effective_bits_per_sample,
         info.lpc_coefficient_precision,
         info.max_rice_partition_order,
+        RiceSelectionMode::Exact,
         candidates);
     const auto tukey_autocorrelation =
         autocorrelation(tukey_windowed_samples(shifted_samples, 0.5), lpc_order);
@@ -1918,6 +2463,7 @@ std::vector<FlacLpcSubframeAnalysis> analyze_mono_lpc_order_candidates(
         effective_bits_per_sample,
         info.lpc_coefficient_precision,
         info.max_rice_partition_order,
+        RiceSelectionMode::Exact,
         candidates);
     if (should_consider_welch_lpc_order(lpc_order, static_cast<unsigned>(max_order))) {
         const auto welch_autocorrelation =
@@ -1931,6 +2477,7 @@ std::vector<FlacLpcSubframeAnalysis> analyze_mono_lpc_order_candidates(
             effective_bits_per_sample,
             info.lpc_coefficient_precision,
             info.max_rice_partition_order,
+            RiceSelectionMode::Exact,
             candidates);
     }
 
@@ -2020,6 +2567,15 @@ FlacSubframeDecision write_mono_best_frame(
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& info)
 {
+    return write_mono_best_frame(output, samples, info, NativeAnalysisProfile::Exact);
+}
+
+FlacSubframeDecision write_mono_best_frame(
+    std::ostream& output,
+    const std::vector<std::int32_t>& samples,
+    const FlacFrameInfo& info,
+    NativeAnalysisProfile profile)
+{
     if (samples.empty()) {
         throw std::runtime_error("cannot write an empty FLAC frame");
     }
@@ -2032,11 +2588,44 @@ FlacSubframeDecision write_mono_best_frame(
     }
 
     const auto wasted_bits = common_wasted_bits(samples, info.bits_per_sample);
-    const auto fixed = choose_fixed_rice_subframe(
-        samples, info.bits_per_sample, info.max_rice_partition_order);
-    const auto lpc = choose_lpc_rice_subframe(
-        samples, info.bits_per_sample, info.max_lpc_order,
-        info.lpc_coefficient_precision, info.max_rice_partition_order);
+    FixedRiceSubframe fixed;
+    LpcRiceSubframe lpc;
+    switch (profile) {
+    case NativeAnalysisProfile::Exact:
+        fixed = choose_fixed_rice_subframe(
+            samples, info.bits_per_sample, info.max_rice_partition_order);
+        lpc = choose_lpc_rice_subframe(
+            samples, info.bits_per_sample, info.max_lpc_order,
+            info.lpc_coefficient_precision, info.max_rice_partition_order);
+        break;
+    case NativeAnalysisProfile::OrderGuessExactRice:
+        fixed = choose_fixed_rice_subframe_order_guess(
+            samples, info.bits_per_sample, info.max_rice_partition_order,
+            RiceSelectionMode::Exact);
+        lpc = choose_lpc_rice_subframe_order_guess(
+            samples, info.bits_per_sample, info.max_lpc_order,
+            info.lpc_coefficient_precision, info.max_rice_partition_order,
+            RiceSelectionMode::Exact, false);
+        break;
+    case NativeAnalysisProfile::OrderGuessMeanRice:
+        fixed = choose_fixed_rice_subframe_order_guess(
+            samples, info.bits_per_sample, info.max_rice_partition_order,
+            RiceSelectionMode::MeanEstimate);
+        lpc = choose_lpc_rice_subframe_order_guess(
+            samples, info.bits_per_sample, info.max_lpc_order,
+            info.lpc_coefficient_precision, info.max_rice_partition_order,
+            RiceSelectionMode::MeanEstimate, false);
+        break;
+    case NativeAnalysisProfile::SubdivideTukey3MeanRice:
+        fixed = choose_fixed_rice_subframe_order_guess(
+            samples, info.bits_per_sample, info.max_rice_partition_order,
+            RiceSelectionMode::MeanEstimate);
+        lpc = choose_lpc_rice_subframe_order_guess(
+            samples, info.bits_per_sample, info.max_lpc_order,
+            info.lpc_coefficient_precision, info.max_rice_partition_order,
+            RiceSelectionMode::MeanEstimate, true);
+        break;
+    }
     const auto verbatim_bits = verbatim_subframe_bits(
         samples.size(), info.bits_per_sample, wasted_bits);
     if (lpc.bits < fixed.bits && lpc.bits < verbatim_bits) {

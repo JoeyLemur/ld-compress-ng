@@ -305,6 +305,30 @@ void require_analysis_matches(
     }
 }
 
+void require_rice_parameters_valid(
+    const std::vector<ldcompress::opencl_detail::FlacClSubframeTask>& tasks,
+    const std::vector<ldcompress::opencl_detail::FlacClRiceParameterSet>& parameters,
+    const char* label)
+{
+    require(parameters.size() == tasks.size(), label);
+    for (std::size_t frame = 0; frame < tasks.size(); ++frame) {
+        const auto& task = tasks[frame];
+        if (task.data.type != ldcompress::opencl_detail::kFlacClSubframeFixed &&
+            task.data.type != ldcompress::opencl_detail::kFlacClSubframeLpc) {
+            continue;
+        }
+        require(task.data.porder >= 0, label);
+        require(static_cast<std::size_t>(task.data.porder) <=
+                ldcompress::opencl_detail::kFlacClMaxRicePartitionOrder,
+            label);
+        const auto partition_count =
+            std::size_t {1} << static_cast<unsigned>(task.data.porder);
+        for (std::size_t partition = 0; partition < partition_count; ++partition) {
+            require(parameters[frame].parameters[partition] <= 14U, label);
+        }
+    }
+}
+
 void require_lpc_task_matches(
     const ldcompress::opencl_detail::FlacClSubframeTask& actual,
     const ldcompress::opencl_detail::FlacClSubframeTask& expected,
@@ -861,8 +885,12 @@ void test_flaccl_abi_layout()
 
     require(std::is_standard_layout_v<FlacClSubframeData>, "FLACCL data is not standard layout");
     require(std::is_standard_layout_v<FlacClSubframeTask>, "FLACCL task is not standard layout");
+    require(std::is_standard_layout_v<FlacClRiceParameterSet>,
+        "FLACCL Rice parameter set is not standard layout");
     require(sizeof(FlacClSubframeData) == 64, "FLACCL data size mismatch");
     require(sizeof(FlacClSubframeTask) == 192, "FLACCL task size mismatch");
+    require(sizeof(FlacClRiceParameterSet) == 1024,
+        "FLACCL Rice parameter set size mismatch");
 
     require(offsetof(FlacClSubframeData, residualOrder) == 0, "residualOrder offset mismatch");
     require(offsetof(FlacClSubframeData, samplesOffs) == 4, "samplesOffs offset mismatch");
@@ -1072,6 +1100,41 @@ void test_flaccl_task_decision_mapping()
     require(lpc_selected.coefficients == expected_lpc_coefficients,
         "FLACCL LPC task selected subframe did not reverse coefficients");
 
+    FlacClRiceParameterSet rice_parameters;
+    for (std::size_t i = 0; i < rice_parameters.parameters.size(); ++i) {
+        rice_parameters.parameters[i] = static_cast<std::uint32_t>(i % 15U);
+    }
+    const auto fixed_rice =
+        flaccl_task_to_selected_rice_parameters(fixed, rice_parameters);
+    require(fixed_rice == std::vector<unsigned>({0U, 1U}),
+        "FLACCL fixed Rice parameter conversion mismatch");
+
+    lpc.data.porder = 2;
+    const auto lpc_rice =
+        flaccl_task_to_selected_rice_parameters(lpc, rice_parameters);
+    require(lpc_rice == std::vector<unsigned>({0U, 1U, 2U, 3U}),
+        "FLACCL LPC Rice parameter conversion mismatch");
+
+    const auto constant_rice =
+        flaccl_task_to_selected_rice_parameters(constant, rice_parameters);
+    require(constant_rice.empty(),
+        "FLACCL constant task produced selected Rice parameters");
+
+    require_throws_containing([&] {
+        auto bad_fixed = fixed;
+        bad_fixed.data.porder =
+            static_cast<std::int32_t>(kFlacClMaxRicePartitionOrder + 1U);
+        (void)flaccl_task_to_selected_rice_parameters(bad_fixed, rice_parameters);
+    }, "invalid Rice partition order",
+        "FLACCL Rice conversion accepted an invalid partition order");
+
+    require_throws_containing([&] {
+        auto bad_parameters = rice_parameters;
+        bad_parameters.parameters[0] = 15;
+        (void)flaccl_task_to_selected_rice_parameters(fixed, bad_parameters);
+    }, "invalid Rice parameter",
+        "FLACCL Rice conversion accepted an invalid parameter");
+
     require_throws_containing([&] {
         FlacClSubframeTask bad;
         bad.data.type = kFlacClSubframeVerbatim;
@@ -1118,6 +1181,8 @@ void test_scalar_exact_fixed_constant_analysis()
     require(result.device_name == "scalar-exact", "scalar exact analyzer did not identify itself");
     require(result.analyzed_tasks.size() == 12, "scalar exact analyzed task count mismatch");
     require(result.best_tasks.size() == 2, "scalar exact best task count mismatch");
+    require_rice_parameters_valid(result.best_tasks, result.best_rice_parameters,
+        "scalar exact Rice sidecar was invalid");
 
     for (std::size_t i = 0; i < tasks_per_frame; ++i) {
         require(result.analyzed_tasks[i].data.wbits == 10,
@@ -1447,6 +1512,8 @@ void test_opencl_best_method_smoke()
     const auto result = run_opencl_mono_best_method(plan, device_index);
     require(!result.device_name.empty(), "OpenCL best-method result did not report a device");
     require(result.best_tasks.size() == 2, "OpenCL best-method result frame count mismatch");
+    require(result.best_rice_parameters.empty(),
+        "OpenCL best-method result unexpectedly produced Rice sidecars without samples");
 
     require(result.best_tasks[0].data.size == 101, "OpenCL best-method first frame size mismatch");
     require(result.best_tasks[0].data.type == kFlacClSubframeLpc,
@@ -1511,6 +1578,8 @@ void test_opencl_fixed_constant_analysis_smoke()
     require(result.analyzed_tasks.size() == 18, "OpenCL analyzed task count mismatch");
     require(result.best_tasks.size() == 3, "OpenCL fixed/constant best task count mismatch");
     require_analysis_matches(result, expected, "OpenCL exact fixed/constant analysis diverged from scalar oracle");
+    require_rice_parameters_valid(result.best_tasks, result.best_rice_parameters,
+        "OpenCL fixed/constant Rice sidecar was invalid");
 
     for (std::size_t i = 0; i < tasks_per_frame; ++i) {
         require(result.analyzed_tasks[i].data.wbits == 10,
@@ -1545,6 +1614,9 @@ void test_opencl_fixed_constant_analysis_smoke()
         run_opencl_mono_fixed_constant_analysis(samples, plan, device_index, 0);
     require_analysis_matches(result_unpartitioned, expected_unpartitioned,
         "OpenCL exact fixed/constant analysis did not honor max partition order 0");
+    require_rice_parameters_valid(result_unpartitioned.best_tasks,
+        result_unpartitioned.best_rice_parameters,
+        "OpenCL fixed/constant unpartitioned Rice sidecar was invalid");
     require(result_unpartitioned.best_tasks[2].data.porder == 0,
         "partitioned frame did not honor max partition order 0");
     require(result_unpartitioned.best_tasks[2].data.size > result.best_tasks[2].data.size,
@@ -1596,11 +1668,15 @@ void test_opencl_mixed_generated_analysis_smoke()
         "OpenCL mixed generated analyzed task count mismatch");
     require(result.best_tasks.size() == 3,
         "OpenCL mixed generated best task count mismatch");
+    require_rice_parameters_valid(result.best_tasks, result.best_rice_parameters,
+        "OpenCL mixed generated Rice sidecar was invalid");
 
     OpenClMonoAnalysisSession session(device_index);
     const auto best_only = session.run_generated_best_analysis(samples, plan, 12, 5);
     require(best_only.best_tasks.size() == result.best_tasks.size(),
         "OpenCL mixed generated best-only task count mismatch");
+    require_rice_parameters_valid(best_only.best_tasks, best_only.best_rice_parameters,
+        "OpenCL mixed generated best-only Rice sidecar was invalid");
     for (std::size_t i = 0; i < result.best_tasks.size(); ++i) {
         require_task_matches_task(best_only.best_tasks[i], result.best_tasks[i],
             "OpenCL mixed generated best-only task diverged from full result");
@@ -1708,12 +1784,24 @@ void test_opencl_generated_frame_analysis_wrapper_smoke()
         "OpenCL generated frame wrapper decision count mismatch");
     require(result.selected_subframes.size() == result.best_tasks.size(),
         "OpenCL generated frame wrapper selected-subframe count mismatch");
+    require_rice_parameters_valid(result.best_tasks, result.best_rice_parameters,
+        "OpenCL generated frame wrapper Rice sidecar was invalid");
 
     for (std::size_t i = 0; i < result.decisions.size(); ++i) {
         require_decision_matches_task(result.decisions[i], result.best_tasks[i],
             "OpenCL generated frame wrapper decision did not match best task");
         require_selected_subframe_matches_task(result.selected_subframes[i], result.best_tasks[i],
             "OpenCL generated frame wrapper selected subframe did not match best task");
+        if (result.best_tasks[i].data.type == kFlacClSubframeFixed ||
+            result.best_tasks[i].data.type == kFlacClSubframeLpc) {
+            const auto partition_count =
+                std::size_t {1} << static_cast<unsigned>(result.best_tasks[i].data.porder);
+            require(result.selected_subframes[i].rice_parameters.size() == partition_count,
+                "OpenCL generated frame wrapper selected subframe Rice parameter count mismatch");
+        } else {
+            require(result.selected_subframes[i].rice_parameters.empty(),
+                "OpenCL generated frame wrapper non-Rice subframe carried Rice parameters");
+        }
     }
 
     require(result.decisions[0].kind == ldcompress::FlacSubframeKind::Constant,
@@ -1756,6 +1844,17 @@ void test_opencl_generated_selected_writer_round_trip_smoke()
         "OpenCL selected writer test selected-subframe count mismatch");
     require(result.decisions.size() == result.selected_subframes.size(),
         "OpenCL selected writer test decision count mismatch");
+    require_rice_parameters_valid(result.best_tasks, result.best_rice_parameters,
+        "OpenCL selected writer Rice sidecar was invalid");
+    for (std::size_t i = 0; i < result.best_tasks.size(); ++i) {
+        if (result.best_tasks[i].data.type == kFlacClSubframeFixed ||
+            result.best_tasks[i].data.type == kFlacClSubframeLpc) {
+            const auto partition_count =
+                std::size_t {1} << static_cast<unsigned>(result.best_tasks[i].data.porder);
+            require(result.selected_subframes[i].rice_parameters.size() == partition_count,
+                "OpenCL selected writer subframe Rice parameter count mismatch");
+        }
+    }
 
     const auto temp_dir = std::filesystem::temp_directory_path() /
         ("ld-compress-ng-opencl-selected-writer-test-" + std::to_string(::getpid()));
@@ -1857,6 +1956,8 @@ void test_opencl_lpc_analysis_smoke()
     require(!result.device_name.empty(), "OpenCL LPC result did not report a device");
     require(result.analyzed_tasks.size() == 1, "OpenCL LPC analyzed task count mismatch");
     require(result.best_tasks.size() == 1, "OpenCL LPC best task count mismatch");
+    require_rice_parameters_valid(result.best_tasks, result.best_rice_parameters,
+        "OpenCL LPC Rice sidecar was invalid");
     require_lpc_task_matches(result.analyzed_tasks[0], *expected_task,
         "OpenCL exact LPC analyzed task diverged from scalar oracle");
     require_lpc_task_matches(result.best_tasks[0], *expected_task,
@@ -1901,6 +2002,8 @@ void test_opencl_lpc_multi_order_analysis_smoke()
         "OpenCL LPC multi-order analyzed task count mismatch");
     require(result.best_tasks.size() == expected_best_tasks.size(),
         "OpenCL LPC multi-order best task count mismatch");
+    require_rice_parameters_valid(result.best_tasks, result.best_rice_parameters,
+        "OpenCL LPC multi-order Rice sidecar was invalid");
 
     for (std::size_t i = 0; i < expected_tasks.size(); ++i) {
         require_lpc_task_matches(result.analyzed_tasks[i], expected_tasks[i],
@@ -1951,6 +2054,8 @@ void test_opencl_lpc_generated_analysis_smoke()
         "OpenCL generated LPC analyzed task count mismatch");
     require(result.best_tasks.size() == 2,
         "OpenCL generated LPC best task count mismatch");
+    require_rice_parameters_valid(result.best_tasks, result.best_rice_parameters,
+        "OpenCL generated LPC Rice sidecar was invalid");
 
     for (std::size_t i = 0; i < result.analyzed_tasks.size(); ++i) {
         const auto& task = result.analyzed_tasks[i];
@@ -2003,6 +2108,8 @@ void test_opencl_lpc_generated_analysis_smoke()
         run_opencl_mono_lpc_analysis(samples, exact_plan, device_index, 5);
     require_analysis_matches(exact_result, result,
         "OpenCL generated LPC tasks were not stable under exact re-analysis");
+    require_rice_parameters_valid(exact_result.best_tasks, exact_result.best_rice_parameters,
+        "OpenCL generated LPC exact re-analysis Rice sidecar was invalid");
     for (std::size_t i = 0; i < result.analyzed_tasks.size(); ++i) {
         require_lpc_task_matches(exact_result.analyzed_tasks[i], result.analyzed_tasks[i],
             "OpenCL generated LPC analyzed task changed under exact re-analysis");

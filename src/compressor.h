@@ -2,6 +2,7 @@
 
 #include "flac_codec.h"
 #include "lds_codec.h"
+#include "native_analysis_profile.h"
 
 #include <array>
 #include <cstddef>
@@ -77,6 +78,7 @@ struct CompressionOptions {
     unsigned native_max_lpc_order = 12;
     unsigned native_lpc_precision = 12;
     unsigned native_max_rice_partition_order = 5;
+    NativeAnalysisProfile native_analysis_profile = NativeAnalysisProfile::Exact;
     NativeCompressionStats* native_stats = nullptr;
     std::optional<std::size_t> opencl_device_index;
     std::optional<std::size_t> vulkan_device_index;

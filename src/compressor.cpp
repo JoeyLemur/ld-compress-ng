@@ -58,6 +58,7 @@ ConversionStats compress_lds(
             options.native_frame_samples, options.native_max_lpc_order,
             options.native_lpc_precision,
             options.native_max_rice_partition_order,
+            options.native_analysis_profile,
             options.native_stats);
     case CompressionBackend::OpenClNativeFlac:
         return compress_lds_to_opencl_native_flac(lds_input, output_path, OpenClCompressionOptions {

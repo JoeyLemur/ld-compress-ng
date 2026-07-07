@@ -177,7 +177,8 @@ FlacSubframeDecision write_frame(
     unsigned max_lpc_order,
     unsigned lpc_precision,
     unsigned max_rice_partition_order,
-    NativeFrameCoding coding)
+    NativeFrameCoding coding,
+    NativeAnalysisProfile analysis_profile)
 {
     const FlacFrameInfo frame_info {
         .frame_number = frame_number,
@@ -191,7 +192,7 @@ FlacSubframeDecision write_frame(
     case NativeFrameCoding::Verbatim:
         return write_mono_verbatim_frame(output, samples, frame_info);
     case NativeFrameCoding::FixedRice:
-        return write_mono_best_frame(output, samples, frame_info);
+        return write_mono_best_frame(output, samples, frame_info, analysis_profile);
     }
     throw std::runtime_error("unknown native FLAC frame coding");
 }
@@ -213,12 +214,13 @@ EncodedFrame encode_frame(
     unsigned max_lpc_order,
     unsigned lpc_precision,
     unsigned max_rice_partition_order,
-    NativeFrameCoding coding)
+    NativeFrameCoding coding,
+    NativeAnalysisProfile analysis_profile)
 {
     std::ostringstream output(std::ios::out | std::ios::binary);
     const auto decision = write_frame(
         output, samples, frame_number, sample_rate, max_lpc_order,
-        lpc_precision, max_rice_partition_order, coding);
+        lpc_precision, max_rice_partition_order, coding, analysis_profile);
     if (!output) {
         throw std::runtime_error("failed to encode native FLAC frame");
     }
@@ -244,12 +246,14 @@ public:
         unsigned max_lpc_order,
         unsigned lpc_precision,
         unsigned max_rice_partition_order,
-        NativeFrameCoding coding)
+        NativeFrameCoding coding,
+        NativeAnalysisProfile analysis_profile)
         : sample_rate_(sample_rate),
           max_lpc_order_(max_lpc_order),
           lpc_precision_(lpc_precision),
           max_rice_partition_order_(max_rice_partition_order),
-          coding_(coding)
+          coding_(coding),
+          analysis_profile_(analysis_profile)
     {
         workers_.reserve(thread_count);
         for (unsigned i = 0; i < thread_count; ++i) {
@@ -337,7 +341,7 @@ private:
             try {
                 auto frame = encode_frame(std::move(job.samples), job.frame_number,
                     sample_rate_, max_lpc_order_, lpc_precision_,
-                    max_rice_partition_order_, coding_);
+                    max_rice_partition_order_, coding_, analysis_profile_);
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
                     results_.emplace(job.frame_number, std::move(frame));
@@ -363,6 +367,7 @@ private:
     unsigned lpc_precision_ = 0;
     unsigned max_rice_partition_order_ = 0;
     NativeFrameCoding coding_ = NativeFrameCoding::Verbatim;
+    NativeAnalysisProfile analysis_profile_ = NativeAnalysisProfile::Exact;
     mutable std::mutex mutex_;
     std::condition_variable jobs_available_;
     std::condition_variable results_available_;
@@ -386,6 +391,7 @@ ConversionStats compress_lds_to_native_flac(
     unsigned max_lpc_order,
     unsigned lpc_precision,
     unsigned max_rice_partition_order,
+    NativeAnalysisProfile analysis_profile,
     NativeCompressionStats* native_stats)
 {
     if (thread_count == 0) {
@@ -426,7 +432,7 @@ ConversionStats compress_lds_to_native_flac(
     if (thread_count != 1) {
         frame_pool = std::make_unique<FrameEncoderPool>(
             thread_count, sample_rate, max_lpc_order, lpc_precision,
-            max_rice_partition_order, coding);
+            max_rice_partition_order, coding, analysis_profile);
     }
     const auto max_pending_frames = static_cast<std::size_t>(thread_count) * 2U;
 
@@ -444,7 +450,7 @@ ConversionStats compress_lds_to_native_flac(
         if (thread_count == 1) {
             const auto decision = write_frame(
                 output, samples, current_frame, sample_rate, max_lpc_order,
-                lpc_precision, max_rice_partition_order, coding);
+                lpc_precision, max_rice_partition_order, coding, analysis_profile);
             record_native_stats(native_stats, decision);
             ++next_frame_to_write;
             return;
@@ -509,7 +515,8 @@ ConversionStats compress_lds_to_native_verbatim_flac(
 {
     return compress_lds_to_native_flac(
         lds_input, output_path, sample_rate, NativeFrameCoding::Verbatim, thread_count,
-        frame_samples, max_lpc_order, lpc_precision, max_rice_partition_order, stats);
+        frame_samples, max_lpc_order, lpc_precision, max_rice_partition_order,
+        NativeAnalysisProfile::Exact, stats);
 }
 
 ConversionStats compress_lds_to_native_fixed_flac(
@@ -521,11 +528,13 @@ ConversionStats compress_lds_to_native_fixed_flac(
     unsigned max_lpc_order,
     unsigned lpc_precision,
     unsigned max_rice_partition_order,
+    NativeAnalysisProfile analysis_profile,
     NativeCompressionStats* stats)
 {
     return compress_lds_to_native_flac(
         lds_input, output_path, sample_rate, NativeFrameCoding::FixedRice, thread_count,
-        frame_samples, max_lpc_order, lpc_precision, max_rice_partition_order, stats);
+        frame_samples, max_lpc_order, lpc_precision, max_rice_partition_order,
+        analysis_profile, stats);
 }
 
 }  // namespace ldcompress

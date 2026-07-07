@@ -532,6 +532,7 @@ void test_cli(const std::filesystem::path& exe)
     run_ok(shell_quote(exe) + " bench --threads 1,2 " + shell_quote(lds));
     run_ok(shell_quote(exe) + " bench --threads 1 --frame-samples 2048 --lpc-order 12 --lpc-precision 12 --rice-partition-order 5 " + shell_quote(lds));
     run_ok(shell_quote(exe) + " bench --threads 1,2 --frame-samples 1024,2048 --lpc-order 0,8 --lpc-precision 10,12 --rice-partition-order 0,4 " + shell_quote(lds));
+    run_ok(shell_quote(exe) + " bench --threads 1 --frame-samples 2048 --lpc-order 8 --lpc-precision 12 --rice-partition-order 5 --analysis-profile exact,order-guess-exact-rice,order-guess-mean-rice,subdivide-tukey3-mean-rice " + shell_quote(lds));
     if (opencl_device_index.has_value()) {
         run_ok(shell_quote(exe) + " bench --include-opencl --device " +
             std::to_string(*opencl_device_index) +
@@ -559,6 +560,7 @@ void test_cli(const std::filesystem::path& exe)
     run_fails(shell_quote(exe) + " bench --lpc-order 0,13 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --lpc-precision 0,16 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --rice-partition-order 0,9 " + shell_quote(lds));
+    run_fails(shell_quote(exe) + " bench --analysis-profile nope " + shell_quote(lds));
     run_ok(shell_quote(exe) + " devices > " + shell_quote(devices_output));
     const auto devices_text = read_file(devices_output);
     require(devices_text.find("OpenCL support:") != std::string::npos,
