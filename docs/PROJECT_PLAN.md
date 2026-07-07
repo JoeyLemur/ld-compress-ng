@@ -377,6 +377,13 @@ Implemented for the first 1.1 checkpoint:
   now have an opt-in Vulkan lane through `--include-vulkan-real-fixture` and
   `--vulkan-device`. The lane passed locally with the PyAV/ld-decode Python
   interpreter and NVIDIA Vulkan device `1`.
+- Vulkan CLI/device hardening now reports whether each enumerated Vulkan device
+  is usable by the backend (`available && shaderInt64`), gives out-of-range
+  Vulkan device errors with the visible device count and a `devices` hint, and
+  has CLI regression coverage for common Vulkan option mistakes and diagnostic
+  text. README and build/testing docs describe the backend-local `--device`
+  alias, backend-specific `--opencl-device`/`--vulkan-device` selectors, and
+  the `bench` ambiguity rule.
 
 Remaining Vulkan work:
 

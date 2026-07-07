@@ -320,6 +320,14 @@ when the system build can see them. For Vulkan performance tests on mixed-GPU
 hosts, use an explicit discrete GPU index from `ld-compress-ng devices`; the
 integrated AMD device is suitable for functional smoke testing but should not
 be used for NVIDIA performance numbers.
+For `compress`, `--device INDEX` is backend-local shorthand for
+`--opencl-device INDEX` or `--vulkan-device INDEX` after `--backend` selects
+OpenCL or Vulkan. For `bench --include-opencl --include-vulkan`, use
+`--opencl-device INDEX` and `--vulkan-device INDEX`; the bare `--device` form
+is rejected because it is ambiguous. Optional accelerator `bench` rows are
+omitted when no suitable device is visible, while direct `compress --backend
+vulkan --device INDEX` fails if the selected device is unavailable or lacks
+backend-required features such as `shaderInt64`.
 Use `--dry-run` to inspect the generated commands, and `--strict-optional` to
 fail instead of skipping when a requested local fixture directory is missing.
 

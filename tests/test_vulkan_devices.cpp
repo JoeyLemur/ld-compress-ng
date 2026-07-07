@@ -4,6 +4,7 @@
 #include <iostream>
 #include <optional>
 #include <stdexcept>
+#include <string>
 
 namespace {
 
@@ -23,6 +24,25 @@ void require_throws(Fn&& fn, const char* message)
         return;
     }
     throw std::runtime_error(message);
+}
+
+void require_out_of_range_message(std::size_t requested_index, std::size_t visible_devices)
+{
+    try {
+        (void)ldcompress::select_vulkan_device(requested_index);
+    } catch (const std::runtime_error& ex) {
+        const std::string text = ex.what();
+        require(text.find("Vulkan device index out of range: " +
+                    std::to_string(requested_index)) != std::string::npos,
+            "out-of-range Vulkan device error did not include requested index");
+        require(text.find("visible devices: " + std::to_string(visible_devices)) !=
+                std::string::npos,
+            "out-of-range Vulkan device error did not include visible device count");
+        require(text.find("ld-compress-ng devices") != std::string::npos,
+            "out-of-range Vulkan device error did not point to devices command");
+        return;
+    }
+    throw std::runtime_error("out-of-range Vulkan device index was selected");
 }
 
 void test_vulkan_device_selection()
@@ -82,9 +102,7 @@ void test_vulkan_device_selection()
         }, "Vulkan default selection succeeded with no available devices");
     }
 
-    require_throws([&] {
-        (void)ldcompress::select_vulkan_device(devices.size());
-    }, "out-of-range Vulkan device index was selected");
+    require_out_of_range_message(devices.size(), devices.size());
 }
 
 }  // namespace

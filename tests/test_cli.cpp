@@ -10,6 +10,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 #include <unistd.h>
 
@@ -66,6 +67,23 @@ std::string read_file(const std::filesystem::path& path)
     std::ostringstream out;
     out << input.rdbuf();
     return out.str();
+}
+
+void run_fails_with_stderr(
+    const std::string& command,
+    const std::filesystem::path& stderr_path,
+    std::string_view expected)
+{
+    std::filesystem::remove(stderr_path);
+    const int rc = std::system((command + " 2> " + shell_quote(stderr_path)).c_str());
+    if (rc == 0) {
+        throw std::runtime_error("command unexpectedly succeeded: " + command);
+    }
+    const auto stderr_text = read_file(stderr_path);
+    if (stderr_text.find(expected) == std::string::npos) {
+        throw std::runtime_error("command stderr did not contain expected text '" +
+            std::string(expected) + "': " + stderr_text);
+    }
 }
 
 void write_file(const std::filesystem::path& path, std::string_view data)
@@ -238,6 +256,8 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_vulkan_container = temp_dir / "fixture.bad-vulkan-container.ldf";
     const auto help_output = temp_dir / "help.txt";
     const auto version_output = temp_dir / "version.txt";
+    const auto devices_output = temp_dir / "devices.txt";
+    const auto command_stderr = temp_dir / "command.stderr";
 
     const std::string fixture = make_lds_fixture();
     write_file(lds, fixture);
@@ -254,6 +274,10 @@ void test_cli(const std::filesystem::path& exe)
         "help output did not describe backends");
     require(help_text.find("vulkan") != std::string::npos,
         "help output did not mention the Vulkan backend");
+    require(help_text.find("native-fixed/opencl/vulkan/native-verbatim") != std::string::npos,
+        "help output did not include Vulkan in native default output description");
+    require(help_text.find("native/opencl/vulkan write flac") != std::string::npos,
+        "help output did not include Vulkan in native container description");
     require(help_text.find("More details: README.md and docs/build-and-testing.md") != std::string::npos,
         "help output did not point to documentation");
     require(help_text.find("ld-compress-ng --version") != std::string::npos,
@@ -374,7 +398,11 @@ void test_cli(const std::filesystem::path& exe)
     require(!std::filesystem::exists(bad_native_device), "native --device rejection wrote output");
     run_fails(shell_quote(exe) + " compress --backend native-fixed --opencl-device 0 " + shell_quote(lds) + " " + shell_quote(bad_native_opencl_device));
     require(!std::filesystem::exists(bad_native_opencl_device), "native --opencl-device rejection wrote output");
-    run_fails(shell_quote(exe) + " compress --backend native-fixed --vulkan-device 0 " + shell_quote(lds) + " " + shell_quote(bad_native_vulkan_device));
+    run_fails_with_stderr(
+        shell_quote(exe) + " compress --backend native-fixed --vulkan-device 0 " +
+            shell_quote(lds) + " " + shell_quote(bad_native_vulkan_device),
+        command_stderr,
+        "--vulkan-device is currently supported only by the vulkan backend");
     require(!std::filesystem::exists(bad_native_vulkan_device), "native --vulkan-device rejection wrote output");
     run_ok("cd " + shell_quote(temp_dir) + " && " + shell_quote(exe) + " compress --backend native-fixed default-name.lds");
     require(std::filesystem::exists(default_native_fixed), "native-fixed default output name was not .flac.ldf");
@@ -458,11 +486,23 @@ void test_cli(const std::filesystem::path& exe)
         run_fails(shell_quote(exe) + " compress --backend vulkan --lpc-order 0 " + shell_quote(lds) + " " + shell_quote(vulkan_output));
         require(!std::filesystem::exists(vulkan_output), "unavailable Vulkan backend wrote output");
     }
-    run_fails(shell_quote(exe) + " compress --backend vulkan --threads 2 --lpc-order 0 " + shell_quote(lds) + " " + shell_quote(bad_vulkan_threads));
+    run_fails_with_stderr(
+        shell_quote(exe) + " compress --backend vulkan --threads 2 --lpc-order 0 " +
+            shell_quote(lds) + " " + shell_quote(bad_vulkan_threads),
+        command_stderr,
+        "Vulkan FLAC backend currently requires --threads 1");
     require(!std::filesystem::exists(bad_vulkan_threads), "Vulkan --threads rejection wrote output");
-    run_fails(shell_quote(exe) + " compress --backend vulkan --opencl-device 0 " + shell_quote(lds) + " " + shell_quote(bad_vulkan_opencl_device));
+    run_fails_with_stderr(
+        shell_quote(exe) + " compress --backend vulkan --opencl-device 0 " +
+            shell_quote(lds) + " " + shell_quote(bad_vulkan_opencl_device),
+        command_stderr,
+        "--opencl-device cannot be used with the vulkan backend");
     require(!std::filesystem::exists(bad_vulkan_opencl_device), "Vulkan --opencl-device rejection wrote output");
-    run_fails(shell_quote(exe) + " compress --backend vulkan --vulkan-device nope " + shell_quote(lds) + " " + shell_quote(bad_vulkan_device));
+    run_fails_with_stderr(
+        shell_quote(exe) + " compress --backend vulkan --vulkan-device nope " +
+            shell_quote(lds) + " " + shell_quote(bad_vulkan_device),
+        command_stderr,
+        "invalid device index: nope");
     require(!std::filesystem::exists(bad_vulkan_device), "invalid Vulkan device index wrote output");
     run_fails(shell_quote(exe) + " compress --backend vulkan --container ogg " + shell_quote(lds) + " " + shell_quote(bad_vulkan_container));
     require(!std::filesystem::exists(bad_vulkan_container), "Vulkan Ogg rejection wrote output");
@@ -496,7 +536,21 @@ void test_cli(const std::filesystem::path& exe)
     run_fails(shell_quote(exe) + " bench --lpc-order 0,13 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --lpc-precision 0,16 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --rice-partition-order 0,9 " + shell_quote(lds));
-    run_ok(shell_quote(exe) + " devices");
+    run_ok(shell_quote(exe) + " devices > " + shell_quote(devices_output));
+    const auto devices_text = read_file(devices_output);
+    require(devices_text.find("OpenCL support:") != std::string::npos,
+        "devices output did not include OpenCL support status");
+    require(devices_text.find("Vulkan support:") != std::string::npos,
+        "devices output did not include Vulkan support status");
+    if (ldcompress::vulkan_support_built()) {
+        const auto vulkan_devices = ldcompress::list_vulkan_devices();
+        if (!vulkan_devices.empty()) {
+            require(devices_text.find("shaderInt64:") != std::string::npos,
+                "devices output did not include shaderInt64 status");
+            require(devices_text.find("vulkan backend usable:") != std::string::npos,
+                "devices output did not include Vulkan backend usability status");
+        }
+    }
 
     std::filesystem::remove_all(temp_dir);
 }

@@ -133,8 +133,8 @@ build/ld-compress-ng decompress --overwrite capture.ldf capture.lds
 | --- | --- | --- |
 | `cpu` | Ogg FLAC `.ldf` | Default, portable, uses system `libFLAC`/`libogg`; supports `--level`. |
 | `native-fixed` | Native FLAC `.flac.ldf` | Scalar native encoder with fixed/LPC prediction, Rice coding, threading, and tuning controls. |
-| `opencl` | Native FLAC `.flac.ldf` | GPU-assisted native encoder; list devices with `devices`, select one with `--device INDEX`. |
-| `vulkan` | Native FLAC `.flac.ldf` | 1.1 development backend with Vulkan exact costing for fixed/Rice and scalar-generated LPC candidates. |
+| `opencl` | Native FLAC `.flac.ldf` | GPU-assisted native encoder; list devices with `devices`, select one with `--device INDEX` or `--opencl-device INDEX`. |
+| `vulkan` | Native FLAC `.flac.ldf` | 1.1 development backend with Vulkan exact costing for fixed/Rice and GPU-generated LPC candidates; select one with `--device INDEX` or `--vulkan-device INDEX`. |
 | `native-verbatim` | Native FLAC `.flac.ldf` | Compatibility/debug path using verbatim FLAC frames. |
 
 Use the scalar native backend:
@@ -156,6 +156,11 @@ Use the current Vulkan path:
 build/ld-compress-ng devices
 build/ld-compress-ng compress --backend vulkan --device 0 capture.lds
 ```
+
+For `compress`, `--device INDEX` is backend-local shorthand for the selected
+OpenCL or Vulkan backend. For `bench --include-opencl --include-vulkan`, use
+`--opencl-device INDEX` and `--vulkan-device INDEX` because a bare `--device`
+would be ambiguous.
 
 ## Advanced Usage
 

@@ -304,7 +304,8 @@ VulkanDeviceInfo select_vulkan_device(std::optional<std::size_t> requested_index
     if (requested_index.has_value()) {
         if (*requested_index >= devices.size()) {
             throw std::runtime_error("Vulkan device index out of range: " +
-                std::to_string(*requested_index));
+                std::to_string(*requested_index) + " (visible devices: " +
+                std::to_string(devices.size()) + "; run `ld-compress-ng devices`)");
         }
         if (!devices[*requested_index].available) {
             throw std::runtime_error("selected Vulkan device has no compute queue: " +

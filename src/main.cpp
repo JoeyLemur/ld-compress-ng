@@ -91,7 +91,7 @@ struct Options {
         << "  ld-compress-ng compress --backend opencl --device 0 capture.lds\n\n"
         << "Commands:\n"
         << "  compress      Compress packed LDS input. Default output is INPUT.ldf for cpu\n"
-        << "                and INPUT.flac.ldf for native-fixed/opencl/native-verbatim.\n"
+        << "                and INPUT.flac.ldf for native-fixed/opencl/vulkan/native-verbatim.\n"
         << "  decompress    Decode Ogg/native FLAC RF input back to packed LDS output.\n"
         << "  verify        Print compressed and decoded MD5; compare with --source when set.\n"
         << "  convert       Convert between packed LDS and signed 16-bit little-endian PCM.\n"
@@ -115,7 +115,7 @@ struct Options {
         << "  --opencl-device INDEX        Explicit OpenCL device index.\n"
         << "  --vulkan-device INDEX        Explicit Vulkan device index.\n"
         << "  --stats                      Print native backend decision stats and timings.\n"
-        << "  --container ogg|flac         cpu can write Ogg or native FLAC; native/opencl write flac.\n"
+        << "  --container ogg|flac         cpu can write Ogg or native FLAC; native/opencl/vulkan write flac.\n"
         << "  --overwrite                  Replace an existing output path.\n\n"
         << "More details: README.md and docs/build-and-testing.md\n";
     std::exit(exit_code);
@@ -565,14 +565,6 @@ Options parse_compress(int argc, char** argv)
     if (options.device_index_explicit && !is_accelerated_native_backend(options.backend)) {
         throw std::runtime_error("--device is currently supported only by opencl and vulkan backends");
     }
-    if (options.opencl_device_index_explicit &&
-        options.backend != ldcompress::CompressionBackend::OpenClNativeFlac) {
-        throw std::runtime_error("--opencl-device is currently supported only by the opencl backend");
-    }
-    if (options.vulkan_device_index_explicit &&
-        options.backend != ldcompress::CompressionBackend::VulkanNativeFlac) {
-        throw std::runtime_error("--vulkan-device is currently supported only by the vulkan backend");
-    }
     if (options.backend == ldcompress::CompressionBackend::OpenClNativeFlac &&
         options.vulkan_device_index_explicit) {
         throw std::runtime_error("--vulkan-device cannot be used with the opencl backend");
@@ -580,6 +572,14 @@ Options parse_compress(int argc, char** argv)
     if (options.backend == ldcompress::CompressionBackend::VulkanNativeFlac &&
         options.opencl_device_index_explicit) {
         throw std::runtime_error("--opencl-device cannot be used with the vulkan backend");
+    }
+    if (options.opencl_device_index_explicit &&
+        options.backend != ldcompress::CompressionBackend::OpenClNativeFlac) {
+        throw std::runtime_error("--opencl-device is currently supported only by the opencl backend");
+    }
+    if (options.vulkan_device_index_explicit &&
+        options.backend != ldcompress::CompressionBackend::VulkanNativeFlac) {
+        throw std::runtime_error("--vulkan-device is currently supported only by the vulkan backend");
     }
     if (options.backend == ldcompress::CompressionBackend::CpuLibFlac &&
         native_tuning_options_explicit) {
@@ -1508,6 +1508,8 @@ int run_devices(int argc, char** argv)
                           << "    compute queue family: " << device.compute_queue_family_index << '\n'
                           << "    compute queues: " << device.compute_queue_count << '\n'
                           << "    shaderInt64: " << (device.shader_int64 ? "yes" : "no") << '\n'
+                          << "    vulkan backend usable: "
+                          << (device.available && device.shader_int64 ? "yes" : "no") << '\n'
                           << "    max workgroup invocations: "
                           << device.max_compute_work_group_invocations << '\n'
                           << "    max compute shared memory: "
