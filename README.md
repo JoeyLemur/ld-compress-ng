@@ -6,11 +6,13 @@ decompresses them back to `.lds`, and verifies round trips without requiring the
 old shell pipeline or helper tools.
 
 The default CPU backend writes Ogg FLAC `.ldf` files with system `libFLAC` and
-`libogg`. The native scalar, OpenCL, and Vulkan backends write native FLAC
-`.flac.ldf` files. CPU, scalar native, OpenCL, and Linux-first Vulkan
-compression paths are ready for normal use on validated hosts. Vulkan has been
-validated locally on NVIDIA hardware for compatible native FLAC output; AMD is
-intended through standard Vulkan compute but not yet hardware-validated.
+`libogg`; this is the normal CPU-only compression path. The OpenCL and Vulkan
+backends write native FLAC `.flac.ldf` files through the native writer. The
+scalar native backends remain available as reference/debug paths for analysis
+parity, writer coverage, and tuning experiments, not as recommended CPU
+compression choices. Vulkan has been validated locally on NVIDIA hardware for
+compatible native FLAC output; AMD is intended through standard Vulkan compute
+but not yet hardware-validated.
 
 `ld-compress-ng` does not depend at runtime on Qt, ffmpeg, `.NET`, Mono, FlaLDF,
 OpenSSL, or `ld-lds-converter`.
@@ -135,12 +137,12 @@ build/ld-compress-ng decompress --overwrite capture.ldf capture.lds
 | Backend | Output | Notes |
 | --- | --- | --- |
 | `cpu` | Ogg FLAC `.ldf` | Default, portable, uses system `libFLAC`/`libogg`; supports `--level`. |
-| `native-fixed` | Native FLAC `.flac.ldf` | Scalar native encoder with fixed/LPC prediction, Rice coding, threading, and tuning controls. |
 | `opencl` | Native FLAC `.flac.ldf` | GPU-assisted native encoder; list devices with `devices`, select one with `--device INDEX` or `--opencl-device INDEX`. |
 | `vulkan` | Native FLAC `.flac.ldf` | Linux-first acceleration backend with Vulkan exact costing for fixed/Rice and GPU-generated LPC candidates; validated locally on NVIDIA and intended for standard Vulkan compute devices; select one with `--device INDEX` or `--vulkan-device INDEX`. |
-| `native-verbatim` | Native FLAC `.flac.ldf` | Compatibility/debug path using verbatim FLAC frames. |
+| `native-fixed` | Native FLAC `.flac.ldf` | Reference/debug scalar encoder for analysis parity, native writer coverage, and tuning sweeps. |
+| `native-verbatim` | Native FLAC `.flac.ldf` | Reference/debug path using verbatim FLAC frames. |
 
-Use the scalar native backend:
+Use the scalar native reference backend for diagnostics or tuning comparison:
 
 ```sh
 build/ld-compress-ng compress --backend native-fixed capture.lds
@@ -185,21 +187,22 @@ Tune CPU/libFLAC compression level:
 build/ld-compress-ng compress --backend cpu --level 12 capture.lds
 ```
 
-Run the scalar native backend with multiple encoding threads and summary stats:
+Run the scalar native reference backend with multiple encoding threads and
+summary stats:
 
 ```sh
 build/ld-compress-ng compress --backend native-fixed --threads 8 --stats capture.lds
 ```
 
 Native tuning defaults are `--frame-samples 4608`, `--lpc-order 12`,
-`--lpc-precision 12`, `--rice-partition-order 5`, and `--threads 1`; the
-defaults are the recommended settings for normal use. The OpenCL and Vulkan
-backends use the same native FLAC tuning controls. For OpenCL and Vulkan,
-`--threads` parallelizes the CPU selected-frame writer after GPU analysis.
-Vulkan still supports `--lpc-order 0` for fixed/Rice-only diagnostics.
+`--lpc-precision 12`, `--rice-partition-order 5`, and `--threads 1`. These
+controls primarily exist for OpenCL/Vulkan tuning and scalar reference
+comparison. For OpenCL and Vulkan, `--threads` parallelizes the CPU
+selected-frame writer after GPU analysis. Vulkan still supports `--lpc-order 0`
+for fixed/Rice-only diagnostics.
 
-Use explicit native FLAC tuning controls when you are comparing size/speed
-tradeoffs:
+Use explicit native FLAC tuning controls when you are comparing reference or
+accelerated size/speed tradeoffs:
 
 ```sh
 build/ld-compress-ng compress --backend native-fixed \

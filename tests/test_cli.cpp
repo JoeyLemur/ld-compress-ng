@@ -276,6 +276,8 @@ void test_cli(const std::filesystem::path& exe)
         "help output did not include examples");
     require(help_text.find("Compression backends:") != std::string::npos,
         "help output did not describe backends");
+    require(help_text.find("Reference/debug scalar native FLAC backend") != std::string::npos,
+        "help output did not label native-fixed as reference/debug");
     require(help_text.find("vulkan") != std::string::npos,
         "help output did not mention the Vulkan backend");
     require(help_text.find("native-fixed/opencl/vulkan/native-verbatim") != std::string::npos,

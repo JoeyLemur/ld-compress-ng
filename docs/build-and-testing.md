@@ -252,13 +252,15 @@ commands are useful when checking compatibility or doing local size/speed
 tuning.
 
 Write native FLAC through the CPU/libFLAC backend instead of the default Ogg
+container. This keeps CPU-only compression on libFLAC while changing only the
 container:
 
 ```sh
 build/ld-compress-ng compress --backend cpu --container flac capture.lds capture.flac.ldf
 ```
 
-The scalar native and OpenCL backends use native FLAC tuning controls:
+The scalar native reference backend and the OpenCL/Vulkan backends use native
+FLAC tuning controls:
 
 ```sh
 build/ld-compress-ng compress --backend native-fixed \
@@ -271,11 +273,12 @@ build/ld-compress-ng compress --backend native-fixed \
     capture.lds
 ```
 
-The current recommended native defaults are frame size `4608`, maximum LPC
-order `12`, LPC coefficient precision `12`, and maximum Rice partition order
-`5`. Compression still defaults to one thread unless `--threads` is specified;
-use `--threads 8` for routine native benchmark comparisons. OpenCL and Vulkan
-use the same native tuning options, and `--threads` parallelizes their CPU
+The current native tuning defaults are frame size `4608`, maximum LPC order
+`12`, LPC coefficient precision `12`, and maximum Rice partition order `5`.
+Compression still defaults to one thread unless `--threads` is specified. Use
+the scalar native backend as a reference/debug oracle for tuning and writer
+coverage; use CPU/libFLAC for normal CPU-only compression. OpenCL and Vulkan use
+the same native tuning options, and `--threads` parallelizes their CPU
 selected-frame writer after GPU analysis.
 Vulkan exact-costs fixed/Rice and GPU-generated LPC candidates. Use `--stats`
 on native/OpenCL/Vulkan compression when investigating backend behavior;
@@ -372,9 +375,9 @@ ctest --test-dir build-real-fixtures -L real-fixtures --output-on-failure
 
 The C++ real-fixture test recursively finds `.lds` files under the configured
 directory, verifies matching legacy `.ldf` files when present, and round-trips
-each fixture through the CPU/libFLAC and threaded native-fixed backends. It
-prints ratio, timing, and compact native decision-stat columns as a local
-regression scoreboard.
+each fixture through the CPU/libFLAC path and the threaded native-fixed
+reference backend. It prints ratio, timing, and compact native decision-stat
+columns as a local regression scoreboard.
 
 When Python and the local `reference/ld-decode/` loader dependencies are
 available, the same CMake option also adds skip-safe external compatibility
@@ -425,9 +428,9 @@ CMake option is enabled.
 
 ## Real Fixture Tuning Sweep
 
-For native encoder tuning work, use the helper script to run `bench` across all
-ignored real fixtures and save CSV plus Markdown summaries under the ignored
-`build/` tree:
+For native encoder tuning and accelerator comparison work, use the helper script
+to run `bench` across all ignored real fixtures and save CSV plus Markdown
+summaries under the ignored `build/` tree:
 
 ```sh
 python3 tools/sweep_real_fixtures.py \
@@ -460,15 +463,14 @@ quick subset check. The helper depends only on Python 3 stdlib, the built
 After adding Tukey-windowed LPC analysis candidates plus high-order
 Welch-windowed candidates and retuning over the six current real fixtures, frame
 size `4608`, LPC order `12`, LPC coefficient precision `12`, and Rice partition
-order `5` are the current default native-fixed settings. In the latest pinned
-sweep, raw LDS inputs total `149,954,560` bytes, CPU/libFLAC outputs total
+order `5` are the current native reference settings. In the latest pinned sweep,
+raw LDS inputs total `149,954,560` bytes, CPU/libFLAC outputs total
 `80,086,984` bytes, scalar native-fixed outputs total `79,867,690` bytes, and
 OpenCL outputs total `79,952,087` bytes. The latest Vulkan sweep on NVIDIA
-device `1` outputs `79,892,217` bytes. That leaves scalar native-fixed about
-`-0.27%` smaller than CPU/libFLAC, OpenCL about `-0.17%` smaller than
-CPU/libFLAC, and Vulkan about `-0.24%` smaller than CPU/libFLAC on the current
-fixture set; keep Rice partition order `5` as the default speed/size tradeoff
-unless a future sweep justifies changing it.
+device `1` outputs `79,892,217` bytes. Scalar native-fixed is useful as a size
+and decision oracle, but CPU/libFLAC remains the recommended CPU-only encoder;
+keep Rice partition order `5` as the default native speed/size tradeoff unless
+a future sweep justifies changing it.
 
 ## Legacy Fixture Regeneration
 

@@ -592,9 +592,10 @@ Immediate engineering focus:
 - Add targeted tests from `reference/flac-test-files/` only when they are useful
   for this compressor's native FLAC surface. Done for the first rejection-focused
   opt-in suite; expand only as native FLAC compatibility work needs it.
-- Keep CPU/libFLAC Ogg `.ldf` as the default for maximum compatibility, while
-  treating scalar native-fixed and OpenCL native-FLAC output as ready for normal
-  use on validated hosts.
+- Keep CPU/libFLAC Ogg `.ldf` as the default and recommended CPU compression
+  path for maximum compatibility. Treat scalar native-fixed and native-verbatim
+  as reference/debug backends for native writer coverage, tuning, and
+  accelerator oracle work.
 
 ## Recommendation
 
@@ -631,8 +632,9 @@ Initial behavior:
 
 - `compress` defaults to CPU compression using Ogg FLAC-compatible `.ldf` output.
 - `compress --backend cpu|native-verbatim|native-fixed|opencl|vulkan` should
-  select between the implemented CPU path, native FLAC writer paths, the
-  OpenCL-native FLAC encoder, and the Linux-first Vulkan encoder.
+  select between the implemented CPU/libFLAC path, reference/debug native FLAC
+  writer paths, the OpenCL-native FLAC encoder, and the Linux-first Vulkan
+  encoder.
 - `decompress` accepts existing `.ldf`, `.raw.oga`, and `.flac.ldf` inputs where
   supported by the implemented decoder path.
 - `verify` reports hashes for the compressed input and the decompressed/repacked
@@ -752,8 +754,8 @@ provided.
   that covers default, no-OpenCL, optional FLAC-testbench, and optional
   real-fixture validation lanes.
 - Add performance checks against the old shell pipeline.
-- Keep a lightweight benchmark subcommand for local CPU/native backend
-  comparisons across arm64 and amd64/x86_64 hosts.
+- Keep a lightweight benchmark subcommand for local CPU/libFLAC, scalar
+  reference, and accelerator comparisons across arm64 and amd64/x86_64 hosts.
 - Keep an opt-in real-fixture regression suite for ignored reference captures so
   default tests remain self-contained while native tuning has a repeatable
   scoreboard. Done.

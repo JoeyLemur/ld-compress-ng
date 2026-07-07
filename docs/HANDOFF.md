@@ -124,7 +124,8 @@ Default compression remains CPU/libFLAC Ogg FLAC `.ldf` for compatibility:
 build/ld-compress-ng compress capture.lds
 ```
 
-Native FLAC backends write `.flac.ldf`:
+Native FLAC backends write `.flac.ldf`. Use `opencl`/`vulkan` for accelerated
+compression; keep `native-fixed` as a scalar reference/debug backend:
 
 ```sh
 build/ld-compress-ng compress --backend native-fixed --threads 8 capture.lds
@@ -140,14 +141,18 @@ Native tuning defaults:
 - `--rice-partition-order 5`
 - `--threads 1` by default
 
-For routine native/OpenCL/Vulkan benchmark comparisons, use `--threads 8`.
-OpenCL and Vulkan still default to one thread, but additional threads
-parallelize the CPU selected-frame writer after GPU analysis.
+For routine OpenCL/Vulkan benchmark comparisons, use `--threads 8`. OpenCL and
+Vulkan still default to one thread, but additional threads parallelize the CPU
+selected-frame writer after GPU analysis. Use CPU/libFLAC for normal CPU-only
+compression; use `native-fixed` when scalar reference behavior is needed.
 
 ## Important Decisions To Preserve
 
 - Do not chase tiny OpenCL/Vulkan compression-ratio or runtime deltas unless a
   future task explicitly chooses a performance/tuning pass.
+- Treat `native-fixed` and `native-verbatim` as reference/debug backends, not
+  production CPU compression recommendations. Keep them available for scalar
+  oracle, native writer, and fixture coverage.
 - OpenCL/Vulkan outputs are compatible and roundtrip correctly on the validated
   Linux/NVIDIA host.
 - The CPU/native writer remains the compatibility authority; accelerators choose
