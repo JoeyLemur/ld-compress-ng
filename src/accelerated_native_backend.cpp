@@ -217,8 +217,12 @@ void write_accelerated_selected_batch(
             batch_samples.data() + offset,
             static_cast<std::size_t>(options.frame_samples));
         auto frame_info = make_frame_info(first_frame_number + frame, options);
-        const auto decision = write_mono_selected_frame(
-            output, frame_samples, frame_info, analysis.selected_subframes[frame]);
+        const auto decision = write_mono_selected_frame_with_decision(
+            output,
+            frame_samples,
+            frame_info,
+            analysis.selected_subframes[frame],
+            analysis.decisions[frame]);
         record_native_stats(options.native_stats, decision);
     }
     if (options.native_stats != nullptr) {

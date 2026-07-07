@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -410,6 +411,39 @@ ldcompress::FlacSubframeDecision write_selected_file(
     return ldcompress::write_mono_selected_frame(output, samples, frame_info, selected);
 }
 
+ldcompress::FlacSubframeDecision write_selected_file_with_decision(
+    const std::filesystem::path& flac_path,
+    const std::vector<std::int32_t>& samples,
+    const ldcompress::FlacSelectedSubframe& selected,
+    const ldcompress::FlacSubframeDecision& decision,
+    unsigned max_lpc_order = 12,
+    unsigned lpc_coefficient_precision = 12,
+    unsigned max_rice_partition_order = 5)
+{
+    std::ofstream output(flac_path, std::ios::binary);
+    if (!output) {
+        throw std::runtime_error("could not create test FLAC file");
+    }
+
+    const ldcompress::FlacStreamInfo stream_info {
+        .min_block_size = static_cast<unsigned>(samples.size()),
+        .max_block_size = static_cast<unsigned>(samples.size()),
+        .min_frame_size = 0,
+        .max_frame_size = 0,
+        .sample_rate = 40000,
+        .channels = 1,
+        .bits_per_sample = 16,
+        .total_samples = samples.size(),
+        .md5 = md5_samples_s16le(samples),
+    };
+    ldcompress::write_native_flac_streaminfo(output, stream_info);
+
+    const auto frame_info = make_frame_info(
+        max_lpc_order, lpc_coefficient_precision, max_rice_partition_order);
+    return ldcompress::write_mono_selected_frame_with_decision(
+        output, std::span<const std::int32_t>(samples), frame_info, selected, decision);
+}
+
 void verify_best_analysis_matches_writer(
     const std::filesystem::path& flac_path,
     const std::vector<std::int32_t>& samples,
@@ -692,10 +726,20 @@ void test_native_selected_subframe_writer()
     require(first_frame_subframe_type(temp_dir / "lpc.flac") == 0x20 + lpc->order - 1U,
         "selected LPC writer wrote the wrong subframe type");
 
+    auto trusted_lpc_decision = lpc_decision;
+    trusted_lpc_decision.estimated_bits += 17;
+    const auto trusted_lpc_written = write_selected_file_with_decision(
+        temp_dir / "lpc-trusted.flac", lpc_samples, lpc_selected, trusted_lpc_decision);
+    require(trusted_lpc_written.estimated_bits == trusted_lpc_decision.estimated_bits,
+        "trusted selected writer did not return the supplied bit estimate");
+    require(read_file(temp_dir / "lpc-trusted.flac") == read_file(temp_dir / "lpc.flac"),
+        "trusted selected writer changed emitted FLAC bytes");
+
     for (const auto& item : {
              std::pair { temp_dir / "constant.flac", constant_samples },
              std::pair { temp_dir / "fixed.flac", fixed_samples },
              std::pair { temp_dir / "lpc.flac", lpc_samples },
+             std::pair { temp_dir / "lpc-trusted.flac", lpc_samples },
          }) {
         std::ostringstream decoded;
         const auto stats = ldcompress::decompress_flac_to_lds(item.first.string(), decoded);

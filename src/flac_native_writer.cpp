@@ -423,6 +423,19 @@ unsigned common_wasted_bits(
     return std::min(wasted_bits, bits_per_sample - 1U);
 }
 
+unsigned validated_common_wasted_bits(
+    SampleSpan samples,
+    unsigned bits_per_sample)
+{
+    unsigned wasted_bits = bits_per_sample;
+    for (const auto sample : samples) {
+        validate_sample(sample, bits_per_sample);
+        wasted_bits = std::min(wasted_bits,
+            sample_trailing_zero_bits(sample, bits_per_sample));
+    }
+    return std::min(wasted_bits, bits_per_sample - 1U);
+}
+
 std::vector<std::int32_t> shift_samples(
     SampleSpan samples,
     unsigned wasted_bits)
@@ -1169,21 +1182,49 @@ LpcRiceSubframe choose_lpc_rice_subframe(
 }
 
 unsigned checked_selected_wasted_bits(
-    SampleSpan samples,
-    unsigned bits_per_sample,
+    unsigned actual_wasted_bits,
     unsigned selected_wasted_bits)
 {
-    const auto actual_wasted_bits = common_wasted_bits(samples, bits_per_sample);
     if (selected_wasted_bits != actual_wasted_bits) {
         throw std::runtime_error("selected FLAC subframe wasted-bits count does not match samples");
     }
     return actual_wasted_bits;
 }
 
+void check_selected_decision_matches(
+    const FlacSelectedSubframe& selected,
+    const FlacSubframeDecision& decision)
+{
+    if (decision.kind != selected.kind ||
+        decision.rice_partition_order != selected.rice_partition_order ||
+        decision.wasted_bits != selected.wasted_bits) {
+        throw std::runtime_error("selected FLAC decision does not match selected subframe");
+    }
+
+    switch (selected.kind) {
+    case FlacSubframeKind::Constant:
+    case FlacSubframeKind::Verbatim:
+        return;
+    case FlacSubframeKind::FixedRice:
+        if (decision.fixed_order != selected.fixed_order) {
+            throw std::runtime_error("selected FLAC fixed decision does not match selected subframe");
+        }
+        return;
+    case FlacSubframeKind::LpcRice:
+        if (decision.lpc_order != selected.lpc_order) {
+            throw std::runtime_error("selected FLAC LPC decision does not match selected subframe");
+        }
+        return;
+    }
+    throw std::runtime_error("unknown selected FLAC subframe kind");
+}
+
 FixedRiceSubframe make_selected_fixed_rice_subframe(
     SampleSpan samples,
     const FlacFrameInfo& info,
-    const FlacSelectedSubframe& selected)
+    const FlacSelectedSubframe& selected,
+    unsigned wasted_bits,
+    std::optional<std::uint64_t> trusted_bits)
 {
     checked_max_rice_partition_order(info.max_rice_partition_order);
     if (selected.fixed_order > 4 || selected.fixed_order >= samples.size()) {
@@ -1193,8 +1234,6 @@ FixedRiceSubframe make_selected_fixed_rice_subframe(
         throw std::runtime_error("selected fixed/Rice subframe exceeds max Rice partition order");
     }
 
-    const auto wasted_bits =
-        checked_selected_wasted_bits(samples, info.bits_per_sample, selected.wasted_bits);
     auto shifted_samples = shift_samples(samples, wasted_bits);
     const auto effective_bits_per_sample = info.bits_per_sample - wasted_bits;
     auto residuals = fixed_residuals(shifted_samples, selected.fixed_order);
@@ -1203,14 +1242,16 @@ FixedRiceSubframe make_selected_fixed_rice_subframe(
         shifted_samples.size(),
         selected.fixed_order,
         selected.rice_partition_order);
-    const auto bits = fixed_rice_subframe_bits(
-        selected.fixed_order,
-        selected.rice_partition_order,
-        wasted_bits,
-        rice_parameters,
-        residuals,
-        shifted_samples.size(),
-        effective_bits_per_sample);
+    const auto bits = trusted_bits.has_value()
+        ? *trusted_bits
+        : fixed_rice_subframe_bits(
+            selected.fixed_order,
+            selected.rice_partition_order,
+            wasted_bits,
+            rice_parameters,
+            residuals,
+            shifted_samples.size(),
+            effective_bits_per_sample);
 
     return FixedRiceSubframe {
         .order = selected.fixed_order,
@@ -1227,7 +1268,9 @@ FixedRiceSubframe make_selected_fixed_rice_subframe(
 LpcRiceSubframe make_selected_lpc_rice_subframe(
     SampleSpan samples,
     const FlacFrameInfo& info,
-    const FlacSelectedSubframe& selected)
+    const FlacSelectedSubframe& selected,
+    unsigned wasted_bits,
+    std::optional<std::uint64_t> trusted_bits)
 {
     checked_max_rice_partition_order(info.max_rice_partition_order);
     if (selected.lpc_order == 0 || selected.lpc_order > 32 ||
@@ -1253,8 +1296,6 @@ LpcRiceSubframe make_selected_lpc_rice_subframe(
         }
     }
 
-    const auto wasted_bits =
-        checked_selected_wasted_bits(samples, info.bits_per_sample, selected.wasted_bits);
     auto shifted_samples = shift_samples(samples, wasted_bits);
     const auto effective_bits_per_sample = info.bits_per_sample - wasted_bits;
     auto residuals = lpc_residuals(
@@ -1267,15 +1308,17 @@ LpcRiceSubframe make_selected_lpc_rice_subframe(
         shifted_samples.size(),
         selected.lpc_order,
         selected.rice_partition_order);
-    const auto bits = lpc_rice_subframe_bits(
-        selected.lpc_order,
-        selected.rice_partition_order,
-        wasted_bits,
-        selected.coefficient_precision,
-        rice_parameters,
-        residuals,
-        shifted_samples.size(),
-        effective_bits_per_sample);
+    const auto bits = trusted_bits.has_value()
+        ? *trusted_bits
+        : lpc_rice_subframe_bits(
+            selected.lpc_order,
+            selected.rice_partition_order,
+            wasted_bits,
+            selected.coefficient_precision,
+            rice_parameters,
+            residuals,
+            shifted_samples.size(),
+            effective_bits_per_sample);
 
     return LpcRiceSubframe {
         .order = selected.lpc_order,
@@ -1359,14 +1402,13 @@ void write_frame_with_body(
     write_bytes(output, header);
 
     frame_body.align_zero();
-    write_bytes(output, frame_body.bytes());
+    const auto& body_bytes = frame_body.bytes();
+    write_bytes(output, body_bytes);
 
-    std::vector<std::uint8_t> frame_without_footer;
-    frame_without_footer.reserve(header.size() + frame_body.bytes().size());
-    frame_without_footer.insert(frame_without_footer.end(), header.begin(), header.end());
-    frame_without_footer.insert(frame_without_footer.end(), frame_body.bytes().begin(), frame_body.bytes().end());
-    const auto crc = flac_crc16(frame_without_footer.data(), frame_without_footer.size());
-    write_u16be(output, crc);
+    FlacCrc16 crc;
+    crc.update(header.data(), header.size());
+    crc.update(body_bytes.data(), body_bytes.size());
+    write_u16be(output, crc.value());
 }
 
 FlacSubframeDecision write_fixed_rice_frame(
@@ -1515,6 +1557,49 @@ FlacSubframeDecision write_mono_constant_frame_impl(
         .wasted_bits = wasted_bits,
         .estimated_bits = constant_subframe_bits(info.bits_per_sample, wasted_bits),
     };
+}
+
+FlacSubframeDecision write_mono_selected_frame_impl(
+    std::ostream& output,
+    SampleSpan samples,
+    const FlacFrameInfo& info,
+    const FlacSelectedSubframe& selected,
+    const FlacSubframeDecision* trusted_decision)
+{
+    if (samples.empty()) {
+        throw std::runtime_error("cannot write an empty selected FLAC frame");
+    }
+    const auto wasted_bits = validated_common_wasted_bits(samples, info.bits_per_sample);
+    (void)checked_selected_wasted_bits(wasted_bits, selected.wasted_bits);
+    if (trusted_decision != nullptr) {
+        check_selected_decision_matches(selected, *trusted_decision);
+    }
+
+    const std::optional<std::uint64_t> trusted_bits = trusted_decision != nullptr
+        ? std::optional<std::uint64_t>(trusted_decision->estimated_bits)
+        : std::nullopt;
+
+    switch (selected.kind) {
+    case FlacSubframeKind::Constant: {
+        const auto decision = write_mono_constant_frame_impl(output, samples, info);
+        return trusted_decision != nullptr ? *trusted_decision : decision;
+    }
+    case FlacSubframeKind::Verbatim: {
+        const auto decision = write_mono_verbatim_frame_impl(output, samples, info);
+        return trusted_decision != nullptr ? *trusted_decision : decision;
+    }
+    case FlacSubframeKind::FixedRice: {
+        const auto subframe = make_selected_fixed_rice_subframe(
+            samples, info, selected, wasted_bits, trusted_bits);
+        return write_fixed_rice_frame(output, info, subframe);
+    }
+    case FlacSubframeKind::LpcRice: {
+        const auto subframe = make_selected_lpc_rice_subframe(
+            samples, info, selected, wasted_bits, trusted_bits);
+        return write_lpc_rice_frame(output, info, subframe);
+    }
+    }
+    throw std::runtime_error("unknown selected FLAC subframe kind");
 }
 
 }  // namespace
@@ -1771,32 +1856,17 @@ FlacSubframeDecision write_mono_selected_frame(
     const FlacFrameInfo& info,
     const FlacSelectedSubframe& selected)
 {
-    if (samples.empty()) {
-        throw std::runtime_error("cannot write an empty selected FLAC frame");
-    }
-    for (const auto sample : samples) {
-        validate_sample(sample, info.bits_per_sample);
-    }
+    return write_mono_selected_frame_impl(output, samples, info, selected, nullptr);
+}
 
-    switch (selected.kind) {
-    case FlacSubframeKind::Constant:
-        (void)checked_selected_wasted_bits(
-            samples, info.bits_per_sample, selected.wasted_bits);
-        return write_mono_constant_frame_impl(output, samples, info);
-    case FlacSubframeKind::Verbatim:
-        (void)checked_selected_wasted_bits(
-            samples, info.bits_per_sample, selected.wasted_bits);
-        return write_mono_verbatim_frame_impl(output, samples, info);
-    case FlacSubframeKind::FixedRice: {
-        const auto subframe = make_selected_fixed_rice_subframe(samples, info, selected);
-        return write_fixed_rice_frame(output, info, subframe);
-    }
-    case FlacSubframeKind::LpcRice: {
-        const auto subframe = make_selected_lpc_rice_subframe(samples, info, selected);
-        return write_lpc_rice_frame(output, info, subframe);
-    }
-    }
-    throw std::runtime_error("unknown selected FLAC subframe kind");
+FlacSubframeDecision write_mono_selected_frame_with_decision(
+    std::ostream& output,
+    std::span<const std::int32_t> samples,
+    const FlacFrameInfo& info,
+    const FlacSelectedSubframe& selected,
+    const FlacSubframeDecision& decision)
+{
+    return write_mono_selected_frame_impl(output, samples, info, selected, &decision);
 }
 
 FlacSubframeDecision write_mono_best_frame(

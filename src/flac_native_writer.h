@@ -127,6 +127,13 @@ FlacSubframeDecision write_mono_selected_frame(
     const FlacFrameInfo& info,
     const FlacSelectedSubframe& selected);
 
+FlacSubframeDecision write_mono_selected_frame_with_decision(
+    std::ostream& output,
+    std::span<const std::int32_t> samples,
+    const FlacFrameInfo& info,
+    const FlacSelectedSubframe& selected,
+    const FlacSubframeDecision& decision);
+
 FlacSubframeDecision write_mono_best_frame(
     std::ostream& output,
     const std::vector<std::int32_t>& samples,

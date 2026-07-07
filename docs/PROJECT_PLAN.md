@@ -384,10 +384,11 @@ Remaining Vulkan work:
   shader-level micro-tuning. Current NVIDIA RTX 5070 Ti timings on
   `ntsc/issue176.lds` after the Vulkan best-task-only readback, 128-frame
   batching, device-local buffer placement, shared writer-copy cleanup, GPU
-  queue timestamp instrumentation, one-pass Rice-parameter costing, and
-  prepared frame-level `wbits`/`abits` reuse show CPU/libFLAC at about `0.138`
-  seconds, scalar native-fixed at `1.680` seconds with `8` threads, OpenCL at
-  `10.132` seconds, and Vulkan at `0.745` seconds.
+  queue timestamp instrumentation, one-pass Rice-parameter costing, prepared
+  frame-level `wbits`/`abits` reuse, and trusted selected-frame decision
+  writing show CPU/libFLAC at about `0.138` seconds, scalar native-fixed at
+  `1.657` seconds with `8` threads, OpenCL at `10.132` seconds, and Vulkan at
+  `0.722` seconds.
   Vulkan output on that fixture is `4,292,100` bytes: `1,508` bytes larger than
   scalar native-fixed's `4,290,592` bytes, `22,033` bytes smaller than
   CPU/libFLAC's `4,314,133` bytes, and `6,134` bytes smaller than OpenCL's
@@ -400,9 +401,14 @@ Remaining Vulkan work:
   only `0.0979` GPU seconds in exact residual/Rice analysis. After reusing
   prepared frame-level `wbits`/`abits`, the focused stats run measured `1.040`
   total backend seconds, `0.116` analyzer seconds, `0.305` selected-frame write
-  seconds, and `0.0952` GPU seconds in exact residual/Rice analysis. On the
+  seconds, and `0.0952` GPU seconds in exact residual/Rice analysis. After
+  trusting the analyzer's selected-frame decision for stats and skipping the
+  writer-side subframe bit recost, the focused stats run measured `0.742`
+  total backend seconds, `0.119` analyzer seconds, `0.289` selected-frame write
+  seconds, and `0.0951` GPU seconds in exact residual/Rice analysis. On the
   NVIDIA fixture path, PCIe transfer/readback is not the primary bottleneck;
-  the remaining time is mostly host-side selected-frame writing plus ordinary
+  the remaining time is mostly host-side residual generation, Rice-parameter
+  selection needed for final bitstream writing, bit emission, and ordinary
   I/O/writer overhead.
 - The latest six-fixture sweep at frame size `4608`, LPC order `12`,
   coefficient precision `12`, Rice partition order `5`, native-fixed `8`
@@ -413,13 +419,14 @@ Remaining Vulkan work:
   scalar native-fixed, `59,870` bytes smaller than OpenCL, and much faster than
   OpenCL on the NVIDIA validation device.
 - Continue Vulkan throughput architecture before shader-level micro-tuning:
-  next profile the remaining selected-frame writer and host overhead, because
-  Vulkan queue work is no longer the dominant time on the focused NVIDIA
-  fixture. Only after that should we consider queue overlap, batch-size tuning,
-  or deeper shader changes. The readback split is still useful for OpenCL:
-  normal OpenCL compression discards full analyzed tasks too, so a future OpenCL
-  best-only analyzer path could skip the `tasks_buffer` readback while keeping
-  the current full-result APIs for parity diagnostics.
+  next decide whether to extend the accelerator-to-writer ABI with selected
+  per-partition Rice parameters, because the writer still recomputes those on
+  the CPU before emitting the final FLAC frame. Only after that should we
+  consider queue overlap, batch-size tuning, or deeper shader changes. The
+  readback and trusted-decision splits are also useful for OpenCL: normal OpenCL
+  compression discards full analyzed tasks too, so a future OpenCL best-only
+  analyzer path and writer handoff could skip avoidable readback/recost work
+  while keeping the current full-result APIs for parity diagnostics.
 
 Immediate engineering focus:
 
