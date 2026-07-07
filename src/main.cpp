@@ -936,6 +936,35 @@ void print_native_stats(const ldcompress::NativeCompressionStats& stats)
                       << " analyzer-other=" << seconds_from_ns(analyzer_other_ns) << "s"
                       << '\n';
         }
+        const auto selected_detail_ns =
+            stats.accelerated_selected_validation_ns +
+            stats.accelerated_selected_shift_ns +
+            stats.accelerated_selected_residual_ns +
+            stats.accelerated_selected_rice_parameter_ns +
+            stats.accelerated_selected_bitstream_ns +
+            stats.accelerated_selected_frame_output_ns;
+        if (selected_detail_ns != 0) {
+            const auto selected_other_ns =
+                stats.accelerated_selected_write_ns > selected_detail_ns
+                ? stats.accelerated_selected_write_ns - selected_detail_ns
+                : 0;
+            std::cerr << "selected-writer timings: validate="
+                      << seconds_from_ns(stats.accelerated_selected_validation_ns) << "s"
+                      << " shift=" << seconds_from_ns(stats.accelerated_selected_shift_ns)
+                      << "s"
+                      << " residual="
+                      << seconds_from_ns(stats.accelerated_selected_residual_ns) << "s"
+                      << " rice-params="
+                      << seconds_from_ns(stats.accelerated_selected_rice_parameter_ns)
+                      << "s"
+                      << " bitstream="
+                      << seconds_from_ns(stats.accelerated_selected_bitstream_ns) << "s"
+                      << " frame-output="
+                      << seconds_from_ns(stats.accelerated_selected_frame_output_ns)
+                      << "s"
+                      << " other=" << seconds_from_ns(selected_other_ns) << "s"
+                      << '\n';
+        }
         if (stats.vulkan_gpu_timed_batches != 0) {
             std::cerr << "vulkan gpu timings: batches=" << stats.vulkan_gpu_timed_batches
                       << " total=" << seconds_from_ns(stats.vulkan_gpu_total_ns) << "s"

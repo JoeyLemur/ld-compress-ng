@@ -163,6 +163,22 @@ void record_native_stats(
     throw std::runtime_error("unknown native FLAC subframe kind");
 }
 
+void record_selected_write_timings(
+    NativeCompressionStats* stats,
+    const FlacSelectedFrameWriteTimings& timings)
+{
+    if (stats == nullptr) {
+        return;
+    }
+
+    stats->accelerated_selected_validation_ns += timings.validation_wasted_ns;
+    stats->accelerated_selected_shift_ns += timings.shift_ns;
+    stats->accelerated_selected_residual_ns += timings.residual_ns;
+    stats->accelerated_selected_rice_parameter_ns += timings.rice_parameter_ns;
+    stats->accelerated_selected_bitstream_ns += timings.bitstream_ns;
+    stats->accelerated_selected_frame_output_ns += timings.frame_output_ns;
+}
+
 FlacFrameInfo make_frame_info(
     std::uint64_t frame_number,
     const AcceleratedNativeCompressionOptions& options)
@@ -217,13 +233,16 @@ void write_accelerated_selected_batch(
             batch_samples.data() + offset,
             static_cast<std::size_t>(options.frame_samples));
         auto frame_info = make_frame_info(first_frame_number + frame, options);
+        FlacSelectedFrameWriteTimings writer_timings;
         const auto decision = write_mono_selected_frame_with_decision(
             output,
             frame_samples,
             frame_info,
             analysis.selected_subframes[frame],
-            analysis.decisions[frame]);
+            analysis.decisions[frame],
+            options.native_stats != nullptr ? &writer_timings : nullptr);
         record_native_stats(options.native_stats, decision);
+        record_selected_write_timings(options.native_stats, writer_timings);
     }
     if (options.native_stats != nullptr) {
         add_elapsed_ns(options.native_stats->accelerated_selected_write_ns, write_started);

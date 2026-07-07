@@ -81,6 +81,15 @@ struct FlacSelectedSubframe {
     std::vector<unsigned> rice_parameters;
 };
 
+struct FlacSelectedFrameWriteTimings {
+    std::uint64_t validation_wasted_ns = 0;
+    std::uint64_t shift_ns = 0;
+    std::uint64_t residual_ns = 0;
+    std::uint64_t rice_parameter_ns = 0;
+    std::uint64_t bitstream_ns = 0;
+    std::uint64_t frame_output_ns = 0;
+};
+
 void write_native_flac_streaminfo(std::ostream& output, const FlacStreamInfo& info);
 
 FlacSubframeDecision analyze_mono_best_frame(
@@ -134,6 +143,14 @@ FlacSubframeDecision write_mono_selected_frame_with_decision(
     const FlacFrameInfo& info,
     const FlacSelectedSubframe& selected,
     const FlacSubframeDecision& decision);
+
+FlacSubframeDecision write_mono_selected_frame_with_decision(
+    std::ostream& output,
+    std::span<const std::int32_t> samples,
+    const FlacFrameInfo& info,
+    const FlacSelectedSubframe& selected,
+    const FlacSubframeDecision& decision,
+    FlacSelectedFrameWriteTimings* timings);
 
 FlacSubframeDecision write_mono_best_frame(
     std::ostream& output,

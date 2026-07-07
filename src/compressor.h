@@ -37,6 +37,12 @@ struct NativeCompressionStats {
     std::uint64_t accelerated_analyzer_ns = 0;
     std::uint64_t accelerated_selected_write_ns = 0;
     std::uint64_t accelerated_tail_write_ns = 0;
+    std::uint64_t accelerated_selected_validation_ns = 0;
+    std::uint64_t accelerated_selected_shift_ns = 0;
+    std::uint64_t accelerated_selected_residual_ns = 0;
+    std::uint64_t accelerated_selected_rice_parameter_ns = 0;
+    std::uint64_t accelerated_selected_bitstream_ns = 0;
+    std::uint64_t accelerated_selected_frame_output_ns = 0;
     std::uint64_t accelerated_task_plan_ns = 0;
     std::uint64_t accelerated_exact_analysis_ns = 0;
     std::uint64_t vulkan_gpu_timed_batches = 0;

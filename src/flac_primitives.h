@@ -19,6 +19,8 @@ public:
     const std::vector<std::uint8_t>& bytes() const { return bytes_; }
 
 private:
+    void write_zero_bits(std::size_t bit_count);
+
     std::vector<std::uint8_t> bytes_;
     std::size_t bit_count_ = 0;
 };

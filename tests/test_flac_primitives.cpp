@@ -57,6 +57,19 @@ void test_bit_writer()
     writer.align_zero();
     require_bytes(writer.bytes(), {0x10}, "unary write");
 
+    writer.clear();
+    writer.write_bits(0x0123456789abcdefULL, 64);
+    require(writer.byte_aligned(), "64-bit write is not byte aligned");
+    require_bytes(writer.bytes(),
+        {0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef},
+        "64-bit write");
+
+    writer.clear();
+    writer.write_bits(0b11, 2);
+    writer.write_unary(14);
+    writer.align_zero();
+    require_bytes(writer.bytes(), {0xc0, 0x00, 0x80}, "long unary write");
+
     bool threw = false;
     try {
         writer.write_bits(0, 65);

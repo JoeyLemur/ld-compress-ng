@@ -386,9 +386,10 @@ Remaining Vulkan work:
   batching, device-local buffer placement, shared writer-copy cleanup, GPU
   queue timestamp instrumentation, one-pass Rice-parameter costing, prepared
   frame-level `wbits`/`abits` reuse, trusted selected-frame decision writing,
-  and a Vulkan selected Rice-parameter sidecar show CPU/libFLAC at about
-  `0.138` seconds, scalar native-fixed at `1.659` seconds with `8` threads,
-  OpenCL at `10.132` seconds, and Vulkan at `0.722` seconds.
+  a Vulkan selected Rice-parameter sidecar, selected-writer timing
+  instrumentation, and chunked `BitWriter` output show CPU/libFLAC at about
+  `0.129` seconds, scalar native-fixed at `1.641` seconds with `8` threads,
+  OpenCL at `10.132` seconds, and Vulkan at `0.711` seconds.
   Vulkan output on that fixture is `4,292,100` bytes: `1,508` bytes larger than
   scalar native-fixed's `4,290,592` bytes, `22,033` bytes smaller than
   CPU/libFLAC's `4,314,133` bytes, and `6,134` bytes smaller than OpenCL's
@@ -411,9 +412,16 @@ Remaining Vulkan work:
   shifted to about `0.144` analyzer seconds and `0.257` selected-frame write
   seconds; a serial first attempt put this work in `choose_best` and regressed
   badly, so the kept version uses a cooperative one-workgroup-per-frame
-  sidecar pass. On the NVIDIA fixture path, PCIe transfer/readback is not the
-  primary bottleneck; the remaining time is mostly host-side residual
-  generation, bit emission, and ordinary I/O/writer overhead.
+  sidecar pass. A selected-writer timing split then showed bitstream
+  construction as the largest host writer bucket (`~0.140` seconds), ahead of
+  validation/wasted-bit checking (`~0.050` seconds), residual generation
+  (`~0.035` seconds), and frame output/CRC (`~0.020` seconds). Chunking
+  `BitWriter::write_bits()` and skipping unary zero runs dropped the
+  bitstream bucket to `~0.082` seconds, selected-frame write to `~0.196`
+  seconds, and the focused Vulkan bench to `~0.711` seconds. On the NVIDIA
+  fixture path, PCIe transfer/readback is not the primary bottleneck; the
+  remaining writer time is mostly bitstream construction, validation/wasted-bit
+  checking, residual generation, and ordinary frame output/CRC.
 - The latest six-fixture sweep at frame size `4608`, LPC order `12`,
   coefficient precision `12`, Rice partition order `5`, native-fixed `8`
   threads, OpenCL device `1`, and Vulkan device `1` produced aggregate sizes:
@@ -423,14 +431,15 @@ Remaining Vulkan work:
   scalar native-fixed, `59,870` bytes smaller than OpenCL, and much faster than
   OpenCL on the NVIDIA validation device.
 - Continue Vulkan throughput architecture before shader-level micro-tuning:
-  next profile whether host-side residual generation or bit emission dominates
-  the selected-frame writer now that Vulkan supplies selected Rice parameters.
-  Only after that should we consider queue overlap, batch-size tuning, or
-  deeper shader changes. The readback, trusted-decision, and sidecar patterns
-  are also useful for OpenCL: normal OpenCL compression discards full analyzed
-  tasks too, so a future OpenCL best-only analyzer path and writer handoff
-  could skip avoidable readback/recost work while keeping the current
-  full-result APIs for parity diagnostics.
+  next decide whether the remaining host writer work is worth another bounded
+  pass. The only obvious low-risk target is combining selected validation,
+  wasted-bit checking, and shifting for trusted accelerated frames; otherwise
+  move back to broader 1.1 hardening instead of chasing small writer buckets.
+  The readback, trusted-decision, sidecar, and bit-writer changes are also
+  useful for OpenCL: normal OpenCL compression discards full analyzed tasks too,
+  so a future OpenCL best-only analyzer path and writer handoff could skip
+  avoidable readback/recost work while keeping the current full-result APIs for
+  parity diagnostics.
 
 Immediate engineering focus:
 

@@ -1,5 +1,6 @@
 #include "flac_primitives.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace ldcompress {
@@ -10,16 +11,20 @@ void BitWriter::write_bits(std::uint64_t value, unsigned bits)
         throw std::runtime_error("cannot write more than 64 bits at once");
     }
 
-    for (unsigned i = 0; i < bits; ++i) {
-        const auto shift = bits - i - 1;
-        const auto bit = static_cast<std::uint8_t>((value >> shift) & 1U);
+    while (bits != 0) {
         if ((bit_count_ % 8U) == 0) {
             bytes_.push_back(0);
         }
-        if (bit != 0) {
-            bytes_.back() |= static_cast<std::uint8_t>(0x80U >> (bit_count_ % 8U));
-        }
-        ++bit_count_;
+
+        const auto byte_offset = static_cast<unsigned>(bit_count_ % 8U);
+        const auto available = 8U - byte_offset;
+        const auto take = std::min(bits, available);
+        const auto shift = bits - take;
+        const auto mask = (std::uint64_t {1} << take) - 1U;
+        const auto chunk = static_cast<std::uint8_t>((value >> shift) & mask);
+        bytes_.back() |= static_cast<std::uint8_t>(chunk << (available - take));
+        bit_count_ += take;
+        bits -= take;
     }
 }
 
@@ -41,9 +46,7 @@ void BitWriter::write_signed(std::int64_t value, unsigned bits)
 
 void BitWriter::write_unary(unsigned zero_count)
 {
-    for (unsigned i = 0; i < zero_count; ++i) {
-        write_bits(0, 1);
-    }
+    write_zero_bits(zero_count);
     write_bits(1, 1);
 }
 
@@ -64,6 +67,20 @@ void BitWriter::clear()
 bool BitWriter::byte_aligned() const
 {
     return (bit_count_ % 8U) == 0;
+}
+
+void BitWriter::write_zero_bits(std::size_t bits)
+{
+    while (bits != 0) {
+        if ((bit_count_ % 8U) == 0) {
+            bytes_.push_back(0);
+        }
+        const auto byte_offset = bit_count_ % 8U;
+        const auto available = 8U - byte_offset;
+        const auto take = std::min<std::size_t>(bits, available);
+        bit_count_ += take;
+        bits -= take;
+    }
 }
 
 void FlacCrc8::update(const std::uint8_t* data, std::size_t size)

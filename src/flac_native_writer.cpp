@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -22,6 +23,18 @@ constexpr unsigned kWelchLpcCandidateTargetCount = 2;
 constexpr unsigned kMinLpcBlockSize = 256;
 constexpr double kPi = 3.14159265358979323846264338327950288;
 using SampleSpan = std::span<const std::int32_t>;
+using Clock = std::chrono::steady_clock;
+
+std::uint64_t elapsed_ns(Clock::time_point start, Clock::time_point finish)
+{
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(finish - start).count());
+}
+
+void add_elapsed_ns(std::uint64_t& counter, Clock::time_point start)
+{
+    counter += elapsed_ns(start, Clock::now());
+}
 
 void write_byte(std::ostream& output, std::uint8_t byte)
 {
@@ -1252,7 +1265,8 @@ FixedRiceSubframe make_selected_fixed_rice_subframe(
     const FlacFrameInfo& info,
     const FlacSelectedSubframe& selected,
     unsigned wasted_bits,
-    std::optional<std::uint64_t> trusted_bits)
+    std::optional<std::uint64_t> trusted_bits,
+    FlacSelectedFrameWriteTimings* timings)
 {
     checked_max_rice_partition_order(info.max_rice_partition_order);
     if (selected.fixed_order > 4 || selected.fixed_order >= samples.size()) {
@@ -1262,15 +1276,27 @@ FixedRiceSubframe make_selected_fixed_rice_subframe(
         throw std::runtime_error("selected fixed/Rice subframe exceeds max Rice partition order");
     }
 
+    const auto shift_started = Clock::now();
     auto shifted_samples = shift_samples(samples, wasted_bits);
+    if (timings != nullptr) {
+        add_elapsed_ns(timings->shift_ns, shift_started);
+    }
     const auto effective_bits_per_sample = info.bits_per_sample - wasted_bits;
+    const auto residual_started = Clock::now();
     auto residuals = fixed_residuals(shifted_samples, selected.fixed_order);
+    if (timings != nullptr) {
+        add_elapsed_ns(timings->residual_ns, residual_started);
+    }
+    const auto rice_started = Clock::now();
     auto rice_parameters = selected_or_computed_rice_parameters(
         selected.rice_parameters,
         residuals,
         shifted_samples.size(),
         selected.fixed_order,
         selected.rice_partition_order);
+    if (timings != nullptr) {
+        add_elapsed_ns(timings->rice_parameter_ns, rice_started);
+    }
     const auto bits = trusted_bits.has_value()
         ? *trusted_bits
         : fixed_rice_subframe_bits(
@@ -1299,7 +1325,8 @@ LpcRiceSubframe make_selected_lpc_rice_subframe(
     const FlacFrameInfo& info,
     const FlacSelectedSubframe& selected,
     unsigned wasted_bits,
-    std::optional<std::uint64_t> trusted_bits)
+    std::optional<std::uint64_t> trusted_bits,
+    FlacSelectedFrameWriteTimings* timings)
 {
     checked_max_rice_partition_order(info.max_rice_partition_order);
     if (selected.lpc_order == 0 || selected.lpc_order > 32 ||
@@ -1325,19 +1352,31 @@ LpcRiceSubframe make_selected_lpc_rice_subframe(
         }
     }
 
+    const auto shift_started = Clock::now();
     auto shifted_samples = shift_samples(samples, wasted_bits);
+    if (timings != nullptr) {
+        add_elapsed_ns(timings->shift_ns, shift_started);
+    }
     const auto effective_bits_per_sample = info.bits_per_sample - wasted_bits;
+    const auto residual_started = Clock::now();
     auto residuals = lpc_residuals(
         shifted_samples,
         selected.coefficients,
         selected.lpc_order,
         selected.quantization_shift);
+    if (timings != nullptr) {
+        add_elapsed_ns(timings->residual_ns, residual_started);
+    }
+    const auto rice_started = Clock::now();
     auto rice_parameters = selected_or_computed_rice_parameters(
         selected.rice_parameters,
         residuals,
         shifted_samples.size(),
         selected.lpc_order,
         selected.rice_partition_order);
+    if (timings != nullptr) {
+        add_elapsed_ns(timings->rice_parameter_ns, rice_started);
+    }
     const auto bits = trusted_bits.has_value()
         ? *trusted_bits
         : lpc_rice_subframe_bits(
@@ -1444,8 +1483,10 @@ void write_frame_with_body(
 FlacSubframeDecision write_fixed_rice_frame(
     std::ostream& output,
     const FlacFrameInfo& info,
-    const FixedRiceSubframe& subframe)
+    const FixedRiceSubframe& subframe,
+    FlacSelectedFrameWriteTimings* timings = nullptr)
 {
+    const auto bitstream_started = Clock::now();
     BitWriter frame_body;
     write_subframe_header(frame_body, 0x08U + subframe.order, subframe.wasted_bits);
     for (unsigned i = 0; i < subframe.order; ++i) {
@@ -1472,14 +1513,22 @@ FlacSubframeDecision write_fixed_rice_frame(
     if (residual_offset != subframe.residuals.size()) {
         throw std::runtime_error("internal FLAC residual partition accounting error");
     }
+    if (timings != nullptr) {
+        add_elapsed_ns(timings->bitstream_ns, bitstream_started);
+    }
+    const auto output_started = Clock::now();
     write_frame_with_body(output, subframe.shifted_samples.size(), info, frame_body);
+    if (timings != nullptr) {
+        add_elapsed_ns(timings->frame_output_ns, output_started);
+    }
     return fixed_rice_decision(subframe);
 }
 
 FlacSubframeDecision write_lpc_rice_frame(
     std::ostream& output,
     const FlacFrameInfo& info,
-    const LpcRiceSubframe& subframe)
+    const LpcRiceSubframe& subframe,
+    FlacSelectedFrameWriteTimings* timings = nullptr)
 {
     if (subframe.order == 0 || subframe.order > 32) {
         throw std::runtime_error("invalid FLAC LPC order");
@@ -1491,6 +1540,7 @@ FlacSubframeDecision write_lpc_rice_frame(
         throw std::runtime_error("invalid FLAC LPC quantization shift");
     }
 
+    const auto bitstream_started = Clock::now();
     BitWriter frame_body;
     write_subframe_header(frame_body, 0x20U + subframe.order - 1U, subframe.wasted_bits);
     for (unsigned i = 0; i < subframe.order; ++i) {
@@ -1522,7 +1572,14 @@ FlacSubframeDecision write_lpc_rice_frame(
     if (residual_offset != subframe.residuals.size()) {
         throw std::runtime_error("internal FLAC LPC residual partition accounting error");
     }
+    if (timings != nullptr) {
+        add_elapsed_ns(timings->bitstream_ns, bitstream_started);
+    }
+    const auto output_started = Clock::now();
     write_frame_with_body(output, subframe.shifted_samples.size(), info, frame_body);
+    if (timings != nullptr) {
+        add_elapsed_ns(timings->frame_output_ns, output_started);
+    }
     return lpc_rice_decision(subframe);
 }
 
@@ -1594,15 +1651,20 @@ FlacSubframeDecision write_mono_selected_frame_impl(
     SampleSpan samples,
     const FlacFrameInfo& info,
     const FlacSelectedSubframe& selected,
-    const FlacSubframeDecision* trusted_decision)
+    const FlacSubframeDecision* trusted_decision,
+    FlacSelectedFrameWriteTimings* timings)
 {
     if (samples.empty()) {
         throw std::runtime_error("cannot write an empty selected FLAC frame");
     }
+    const auto validation_started = Clock::now();
     const auto wasted_bits = validated_common_wasted_bits(samples, info.bits_per_sample);
     (void)checked_selected_wasted_bits(wasted_bits, selected.wasted_bits);
     if (trusted_decision != nullptr) {
         check_selected_decision_matches(selected, *trusted_decision);
+    }
+    if (timings != nullptr) {
+        add_elapsed_ns(timings->validation_wasted_ns, validation_started);
     }
 
     const std::optional<std::uint64_t> trusted_bits = trusted_decision != nullptr
@@ -1620,13 +1682,13 @@ FlacSubframeDecision write_mono_selected_frame_impl(
     }
     case FlacSubframeKind::FixedRice: {
         const auto subframe = make_selected_fixed_rice_subframe(
-            samples, info, selected, wasted_bits, trusted_bits);
-        return write_fixed_rice_frame(output, info, subframe);
+            samples, info, selected, wasted_bits, trusted_bits, timings);
+        return write_fixed_rice_frame(output, info, subframe, timings);
     }
     case FlacSubframeKind::LpcRice: {
         const auto subframe = make_selected_lpc_rice_subframe(
-            samples, info, selected, wasted_bits, trusted_bits);
-        return write_lpc_rice_frame(output, info, subframe);
+            samples, info, selected, wasted_bits, trusted_bits, timings);
+        return write_lpc_rice_frame(output, info, subframe, timings);
     }
     }
     throw std::runtime_error("unknown selected FLAC subframe kind");
@@ -1886,7 +1948,7 @@ FlacSubframeDecision write_mono_selected_frame(
     const FlacFrameInfo& info,
     const FlacSelectedSubframe& selected)
 {
-    return write_mono_selected_frame_impl(output, samples, info, selected, nullptr);
+    return write_mono_selected_frame_impl(output, samples, info, selected, nullptr, nullptr);
 }
 
 FlacSubframeDecision write_mono_selected_frame_with_decision(
@@ -1896,7 +1958,18 @@ FlacSubframeDecision write_mono_selected_frame_with_decision(
     const FlacSelectedSubframe& selected,
     const FlacSubframeDecision& decision)
 {
-    return write_mono_selected_frame_impl(output, samples, info, selected, &decision);
+    return write_mono_selected_frame_impl(output, samples, info, selected, &decision, nullptr);
+}
+
+FlacSubframeDecision write_mono_selected_frame_with_decision(
+    std::ostream& output,
+    std::span<const std::int32_t> samples,
+    const FlacFrameInfo& info,
+    const FlacSelectedSubframe& selected,
+    const FlacSubframeDecision& decision,
+    FlacSelectedFrameWriteTimings* timings)
+{
+    return write_mono_selected_frame_impl(output, samples, info, selected, &decision, timings);
 }
 
 FlacSubframeDecision write_mono_best_frame(
