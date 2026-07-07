@@ -11,6 +11,7 @@
  * - Ported the mono task ABI and analysis flow to Vulkan GLSL compute.
  * - Uses workgroup reductions for generated LPC and exact Rice analysis.
  * - Writes selected task and Rice-parameter sidecar data for the native writer.
+ * - Reuses exact Rice leaf-partition sums for low partition-order searches.
  */
 
 #version 450
@@ -28,6 +29,9 @@ const uint kModeComputeLpc = 4u;
 const uint kModeQuantizeLpc = 5u;
 const uint kModeWriteBestRiceParameters = 6u;
 const uint kAnalysisProfileExact = 0u;
+const uint kAnalysisProfileOrderGuessExactRice = 1u;
+const uint kAnalysisProfileOrderGuessMeanRice = 2u;
+const uint kAnalysisProfileSubdivideTukey3MeanRice = 3u;
 const int kSubframeConstant = 0;
 const int kSubframeVerbatim = 1;
 const int kSubframeFixed = 8;
@@ -36,6 +40,8 @@ const int kIntMax = 2147483647;
 const uint kMaxRiceParameter = 14u;
 const uint kRiceParameterCount = kMaxRiceParameter + 1u;
 const uint kMaxRicePartitionCount = 256u;
+const uint kExactLeafMaxRicePartitionOrder = 6u;
+const uint kExactLeafMaxPartitionCount = 1u << kExactLeafMaxRicePartitionOrder;
 
 struct FlacClSubframeData {
     int residualOrder;
@@ -116,6 +122,7 @@ shared int shared_ints[64];
 shared uint shared_uints[64];
 shared uint64_t shared_u64s[64];
 shared float shared_floats[64];
+shared uint64_t shared_leaf_rice_sums[kExactLeafMaxPartitionCount * kRiceParameterCount];
 
 uint bit_width_u32(uint value)
 {
@@ -640,6 +647,116 @@ uint64_t cooperative_rice_subframe_bits(
     return bits;
 }
 
+bool analysis_profile_uses_mean_rice()
+{
+    return pc.analysis_profile == kAnalysisProfileOrderGuessMeanRice ||
+        pc.analysis_profile == kAnalysisProfileSubdivideTukey3MeanRice;
+}
+
+uint64_t rice_subframe_base_bits(
+    FlacClSubframeTask task,
+    int wasted_bits,
+    uint effective_bits_per_sample)
+{
+    const uint order = uint(task.data.residualOrder);
+    uint64_t bits = uint64_t(8u) + uint64_t(wasted_bits == 0 ? 0 : wasted_bits);
+    if (task.data.type == kSubframeLpc) {
+        bits +=
+            (uint64_t(order) * uint64_t(effective_bits_per_sample)) +
+            uint64_t(4u + 5u) +
+            (uint64_t(order) * uint64_t(task.data.cbits)) +
+            uint64_t(2u + 4u);
+    } else {
+        bits +=
+            (uint64_t(order) * uint64_t(effective_bits_per_sample)) +
+            uint64_t(2u + 4u);
+    }
+    return bits;
+}
+
+void cooperative_leaf_rice_search(
+    FlacClSubframeTask task,
+    uint leaf_partition_order,
+    int wasted_bits,
+    uint effective_bits_per_sample,
+    out uint best_partition_order,
+    out uint64_t best_bits)
+{
+    const uint lane = gl_LocalInvocationID.x;
+    const uint order = uint(task.data.residualOrder);
+    const uint block_size = uint(task.data.blocksize);
+    const uint leaf_count = 1u << leaf_partition_order;
+    const uint leaf_samples = block_size >> leaf_partition_order;
+
+    for (uint leaf = lane; leaf < leaf_count; leaf += kWorkgroupSize) {
+        uint64_t sums[kRiceParameterCount];
+        for (uint parameter = 0u; parameter < kRiceParameterCount; ++parameter) {
+            sums[parameter] = uint64_t(0);
+        }
+
+        const uint start = leaf == 0u ? order : leaf * leaf_samples;
+        const uint end = (leaf + 1u) * leaf_samples;
+        for (uint pos = start; pos < end; ++pos) {
+            const uint64_t folded =
+                fold_signed_residual(residual(task, int(pos), wasted_bits));
+            for (uint parameter = 0u; parameter < kRiceParameterCount; ++parameter) {
+                sums[parameter] += folded >> parameter;
+            }
+        }
+
+        const uint output_base = leaf * kRiceParameterCount;
+        for (uint parameter = 0u; parameter < kRiceParameterCount; ++parameter) {
+            shared_leaf_rice_sums[output_base + parameter] = sums[parameter];
+        }
+    }
+    barrier();
+
+    if (lane == 0u) {
+        best_bits = ~uint64_t(0);
+        best_partition_order = 0u;
+        const uint64_t base_bits =
+            rice_subframe_base_bits(task, wasted_bits, effective_bits_per_sample);
+        for (uint partition_order = 0u;
+             partition_order <= leaf_partition_order;
+             ++partition_order) {
+            if (!valid_partition_order(block_size, order, partition_order)) {
+                continue;
+            }
+
+            const uint partition_count = 1u << partition_order;
+            const uint partition_samples = block_size >> partition_order;
+            const uint leaf_group_size = 1u << (leaf_partition_order - partition_order);
+            uint64_t bits = base_bits;
+            for (uint part = 0u; part < partition_count; ++part) {
+                const uint residual_count = part == 0u
+                    ? partition_samples - order
+                    : partition_samples;
+                const uint leaf_start = part * leaf_group_size;
+                uint64_t best_parameter_bits = ~uint64_t(0);
+                for (uint parameter = 0u; parameter < kRiceParameterCount; ++parameter) {
+                    uint64_t sum = uint64_t(0);
+                    for (uint leaf = 0u; leaf < leaf_group_size; ++leaf) {
+                        const uint index =
+                            ((leaf_start + leaf) * kRiceParameterCount) + parameter;
+                        sum += shared_leaf_rice_sums[index];
+                    }
+                    const uint64_t parameter_bits =
+                        sum + (uint64_t(residual_count) * uint64_t(1u + parameter));
+                    if (parameter_bits < best_parameter_bits) {
+                        best_parameter_bits = parameter_bits;
+                    }
+                }
+                bits += uint64_t(4u) + best_parameter_bits;
+            }
+
+            if (bits < best_bits) {
+                best_bits = bits;
+                best_partition_order = partition_order;
+            }
+        }
+    }
+}
+
 bool signed_value_fits_bits(int value, int bits)
 {
     if (bits <= 0 || bits > 31) {
@@ -721,6 +838,26 @@ void analyze_task(uint task_index)
     const uint effective_bits_per_sample = uint(task.data.obits - wasted_bits);
     uint64_t best_bits = ~uint64_t(0);
     uint best_partition_order = 0u;
+    const bool use_leaf_rice =
+        !analysis_profile_uses_mean_rice() &&
+        pc.max_rice_partition_order <= kExactLeafMaxRicePartitionOrder &&
+        valid_partition_order(block_size, order, pc.max_rice_partition_order);
+    if (use_leaf_rice) {
+        cooperative_leaf_rice_search(
+            task,
+            pc.max_rice_partition_order,
+            wasted_bits,
+            effective_bits_per_sample,
+            best_partition_order,
+            best_bits);
+        if (gl_LocalInvocationID.x == 0u) {
+            task.data.porder = int(best_partition_order);
+            task.data.size = clamp_size_bits(best_bits);
+            tasks[task_index] = task;
+        }
+        return;
+    }
+
     for (uint partition_order = 0u;
          partition_order <= pc.max_rice_partition_order;
          ++partition_order) {
