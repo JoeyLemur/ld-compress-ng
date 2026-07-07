@@ -429,11 +429,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--rice-partition-order", default="5",
         type=uint_list_arg("Rice partition order", 0, 8))
     parser.add_argument("--include-opencl", action="store_true",
-        help="include experimental OpenCL backend rows in each bench run")
+        help="include OpenCL backend rows in each bench run")
     parser.add_argument("--opencl-device",
         help="flattened OpenCL device index to pass to bench when --include-opencl is set")
     parser.add_argument("--include-vulkan", action="store_true",
-        help="include experimental Vulkan backend rows in each bench run")
+        help="include Vulkan backend rows in each bench run")
     parser.add_argument("--vulkan-device",
         help="Vulkan device index to pass to bench when --include-vulkan is set")
     parser.add_argument("--limit", type=int,

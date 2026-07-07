@@ -88,7 +88,7 @@ struct Options {
         << "  ld-compress-ng decompress capture.ldf\n"
         << "  ld-compress-ng verify --source capture.lds capture.ldf\n"
         << "  ld-compress-ng devices\n"
-        << "  ld-compress-ng compress --backend opencl --device 0 capture.lds\n\n"
+        << "  ld-compress-ng compress --backend opencl --device INDEX capture.lds\n\n"
         << "Commands:\n"
         << "  compress      Compress packed LDS input. Default output is INPUT.ldf for cpu\n"
         << "                and INPUT.flac.ldf for native-fixed/opencl/vulkan/native-verbatim.\n"
