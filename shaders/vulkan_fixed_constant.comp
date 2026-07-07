@@ -69,6 +69,7 @@ struct FlacClSubframeTask {
 
 struct RicePartitionCost {
     uint64_t bits;
+    uint parameter;
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer Samples {
@@ -99,8 +100,8 @@ layout(std430, set = 0, binding = 6) buffer Lpcs {
     float lpcs[];
 };
 
-layout(std430, set = 0, binding = 7) writeonly buffer BestRiceParameters {
-    uint best_rice_parameters[];
+layout(std430, set = 0, binding = 7) buffer RiceParameters {
+    uint rice_parameters[];
 };
 
 layout(push_constant) uniform PushConstants {
@@ -122,6 +123,7 @@ shared int shared_ints[64];
 shared uint shared_uints[64];
 shared uint64_t shared_u64s[64];
 shared float shared_floats[64];
+shared uint shared_rice_parameters[kMaxRicePartitionCount];
 shared uint64_t shared_leaf_rice_sums[kExactLeafMaxPartitionCount * kRiceParameterCount];
 
 uint bit_width_u32(uint value)
@@ -264,6 +266,27 @@ int cooperative_frame_amplitude_bits(FlacClSubframeTask task, int wasted_bits)
 
     const int bits = int(bit_width_u32(reduced_or));
     return max(1, bits - wasted_bits);
+}
+
+uint task_rice_parameter_base(uint task_index)
+{
+    return (pc.frame_count + task_index) * kMaxRicePartitionCount;
+}
+
+uint best_rice_parameter_base(uint frame)
+{
+    return frame * kMaxRicePartitionCount;
+}
+
+void clear_task_rice_parameters(uint task_index)
+{
+    const uint lane = gl_LocalInvocationID.x;
+    const uint output_base = task_rice_parameter_base(task_index);
+    for (uint i = lane; i < kMaxRicePartitionCount; i += kWorkgroupSize) {
+        rice_parameters[output_base + i] = 0u;
+    }
+    memoryBarrierBuffer();
+    barrier();
 }
 
 void prepare_frame(uint frame)
@@ -536,6 +559,7 @@ RicePartitionCost cooperative_choose_rice_partition_cost(
 
     RicePartitionCost best;
     best.bits = ~uint64_t(0);
+    best.parameter = 0u;
 
     for (uint parameter = 0u; parameter < kRiceParameterCount; ++parameter) {
         uint64_t local_bits = bits0;
@@ -571,6 +595,7 @@ RicePartitionCost cooperative_choose_rice_partition_cost(
         const uint64_t bits = reduce_sum_u64(local_bits);
         if (bits < best.bits) {
             best.bits = bits;
+            best.parameter = parameter;
         }
     }
     return best;
@@ -642,6 +667,9 @@ uint64_t cooperative_rice_subframe_bits(
                 task, residual_offset, residual_count, wasted_bits);
         bits += uint64_t(4u);
         bits += partition_cost.bits;
+        if (gl_LocalInvocationID.x == 0u) {
+            shared_rice_parameters[part] = partition_cost.parameter;
+        }
         residual_offset += residual_count;
     }
     return bits;
@@ -676,6 +704,7 @@ uint64_t rice_subframe_base_bits(
 
 void cooperative_leaf_rice_search(
     FlacClSubframeTask task,
+    uint task_index,
     uint leaf_partition_order,
     int wasted_bits,
     uint effective_bits_per_sample,
@@ -733,6 +762,7 @@ void cooperative_leaf_rice_search(
                     : partition_samples;
                 const uint leaf_start = part * leaf_group_size;
                 uint64_t best_parameter_bits = ~uint64_t(0);
+                uint best_parameter = 0u;
                 for (uint parameter = 0u; parameter < kRiceParameterCount; ++parameter) {
                     uint64_t sum = uint64_t(0);
                     for (uint leaf = 0u; leaf < leaf_group_size; ++leaf) {
@@ -744,14 +774,20 @@ void cooperative_leaf_rice_search(
                         sum + (uint64_t(residual_count) * uint64_t(1u + parameter));
                     if (parameter_bits < best_parameter_bits) {
                         best_parameter_bits = parameter_bits;
+                        best_parameter = parameter;
                     }
                 }
                 bits += uint64_t(4u) + best_parameter_bits;
+                shared_rice_parameters[part] = best_parameter;
             }
 
             if (bits < best_bits) {
                 best_bits = bits;
                 best_partition_order = partition_order;
+                const uint output_base = task_rice_parameter_base(task_index);
+                for (uint part = 0u; part < partition_count; ++part) {
+                    rice_parameters[output_base + part] = shared_rice_parameters[part];
+                }
             }
         }
     }
@@ -845,6 +881,7 @@ void analyze_task(uint task_index)
     if (use_leaf_rice) {
         cooperative_leaf_rice_search(
             task,
+            task_index,
             pc.max_rice_partition_order,
             wasted_bits,
             effective_bits_per_sample,
@@ -880,6 +917,7 @@ void analyze_task(uint task_index)
 void cooperative_analyze_task(uint task_index)
 {
     FlacClSubframeTask task = tasks[task_index];
+    clear_task_rice_parameters(task_index);
     const int wasted_bits = task.data.wbits;
     if (task.data.size == kIntMax) {
         if (gl_LocalInvocationID.x == 0u) {
@@ -951,6 +989,28 @@ void cooperative_analyze_task(uint task_index)
     const uint effective_bits_per_sample = uint(task.data.obits - wasted_bits);
     uint64_t best_bits = ~uint64_t(0);
     uint best_partition_order = 0u;
+    const bool use_leaf_rice =
+        !analysis_profile_uses_mean_rice() &&
+        pc.max_rice_partition_order <= kExactLeafMaxRicePartitionOrder &&
+        valid_partition_order(block_size, order, pc.max_rice_partition_order);
+    if (use_leaf_rice) {
+        cooperative_leaf_rice_search(
+            task,
+            task_index,
+            pc.max_rice_partition_order,
+            wasted_bits,
+            effective_bits_per_sample,
+            best_partition_order,
+            best_bits);
+        if (gl_LocalInvocationID.x == 0u) {
+            task.data.porder = int(best_partition_order);
+            task.data.size = clamp_size_bits(best_bits);
+            tasks[task_index] = task;
+        }
+        return;
+    }
+
+    const uint rice_output_base = task_rice_parameter_base(task_index);
     for (uint partition_order = 0u;
          partition_order <= pc.max_rice_partition_order;
          ++partition_order) {
@@ -963,6 +1023,12 @@ void cooperative_analyze_task(uint task_index)
         if (bits < best_bits) {
             best_bits = bits;
             best_partition_order = partition_order;
+            if (gl_LocalInvocationID.x == 0u) {
+                const uint partition_count = 1u << partition_order;
+                for (uint part = 0u; part < partition_count; ++part) {
+                    rice_parameters[rice_output_base + part] = shared_rice_parameters[part];
+                }
+            }
         }
     }
 
@@ -1167,37 +1233,23 @@ void choose_best(uint frame)
 
 void write_best_rice_parameters(uint frame)
 {
-    FlacClSubframeTask task = best_tasks[frame];
-    if (task.data.type != kSubframeFixed &&
-        task.data.type != kSubframeLpc) {
-        return;
-    }
-    if (task.data.size == kIntMax ||
-        task.data.porder < 0 ||
-        task.data.porder > 8) {
-        return;
+    const uint lane = gl_LocalInvocationID.x;
+    const uint selected_base = frame * pc.selected_tasks_per_frame;
+    int best_index = selected_tasks[selected_base];
+    int best_size = tasks[best_index].data.size;
+    for (uint i = 1u; i < pc.selected_tasks_per_frame; ++i) {
+        const int task_index = selected_tasks[selected_base + i];
+        const int task_size = tasks[task_index].data.size;
+        if (task_size < best_size) {
+            best_index = task_index;
+            best_size = task_size;
+        }
     }
 
-    const uint partition_order = uint(task.data.porder);
-    const uint partition_count = 1u << partition_order;
-    const uint output_base = frame * kMaxRicePartitionCount;
-    uint residual_offset = 0u;
-    for (uint part = 0u; part < partition_count; ++part) {
-        const uint residual_count =
-            partition_residual_count(
-                uint(task.data.blocksize),
-                uint(task.data.residualOrder),
-                partition_order,
-                part);
-        const uint parameter = cooperative_choose_rice_parameter(
-            task,
-            residual_offset,
-            residual_count,
-            task.data.wbits);
-        if (gl_LocalInvocationID.x == 0u) {
-            best_rice_parameters[output_base + part] = parameter;
-        }
-        residual_offset += residual_count;
+    const uint input_base = task_rice_parameter_base(uint(best_index));
+    const uint output_base = best_rice_parameter_base(frame);
+    for (uint i = lane; i < kMaxRicePartitionCount; i += kWorkgroupSize) {
+        rice_parameters[output_base + i] = rice_parameters[input_base + i];
     }
 }
 

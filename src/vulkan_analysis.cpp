@@ -1308,6 +1308,16 @@ public:
             best_rice_parameters.size(),
             sizeof(opencl_detail::FlacClRiceParameterSet),
             "best Rice parameters");
+        if (plan.residual_tasks.size() >
+            std::numeric_limits<std::size_t>::max() - best_rice_parameters.size()) {
+            throw std::runtime_error("Vulkan analysis Rice parameter storage is too large");
+        }
+        const auto rice_parameter_count =
+            best_rice_parameters.size() + plan.residual_tasks.size();
+        const auto rice_parameter_bytes = checked_buffer_bytes(
+            rice_parameter_count,
+            sizeof(opencl_detail::FlacClRiceParameterSet),
+            "Vulkan Rice parameter storage");
         const auto window_bytes =
             checked_buffer_bytes(window_values->size(), sizeof(float), "generated windows");
         const auto autocor_bytes =
@@ -1335,7 +1345,7 @@ public:
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         DeviceBuffer& best_rice_parameter_buffer = ensure_device_buffer(
             best_rice_parameter_buffer_,
-            best_rice_parameter_bytes,
+            rice_parameter_bytes,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         DeviceBuffer& window_buffer = ensure_device_buffer(
             window_buffer_,
