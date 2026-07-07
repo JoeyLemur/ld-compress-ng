@@ -313,10 +313,11 @@ runs `real-fixtures` while excluding the OpenCL-labelled real-fixture test.
 check; it implies the real-fixture lane and uses the first available OpenCL
 device unless `--opencl-device INDEX` is provided. Pass
 `--include-vulkan-real-fixture` for the Vulkan-labelled compatibility test; it
-uses the first backend-usable Vulkan device (`available` plus `shaderInt64`)
-unless `--vulkan-device INDEX` is provided. Run GPU lanes from a context that
-can see the accelerator runtime and devices; sandboxed executions may skip or
-report no available devices even when the system build can see them. For Vulkan
+uses the same implicit Vulkan policy as compression: first backend-usable
+discrete GPU, then any backend-usable non-CPU device, unless
+`--vulkan-device INDEX` is provided. Run GPU lanes from a context that can see
+the accelerator runtime and devices; sandboxed executions may skip or report no
+available devices even when the system build can see them. For Vulkan
 performance tests on mixed-GPU hosts, use an explicit discrete GPU index from
 `ld-compress-ng devices`; the integrated AMD device is suitable for functional
 smoke testing but should not be used for NVIDIA performance numbers.

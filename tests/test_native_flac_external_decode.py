@@ -148,69 +148,102 @@ def run_checked(args, **kwargs):
     return result
 
 
-def available_backend_device(binary, backend, requested_device):
+def parsed_device_usable(fields, backend):
+    if backend == "opencl":
+        return fields.get("available") == "yes"
+    return fields.get("vulkan backend usable") == "yes"
+
+
+def parse_backend_devices(devices_output, backend):
     section_labels = {
         "opencl": "OpenCL",
         "vulkan": "Vulkan",
     }
     label = section_labels[backend]
-    result = run_checked([str(binary), "devices"])
-    if f"{label} support: not built" in result.stdout:
+    if f"{label} support: not built" in devices_output:
         return None, f"{label} support is not built"
 
     in_section = False
     current_index = None
     current_fields = {}
+    devices = []
 
-    def selected_current_device():
+    def append_current_device():
+        nonlocal current_index, current_fields
         if current_index is None:
-            return None
-        if requested_device is not None and current_index != requested_device:
-            return None
-        if backend == "opencl":
-            usable = current_fields.get("available") == "yes"
-        else:
-            usable = current_fields.get("vulkan backend usable") == "yes"
-        if usable:
-            return current_index
-        return None
+            return
+        devices.append({
+            "index": current_index,
+            **current_fields,
+        })
 
-    for line in result.stdout.splitlines():
+    for line in devices_output.splitlines():
         if line.startswith("OpenCL support:"):
-            selected = selected_current_device()
-            if selected is not None:
-                return selected, None
+            append_current_device()
             in_section = backend == "opencl"
             current_index = None
             current_fields = {}
         elif line.startswith("Vulkan support:"):
-            selected = selected_current_device()
-            if selected is not None:
-                return selected, None
+            append_current_device()
             in_section = backend == "vulkan"
             current_index = None
             current_fields = {}
         elif in_section and line.startswith("[") and "]" in line:
-            selected = selected_current_device()
-            if selected is not None:
-                return selected, None
+            append_current_device()
             current_index = line.split("]", 1)[0][1:]
             current_fields = {}
         elif in_section and current_index is not None and ":" in line:
             key, value = line.strip().split(":", 1)
             current_fields[key] = value.strip()
 
-    selected = selected_current_device()
-    if selected is not None:
-        return selected, None
+    append_current_device()
+    return devices, None
+
+
+def select_backend_device_from_devices_output(devices_output, backend, requested_device):
+    section_labels = {
+        "opencl": "OpenCL",
+        "vulkan": "Vulkan",
+    }
+    label = section_labels[backend]
+    devices, skip_reason = parse_backend_devices(devices_output, backend)
+    if skip_reason is not None:
+        return None, skip_reason
 
     if requested_device is not None:
-        if backend == "vulkan":
-            return None, f"requested {label} device {requested_device} is not backend-usable"
-        return None, f"requested {label} device {requested_device} is not available"
-    if backend == "vulkan":
-        return None, f"no backend-usable {label} device"
-    return None, f"no available {label} device"
+        for device in devices:
+            if device["index"] == requested_device:
+                if parsed_device_usable(device, backend):
+                    return requested_device, None
+                if backend == "vulkan":
+                    return None, f"requested {label} device {requested_device} is not backend-usable"
+                return None, f"requested {label} device {requested_device} is not available"
+        return None, f"requested {label} device {requested_device} is not visible"
+
+    if backend == "opencl":
+        for device in devices:
+            if parsed_device_usable(device, backend):
+                return device["index"], None
+        return None, f"no available {label} device"
+
+    usable_devices = [
+        device for device in devices
+        if parsed_device_usable(device, backend)
+    ]
+    for device in usable_devices:
+        if device.get("type") == "discrete-gpu":
+            return device["index"], None
+    for device in usable_devices:
+        if device.get("type") != "cpu":
+            return device["index"], None
+    if usable_devices:
+        return None, f"no backend-usable non-CPU {label} device"
+    return None, f"no backend-usable {label} device"
+
+
+def available_backend_device(binary, backend, requested_device):
+    result = run_checked([str(binary), "devices"])
+    return select_backend_device_from_devices_output(result.stdout, backend, requested_device)
 
 
 def available_opencl_device(binary, requested_device):

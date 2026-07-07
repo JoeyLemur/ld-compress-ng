@@ -147,14 +147,14 @@ Use OpenCL:
 
 ```sh
 build/ld-compress-ng devices
-build/ld-compress-ng compress --backend opencl --device 0 capture.lds
+build/ld-compress-ng compress --backend opencl --device INDEX capture.lds
 ```
 
 Use the current Vulkan path:
 
 ```sh
 build/ld-compress-ng devices
-build/ld-compress-ng compress --backend vulkan --device 0 capture.lds
+build/ld-compress-ng compress --backend vulkan --device INDEX capture.lds
 ```
 
 For `compress`, `--device INDEX` is backend-local shorthand for the selected

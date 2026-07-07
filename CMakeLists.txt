@@ -373,6 +373,16 @@ if(BUILD_TESTING)
 
     if(Python3_Interpreter_FOUND)
         add_test(
+            NAME external_decode_device_selection
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_external_decode_device_selection.py
+        )
+        set_tests_properties(external_decode_device_selection PROPERTIES
+            LABELS external-decode-compat
+        )
+
+        add_test(
             NAME ffmpeg_native_flac_compat
             COMMAND
                 ${Python3_EXECUTABLE}

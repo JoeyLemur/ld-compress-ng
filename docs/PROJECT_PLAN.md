@@ -518,6 +518,20 @@ Remaining Vulkan work:
   faster on this validation sweep after the cooperative autocorrelation work.
   Continue Vulkan 1.1 hardening and compatibility coverage before reopening
   performance work.
+- The Vulkan real-fixture local matrix lane now passes from a GPU-visible
+  context using `tools/check_local_matrix.py` with `--include-vulkan-real-fixture`
+  and `--vulkan-device 1`, plus the PyAV-capable `ld-decode` Python
+  interpreter. The selected tests passed: scalar real fixtures, real-fixture
+  `ld-decode` loader compatibility, and Vulkan real-fixture `ld-decode` loader
+  compatibility on the RTX 5070 Ti. A sandboxed run of the same helper can see
+  only CPU Vulkan/llvmpipe and report the requested NVIDIA device as
+  unavailable, so accelerator matrix lanes must run from a GPU-visible context.
+  The Python real-fixture compatibility helper now mirrors the Vulkan backend's
+  implicit selection policy: explicit devices are honored when backend-usable,
+  otherwise it picks the first backend-usable discrete GPU, then the first
+  backend-usable non-CPU device, and skips CPU Vulkan unless it was explicitly
+  requested. The parser policy is covered by the
+  `external_decode_device_selection` CTest.
 
 Immediate engineering focus:
 
