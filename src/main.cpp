@@ -1316,6 +1316,12 @@ void print_optional_profile(
     }
 }
 
+void print_seconds_field(std::uint64_t nanoseconds)
+{
+    std::cout << std::setw(18) << std::fixed << std::setprecision(6)
+              << seconds_from_ns(nanoseconds);
+}
+
 void print_bench_result(const BenchResult& result)
 {
     const double ratio = result.stats.input_bytes == 0
@@ -1343,8 +1349,39 @@ void print_bench_result(const BenchResult& result)
               << std::setw(28) << (result.show_native_stats ? summarize_subframes(result.native_stats) : "-")
               << std::setw(24) << (result.show_native_stats ? summarize_nonzero_counts(result.native_stats.lpc_order_counts) : "-")
               << std::setw(24) << (result.show_native_stats ? summarize_nonzero_counts(result.native_stats.partition_order_counts) : "-")
-              << std::setw(24) << (result.show_native_stats ? summarize_nonzero_counts(result.native_stats.wasted_bits_counts) : "-")
-              << '\n';
+              << std::setw(24) << (result.show_native_stats ? summarize_nonzero_counts(result.native_stats.wasted_bits_counts) : "-");
+    print_seconds_field(result.native_stats.accelerated_total_ns);
+    print_seconds_field(result.native_stats.accelerated_setup_ns);
+    print_seconds_field(result.native_stats.accelerated_scan_ns);
+    print_seconds_field(result.native_stats.accelerated_analyzer_ns);
+    print_seconds_field(result.native_stats.accelerated_task_plan_ns);
+    print_seconds_field(result.native_stats.accelerated_exact_analysis_ns);
+    print_seconds_field(result.native_stats.accelerated_selected_write_ns);
+    print_seconds_field(result.native_stats.accelerated_tail_write_ns);
+    print_seconds_field(result.native_stats.accelerated_selected_validation_ns);
+    print_seconds_field(result.native_stats.accelerated_selected_shift_ns);
+    print_seconds_field(result.native_stats.accelerated_selected_residual_ns);
+    print_seconds_field(result.native_stats.accelerated_selected_rice_parameter_ns);
+    print_seconds_field(result.native_stats.accelerated_selected_bitstream_ns);
+    print_seconds_field(result.native_stats.accelerated_selected_frame_output_ns);
+    print_seconds_field(result.native_stats.opencl_upload_ns);
+    print_seconds_field(result.native_stats.opencl_wasted_bits_ns);
+    print_seconds_field(result.native_stats.opencl_generated_autocorrelation_ns);
+    print_seconds_field(result.native_stats.opencl_generated_lpc_ns);
+    print_seconds_field(result.native_stats.opencl_generated_quantize_ns);
+    print_seconds_field(result.native_stats.opencl_exact_analysis_ns);
+    print_seconds_field(result.native_stats.opencl_choose_best_ns);
+    print_seconds_field(result.native_stats.opencl_readback_ns);
+    print_seconds_field(result.native_stats.vulkan_gpu_total_ns);
+    print_seconds_field(result.native_stats.vulkan_gpu_upload_ns);
+    print_seconds_field(result.native_stats.vulkan_gpu_prepare_ns);
+    print_seconds_field(result.native_stats.vulkan_gpu_generated_autocorrelation_ns);
+    print_seconds_field(result.native_stats.vulkan_gpu_generated_lpc_ns);
+    print_seconds_field(result.native_stats.vulkan_gpu_generated_quantize_ns);
+    print_seconds_field(result.native_stats.vulkan_gpu_exact_analysis_ns);
+    print_seconds_field(result.native_stats.vulkan_gpu_choose_best_ns);
+    print_seconds_field(result.native_stats.vulkan_gpu_readback_ns);
+    std::cout << '\n';
 }
 
 int run_bench(const Options& options)
@@ -1528,6 +1565,37 @@ int run_bench(const Options& options)
               << std::setw(24) << "lpc_orders"
               << std::setw(24) << "rice_orders"
               << std::setw(24) << "wasted_bits"
+              << std::setw(18) << "accel_total_s"
+              << std::setw(18) << "accel_setup_s"
+              << std::setw(18) << "accel_scan_s"
+              << std::setw(18) << "accel_analyze_s"
+              << std::setw(18) << "accel_plan_s"
+              << std::setw(18) << "accel_exact_s"
+              << std::setw(18) << "writer_total_s"
+              << std::setw(18) << "tail_write_s"
+              << std::setw(18) << "writer_val_s"
+              << std::setw(18) << "writer_shift_s"
+              << std::setw(18) << "writer_resid_s"
+              << std::setw(18) << "writer_rice_s"
+              << std::setw(18) << "writer_bits_s"
+              << std::setw(18) << "writer_out_s"
+              << std::setw(18) << "opencl_up_s"
+              << std::setw(18) << "opencl_waste_s"
+              << std::setw(18) << "opencl_ac_s"
+              << std::setw(18) << "opencl_lpc_s"
+              << std::setw(18) << "opencl_quant_s"
+              << std::setw(18) << "opencl_exact_s"
+              << std::setw(18) << "opencl_choose_s"
+              << std::setw(18) << "opencl_read_s"
+              << std::setw(18) << "vk_gpu_total_s"
+              << std::setw(18) << "vk_gpu_up_s"
+              << std::setw(18) << "vk_gpu_prep_s"
+              << std::setw(18) << "vk_gpu_ac_s"
+              << std::setw(18) << "vk_gpu_lpc_s"
+              << std::setw(18) << "vk_gpu_quant_s"
+              << std::setw(18) << "vk_gpu_exact_s"
+              << std::setw(18) << "vk_gpu_choose_s"
+              << std::setw(18) << "vk_gpu_read_s"
               << '\n';
 
     for (std::size_t i = 0; i < cases.size(); ++i) {

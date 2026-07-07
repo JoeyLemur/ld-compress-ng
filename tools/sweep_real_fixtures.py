@@ -18,6 +18,39 @@ DEFAULT_FIXTURE_DIR = (
     "reference/testdata/ld-decode-testdata-ci/"
     "1cf698d2025e8515e9ef57e34adaf85a194da96a"
 )
+TIMING_COLUMNS = [
+    "accel_total_s",
+    "accel_setup_s",
+    "accel_scan_s",
+    "accel_analyze_s",
+    "accel_plan_s",
+    "accel_exact_s",
+    "writer_total_s",
+    "tail_write_s",
+    "writer_val_s",
+    "writer_shift_s",
+    "writer_resid_s",
+    "writer_rice_s",
+    "writer_bits_s",
+    "writer_out_s",
+    "opencl_up_s",
+    "opencl_waste_s",
+    "opencl_ac_s",
+    "opencl_lpc_s",
+    "opencl_quant_s",
+    "opencl_exact_s",
+    "opencl_choose_s",
+    "opencl_read_s",
+    "vk_gpu_total_s",
+    "vk_gpu_up_s",
+    "vk_gpu_prep_s",
+    "vk_gpu_ac_s",
+    "vk_gpu_lpc_s",
+    "vk_gpu_quant_s",
+    "vk_gpu_exact_s",
+    "vk_gpu_choose_s",
+    "vk_gpu_read_s",
+]
 CSV_COLUMNS = [
     "fixture",
     "backend",
@@ -37,6 +70,7 @@ CSV_COLUMNS = [
     "lpc_orders",
     "rice_orders",
     "wasted_bits",
+    *TIMING_COLUMNS,
 ]
 BENCH_COLUMNS = [
     "backend",
@@ -56,6 +90,7 @@ BENCH_COLUMNS = [
     "lpc_orders",
     "rice_orders",
     "wasted_bits",
+    *TIMING_COLUMNS,
 ]
 
 
