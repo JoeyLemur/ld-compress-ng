@@ -713,6 +713,14 @@ void test_native_selected_subframe_writer()
     require(read_file(temp_dir / "fixed-params.flac") == read_file(temp_dir / "fixed.flac"),
         "selected fixed writer changed bytes with supplied Rice parameters");
 
+    const std::vector<std::int32_t> zero_samples(16, 0);
+    auto zero_fixed = fixed;
+    zero_fixed.wasted_bits = 15;
+    const auto zero_fixed_decision =
+        write_selected_file(temp_dir / "fixed-zero.flac", zero_samples, zero_fixed);
+    require(zero_fixed_decision.kind == ldcompress::FlacSubframeKind::FixedRice,
+        "selected fixed writer rejected the all-zero wasted-bits cap");
+
     const auto lpc_samples = make_lpc_friendly_samples();
     const auto frame_info = make_frame_info(12, 12, 5);
     const auto lpc = ldcompress::analyze_mono_lpc_frame(lpc_samples, frame_info);
@@ -748,6 +756,7 @@ void test_native_selected_subframe_writer()
              std::pair { temp_dir / "constant.flac", constant_samples },
              std::pair { temp_dir / "fixed.flac", fixed_samples },
              std::pair { temp_dir / "fixed-params.flac", fixed_samples },
+             std::pair { temp_dir / "fixed-zero.flac", zero_samples },
              std::pair { temp_dir / "lpc.flac", lpc_samples },
              std::pair { temp_dir / "lpc-trusted.flac", lpc_samples },
          }) {
@@ -760,19 +769,44 @@ void test_native_selected_subframe_writer()
             "selected writer FLAC did not round-trip to expected LDS");
     }
 
+    const auto expect_selected_write_throws =
+        [&](const char* path, const std::vector<std::int32_t>& samples,
+            const ldcompress::FlacSelectedSubframe& selected, const char* message) {
+            bool threw = false;
+            try {
+                (void)write_selected_file(temp_dir / path, samples, selected);
+            } catch (const std::runtime_error&) {
+                threw = true;
+            }
+            require(threw, message);
+        };
+
     auto bad_wasted_bits = fixed;
     bad_wasted_bits.wasted_bits = 0;
-    bool threw = false;
-    try {
-        (void)write_selected_file(temp_dir / "bad-wbits.flac", fixed_samples, bad_wasted_bits);
-    } catch (const std::runtime_error&) {
-        threw = true;
-    }
-    require(threw, "selected writer accepted a mismatched wasted-bits count");
+    expect_selected_write_throws("bad-wbits.flac", fixed_samples, bad_wasted_bits,
+        "selected writer accepted a too-low wasted-bits count");
+
+    bad_wasted_bits.wasted_bits = 7;
+    expect_selected_write_throws("bad-high-wbits.flac", fixed_samples, bad_wasted_bits,
+        "selected writer accepted a too-high wasted-bits count");
+
+    bad_wasted_bits = zero_fixed;
+    bad_wasted_bits.wasted_bits = 16;
+    expect_selected_write_throws("bad-cap-wbits.flac", zero_samples, bad_wasted_bits,
+        "selected writer accepted a wasted-bits count at the bit depth");
+
+    auto invalid_late_sample = fixed;
+    invalid_late_sample.fixed_order = 0;
+    invalid_late_sample.wasted_bits = 0;
+    auto invalid_late_samples = fixed_samples;
+    invalid_late_samples.front() = 1;
+    invalid_late_samples[1] = 40000;
+    expect_selected_write_throws("bad-late-sample.flac", invalid_late_samples,
+        invalid_late_sample, "selected writer stopped validating samples after zero wasted bits");
 
     auto bad_rice_parameters = fixed_with_rice_parameters;
     bad_rice_parameters.rice_parameters = {0, 0};
-    threw = false;
+    bool threw = false;
     try {
         (void)write_selected_file(
             temp_dir / "bad-rice-params.flac", fixed_samples, bad_rice_parameters);

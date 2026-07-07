@@ -418,10 +418,20 @@ Remaining Vulkan work:
   (`~0.035` seconds), and frame output/CRC (`~0.020` seconds). Chunking
   `BitWriter::write_bits()` and skipping unary zero runs dropped the
   bitstream bucket to `~0.082` seconds, selected-frame write to `~0.196`
-  seconds, and the focused Vulkan bench to `~0.711` seconds. On the NVIDIA
-  fixture path, PCIe transfer/readback is not the primary bottleneck; the
-  remaining writer time is mostly bitstream construction, validation/wasted-bit
-  checking, residual generation, and ordinary frame output/CRC.
+  seconds, and the focused Vulkan bench to `~0.711` seconds. A final bounded
+  selected-writer pass combined selected validation, wasted-bit checking, and
+  sample shifting for fixed/LPC accelerated frames while preserving exact
+  selected wasted-bit validation. The focused Vulkan stats run then measured
+  `0.660` backend seconds, `0.178` analyzer seconds, `0.193` selected-frame
+  write seconds, and `0.163` GPU seconds; selected-writer shift time is now
+  folded into validation and reports as `0.000` seconds. The matching focused
+  bench result was CPU/libFLAC `4,314,133` bytes in `0.137` seconds,
+  scalar native-fixed with `8` threads `4,290,592` bytes in `1.668` seconds,
+  OpenCL `4,298,234` bytes in `9.872` seconds, and Vulkan `4,292,100` bytes
+  in `0.709` seconds. On the NVIDIA fixture path, PCIe transfer/readback is not
+  the primary bottleneck; the remaining writer time is mostly bitstream
+  construction, validation/shift/wasted-bit checking, residual generation, and
+  ordinary frame output/CRC.
 - The latest six-fixture sweep at frame size `4608`, LPC order `12`,
   coefficient precision `12`, Rice partition order `5`, native-fixed `8`
   threads, OpenCL device `1`, and Vulkan device `1` produced aggregate sizes:
@@ -430,16 +440,12 @@ Remaining Vulkan work:
   `79,892,217` bytes in `37.469` seconds. Vulkan is `24,527` bytes larger than
   scalar native-fixed, `59,870` bytes smaller than OpenCL, and much faster than
   OpenCL on the NVIDIA validation device.
-- Continue Vulkan throughput architecture before shader-level micro-tuning:
-  next decide whether the remaining host writer work is worth another bounded
-  pass. The only obvious low-risk target is combining selected validation,
-  wasted-bit checking, and shifting for trusted accelerated frames; otherwise
-  move back to broader 1.1 hardening instead of chasing small writer buckets.
-  The readback, trusted-decision, sidecar, and bit-writer changes are also
-  useful for OpenCL: normal OpenCL compression discards full analyzed tasks too,
-  so a future OpenCL best-only analyzer path and writer handoff could skip
-  avoidable readback/recost work while keeping the current full-result APIs for
-  parity diagnostics.
+- Move back to broader 1.1 hardening instead of chasing small writer buckets.
+  The readback, trusted-decision, sidecar, bit-writer, and selected
+  validation/shift changes are also useful for OpenCL: normal OpenCL
+  compression discards full analyzed tasks too, so a future OpenCL best-only
+  analyzer path and writer handoff could skip avoidable readback/recost work
+  while keeping the current full-result APIs for parity diagnostics.
 
 Immediate engineering focus:
 
