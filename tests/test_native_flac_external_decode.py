@@ -160,21 +160,56 @@ def available_backend_device(binary, backend, requested_device):
 
     in_section = False
     current_index = None
+    current_fields = {}
+
+    def selected_current_device():
+        if current_index is None:
+            return None
+        if requested_device is not None and current_index != requested_device:
+            return None
+        if backend == "opencl":
+            usable = current_fields.get("available") == "yes"
+        else:
+            usable = current_fields.get("vulkan backend usable") == "yes"
+        if usable:
+            return current_index
+        return None
+
     for line in result.stdout.splitlines():
         if line.startswith("OpenCL support:"):
+            selected = selected_current_device()
+            if selected is not None:
+                return selected, None
             in_section = backend == "opencl"
             current_index = None
+            current_fields = {}
         elif line.startswith("Vulkan support:"):
+            selected = selected_current_device()
+            if selected is not None:
+                return selected, None
             in_section = backend == "vulkan"
             current_index = None
+            current_fields = {}
         elif in_section and line.startswith("[") and "]" in line:
+            selected = selected_current_device()
+            if selected is not None:
+                return selected, None
             current_index = line.split("]", 1)[0][1:]
-        elif in_section and current_index is not None and line.strip() == "available: yes":
-            if requested_device is None or current_index == requested_device:
-                return current_index, None
+            current_fields = {}
+        elif in_section and current_index is not None and ":" in line:
+            key, value = line.strip().split(":", 1)
+            current_fields[key] = value.strip()
+
+    selected = selected_current_device()
+    if selected is not None:
+        return selected, None
 
     if requested_device is not None:
+        if backend == "vulkan":
+            return None, f"requested {label} device {requested_device} is not backend-usable"
         return None, f"requested {label} device {requested_device} is not available"
+    if backend == "vulkan":
+        return None, f"no backend-usable {label} device"
     return None, f"no available {label} device"
 
 
@@ -239,7 +274,7 @@ def compress_native_flac_backend(
     lds_path,
     flac_path,
     threads=None,
-    opencl_device=None,
+    device=None,
 ):
     command = [
         str(binary),
@@ -249,8 +284,8 @@ def compress_native_flac_backend(
     ]
     if threads is not None:
         command.extend(["--threads", str(threads)])
-    if opencl_device is not None:
-        command.extend(["--device", str(opencl_device)])
+    if device is not None:
+        command.extend(["--device", str(device)])
     command.extend(
         [
             "--overwrite",
@@ -278,7 +313,7 @@ def compress_opencl_native(binary, lds_path, flac_path, opencl_device):
         "opencl",
         lds_path,
         flac_path,
-        opencl_device=opencl_device,
+        device=opencl_device,
     )
 
 
@@ -288,7 +323,7 @@ def compress_vulkan_native(binary, lds_path, flac_path, vulkan_device):
         "vulkan",
         lds_path,
         flac_path,
-        opencl_device=vulkan_device,
+        device=vulkan_device,
     )
 
 

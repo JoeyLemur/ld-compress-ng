@@ -10,7 +10,7 @@ The default CPU backend writes Ogg FLAC `.ldf` files with system `libFLAC` and
 files. CPU, scalar native, and OpenCL compression paths are ready for normal
 use; OpenCL just requires a build and runtime environment with a usable OpenCL
 device. The Vulkan backend is in 1.1 development; it can write compatible
-native FLAC using Vulkan exact costing for fixed/Rice and scalar-generated LPC
+native FLAC using Vulkan exact costing for fixed/Rice and GPU-generated LPC
 candidates, but it is not performance-tuned yet.
 
 `ld-compress-ng` does not depend at runtime on Qt, ffmpeg, `.NET`, Mono, FlaLDF,

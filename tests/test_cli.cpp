@@ -253,6 +253,8 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_vulkan_threads = temp_dir / "fixture.bad-vulkan-threads.flac.ldf";
     const auto bad_vulkan_opencl_device = temp_dir / "fixture.bad-vulkan-opencl-device.flac.ldf";
     const auto bad_vulkan_device = temp_dir / "fixture.bad-vulkan-device.flac.ldf";
+    const auto bad_vulkan_device_out_of_range =
+        temp_dir / "fixture.bad-vulkan-device-out-of-range.flac.ldf";
     const auto bad_vulkan_container = temp_dir / "fixture.bad-vulkan-container.ldf";
     const auto help_output = temp_dir / "help.txt";
     const auto version_output = temp_dir / "version.txt";
@@ -504,6 +506,23 @@ void test_cli(const std::filesystem::path& exe)
         command_stderr,
         "invalid device index: nope");
     require(!std::filesystem::exists(bad_vulkan_device), "invalid Vulkan device index wrote output");
+    if (ldcompress::vulkan_support_built()) {
+        const auto vulkan_devices = ldcompress::list_vulkan_devices();
+        if (!vulkan_devices.empty()) {
+            const auto out_of_range_index = vulkan_devices.size();
+            run_fails_with_stderr(
+                shell_quote(exe) + " compress --backend vulkan --vulkan-device " +
+                    std::to_string(out_of_range_index) + " " + shell_quote(lds) + " " +
+                    shell_quote(bad_vulkan_device_out_of_range),
+                command_stderr,
+                "visible devices: " + std::to_string(vulkan_devices.size()));
+            const auto stderr_text = read_file(command_stderr);
+            require(stderr_text.find("ld-compress-ng devices") != std::string::npos,
+                "out-of-range Vulkan CLI error did not point to devices command");
+            require(!std::filesystem::exists(bad_vulkan_device_out_of_range),
+                "out-of-range Vulkan device index wrote output");
+        }
+    }
     run_fails(shell_quote(exe) + " compress --backend vulkan --container ogg " + shell_quote(lds) + " " + shell_quote(bad_vulkan_container));
     require(!std::filesystem::exists(bad_vulkan_container), "Vulkan Ogg rejection wrote output");
     run_ok(shell_quote(exe) + " bench --threads 1,2 " + shell_quote(lds));

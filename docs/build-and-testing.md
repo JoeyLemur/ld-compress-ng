@@ -313,13 +313,13 @@ runs `real-fixtures` while excluding the OpenCL-labelled real-fixture test.
 check; it implies the real-fixture lane and uses the first available OpenCL
 device unless `--opencl-device INDEX` is provided. Pass
 `--include-vulkan-real-fixture` for the Vulkan-labelled compatibility test; it
-uses the first available Vulkan compute device unless `--vulkan-device INDEX`
-is provided. Run GPU lanes from a context that can see the accelerator runtime
-and devices; sandboxed executions may skip or report no available devices even
-when the system build can see them. For Vulkan performance tests on mixed-GPU
-hosts, use an explicit discrete GPU index from `ld-compress-ng devices`; the
-integrated AMD device is suitable for functional smoke testing but should not
-be used for NVIDIA performance numbers.
+uses the first backend-usable Vulkan device (`available` plus `shaderInt64`)
+unless `--vulkan-device INDEX` is provided. Run GPU lanes from a context that
+can see the accelerator runtime and devices; sandboxed executions may skip or
+report no available devices even when the system build can see them. For Vulkan
+performance tests on mixed-GPU hosts, use an explicit discrete GPU index from
+`ld-compress-ng devices`; the integrated AMD device is suitable for functional
+smoke testing but should not be used for NVIDIA performance numbers.
 For `compress`, `--device INDEX` is backend-local shorthand for
 `--opencl-device INDEX` or `--vulkan-device INDEX` after `--backend` selects
 OpenCL or Vulkan. For `bench --include-opencl --include-vulkan`, use
@@ -375,9 +375,9 @@ tests. Those compress the first fixture to native `.flac.ldf` output and verify
 the reference `ld-decode` loader can read both `.flac.ldf` and `.flac` suffixes.
 An OpenCL real-fixture loader test is added too; it skips cleanly when OpenCL
 support, a runtime device, or the reference loader dependencies are unavailable.
-Use `ctest --test-dir build-real-fixtures -L real-fixtures -LE opencl` when you
-want the scalar real-fixture suite without the OpenCL runtime check. The fixture
-tree remains ignored by Git.
+Use `ctest --test-dir build-real-fixtures -L real-fixtures -LE "opencl|vulkan"`
+when you want the scalar real-fixture suite without accelerator runtime checks.
+The fixture tree remains ignored by Git.
 
 ## Opt-In FLAC Decoder Testbench
 

@@ -190,6 +190,11 @@ void validate_vulkan_options(const VulkanCompressionOptions& options)
     }
 }
 
+bool vulkan_analysis_device_usable(const VulkanDeviceInfo& device)
+{
+    return device.available && device.shader_int64;
+}
+
 VulkanDeviceInfo select_vulkan_analysis_device(std::optional<std::size_t> requested_index)
 {
     if (requested_index.has_value()) {
@@ -206,11 +211,17 @@ VulkanDeviceInfo select_vulkan_analysis_device(std::optional<std::size_t> reques
         throw std::runtime_error("no Vulkan devices found");
     }
     for (const auto& device : devices) {
-        if (device.available && device.shader_int64) {
+        if (vulkan_analysis_device_usable(device) && device.device_type == "discrete-gpu") {
             return device;
         }
     }
-    throw std::runtime_error("no available Vulkan compute devices with shaderInt64 found");
+    for (const auto& device : devices) {
+        if (vulkan_analysis_device_usable(device) && device.device_type != "cpu") {
+            return device;
+        }
+    }
+    throw std::runtime_error(
+        "no available non-CPU Vulkan compute devices with shaderInt64 found");
 }
 
 }  // namespace
