@@ -40,7 +40,7 @@ void add_vulkan_gpu_timings(
     stats.vulkan_gpu_timed_batches += gpu_timings.batches;
     stats.vulkan_gpu_total_ns += gpu_timings.total_ns;
     stats.vulkan_gpu_upload_ns += gpu_timings.upload_ns;
-    stats.vulkan_gpu_generated_prepare_ns += gpu_timings.generated_prepare_ns;
+    stats.vulkan_gpu_prepare_ns += gpu_timings.prepare_ns;
     stats.vulkan_gpu_generated_autocorrelation_ns +=
         gpu_timings.generated_autocorrelation_ns;
     stats.vulkan_gpu_generated_lpc_ns += gpu_timings.generated_lpc_ns;

@@ -42,7 +42,7 @@ struct NativeCompressionStats {
     std::uint64_t vulkan_gpu_timed_batches = 0;
     std::uint64_t vulkan_gpu_total_ns = 0;
     std::uint64_t vulkan_gpu_upload_ns = 0;
-    std::uint64_t vulkan_gpu_generated_prepare_ns = 0;
+    std::uint64_t vulkan_gpu_prepare_ns = 0;
     std::uint64_t vulkan_gpu_generated_autocorrelation_ns = 0;
     std::uint64_t vulkan_gpu_generated_lpc_ns = 0;
     std::uint64_t vulkan_gpu_generated_quantize_ns = 0;

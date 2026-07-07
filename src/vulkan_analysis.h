@@ -14,7 +14,7 @@ struct VulkanGpuTimingStats {
     std::uint64_t batches = 0;
     std::uint64_t total_ns = 0;
     std::uint64_t upload_ns = 0;
-    std::uint64_t generated_prepare_ns = 0;
+    std::uint64_t prepare_ns = 0;
     std::uint64_t generated_autocorrelation_ns = 0;
     std::uint64_t generated_lpc_ns = 0;
     std::uint64_t generated_quantize_ns = 0;

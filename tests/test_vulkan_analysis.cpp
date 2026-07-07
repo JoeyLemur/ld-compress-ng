@@ -373,7 +373,8 @@ void test_vulkan_lpc_analysis(const Options& options)
 
     auto input_task = *expected_task;
     input_task.data.size = 16 * 512;
-    input_task.data.abits = 0;
+    input_task.data.wbits = expected_task->data.wbits == 0 ? 1 : 0;
+    input_task.data.abits = expected_task->data.abits == 1 ? 2 : 1;
     input_task.data.porder = 0;
 
     auto single_plan = make_single_lpc_task_plan(input_task);

@@ -7,7 +7,7 @@ const uint kWorkgroupSize = 64u;
 const uint kMaxLpcOrder = 32u;
 const uint kModeAnalyzeExact = 0u;
 const uint kModeChooseBest = 1u;
-const uint kModePrepareGeneratedFrames = 2u;
+const uint kModePrepareFrames = 2u;
 const uint kModeComputeAutocorrelation = 3u;
 const uint kModeComputeLpc = 4u;
 const uint kModeQuantizeLpc = 5u;
@@ -235,7 +235,7 @@ int cooperative_frame_amplitude_bits(FlacClSubframeTask task, int wasted_bits)
     return max(1, bits - wasted_bits);
 }
 
-void prepare_generated_frame(uint frame)
+void prepare_frame(uint frame)
 {
     const uint task_base = frame * pc.residual_tasks_per_frame;
     FlacClSubframeTask first_task = tasks[task_base];
@@ -715,9 +715,7 @@ void analyze_task(uint task_index)
 void cooperative_analyze_task(uint task_index)
 {
     FlacClSubframeTask task = tasks[task_index];
-    const int wasted_bits = cooperative_common_wasted_bits(task);
-    task.data.wbits = wasted_bits;
-    task.data.abits = cooperative_frame_amplitude_bits(task, wasted_bits);
+    const int wasted_bits = task.data.wbits;
     task.data.porder = 0;
 
     if (task.data.type == kSubframeConstant) {
@@ -966,10 +964,10 @@ void main()
         }
     } else if (pc.mode == kModeChooseBest && id < pc.frame_count) {
         choose_best(id);
-    } else if (pc.mode == kModePrepareGeneratedFrames) {
+    } else if (pc.mode == kModePrepareFrames) {
         const uint frame = gl_WorkGroupID.x;
         if (frame < pc.frame_count) {
-            prepare_generated_frame(frame);
+            prepare_frame(frame);
         }
     } else if (pc.mode == kModeComputeAutocorrelation) {
         const uint frame = gl_WorkGroupID.x;

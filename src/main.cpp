@@ -941,7 +941,7 @@ void print_native_stats(const ldcompress::NativeCompressionStats& stats)
                       << " total=" << seconds_from_ns(stats.vulkan_gpu_total_ns) << "s"
                       << " upload=" << seconds_from_ns(stats.vulkan_gpu_upload_ns) << "s"
                       << " prepare="
-                      << seconds_from_ns(stats.vulkan_gpu_generated_prepare_ns) << "s"
+                      << seconds_from_ns(stats.vulkan_gpu_prepare_ns) << "s"
                       << " autocor="
                       << seconds_from_ns(stats.vulkan_gpu_generated_autocorrelation_ns) << "s"
                       << " lpc=" << seconds_from_ns(stats.vulkan_gpu_generated_lpc_ns) << "s"

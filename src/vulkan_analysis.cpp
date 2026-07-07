@@ -41,7 +41,7 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr double kGeneratedTukeyTaperFraction = 0.5;
 constexpr std::uint32_t kTimestampBegin = 0;
 constexpr std::uint32_t kTimestampAfterUpload = 1;
-constexpr std::uint32_t kTimestampAfterGeneratedPrepare = 2;
+constexpr std::uint32_t kTimestampAfterPrepare = 2;
 constexpr std::uint32_t kTimestampAfterGeneratedAutocorrelation = 3;
 constexpr std::uint32_t kTimestampAfterGeneratedLpc = 4;
 constexpr std::uint32_t kTimestampAfterGeneratedQuantize = 5;
@@ -1379,11 +1379,11 @@ public:
                 nullptr);
         };
 
+        dispatch_mode(2, base_push.frame_count);
+        shader_write_to_read_barrier();
+        write_timestamp(kTimestampAfterPrepare, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+
         if (generated_lpc.has_value()) {
-            dispatch_mode(2, base_push.frame_count);
-            shader_write_to_read_barrier();
-            write_timestamp(
-                kTimestampAfterGeneratedPrepare, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
             dispatch_mode(
                 3,
                 base_push.frame_count,
@@ -1401,8 +1401,6 @@ public:
             write_timestamp(
                 kTimestampAfterGeneratedQuantize, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
         } else {
-            write_timestamp(
-                kTimestampAfterGeneratedPrepare, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
             write_timestamp(
                 kTimestampAfterGeneratedAutocorrelation,
                 VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
@@ -1500,11 +1498,10 @@ public:
             ++gpu_timings->batches;
             gpu_timings->total_ns += delta_ns(kTimestampBegin, kTimestampAfterReadback);
             gpu_timings->upload_ns += delta_ns(kTimestampBegin, kTimestampAfterUpload);
+            gpu_timings->prepare_ns += delta_ns(kTimestampAfterUpload, kTimestampAfterPrepare);
             if (generated_lpc.has_value()) {
-                gpu_timings->generated_prepare_ns +=
-                    delta_ns(kTimestampAfterUpload, kTimestampAfterGeneratedPrepare);
                 gpu_timings->generated_autocorrelation_ns += delta_ns(
-                    kTimestampAfterGeneratedPrepare,
+                    kTimestampAfterPrepare,
                     kTimestampAfterGeneratedAutocorrelation);
                 gpu_timings->generated_lpc_ns += delta_ns(
                     kTimestampAfterGeneratedAutocorrelation,
