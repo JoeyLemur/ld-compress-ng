@@ -16,7 +16,7 @@ tools when they are available and skip cleanly when they are not.
 | `libFLAC` development files | Yes | CPU FLAC encode/decode | Requires pkg-config module `flac`. |
 | `libogg` development files | Yes | Ogg FLAC container support | Requires pkg-config module `ogg`. |
 | OpenCL headers + loader/framework | Optional | `devices` enumeration and OpenCL compression backend | Disable with `-DLDCOMPRESS_ENABLE_OPENCL=OFF`. |
-| Vulkan headers + loader + `glslangValidator` | Optional | Vulkan `devices` enumeration and Linux-first Vulkan backend | Disable with `-DLDCOMPRESS_ENABLE_VULKAN=OFF`; Vulkan compression currently requires `--threads 1`. |
+| Vulkan headers + loader + `glslangValidator` | Optional | Vulkan `devices` enumeration and Linux-first Vulkan backend | Disable with `-DLDCOMPRESS_ENABLE_VULKAN=OFF`; Vulkan compression requires `--threads 1`. |
 | Python 3 interpreter | Optional | Skip-safe external decode compatibility CTests and helper scripts | CMake adds Python-based tests only when an interpreter is found. |
 | `ffmpeg`/`ffprobe` | Optional | External native-FLAC decode compatibility CTest and legacy fixture regeneration | The compatibility test skips if `ffmpeg` is unavailable. |
 | PyAV and reference `ld-decode` dependencies | Optional | External `ld-decode` loader compatibility CTests | Tests skip if the local reference tree or imports are unavailable. |
@@ -105,8 +105,8 @@ Common optional package names:
 | Fedora/RHEL-family | `ocl-icd-devel`, `opencl-headers`, optional `clinfo` |
 | Arch Linux | `ocl-icd`, `opencl-headers`, optional `clinfo` |
 
-For Vulkan 1.1 development, install Vulkan headers, the loader development
-package, `glslangValidator`, and a vendor runtime. Common package names:
+For Vulkan acceleration, install Vulkan headers, the loader development package,
+`glslangValidator`, and a vendor runtime. Common package names:
 
 | Distribution | Vulkan development packages |
 | --- | --- |
@@ -224,9 +224,8 @@ OpenCL indexes are used by `compress --backend opencl --device INDEX` or
 `--opencl-device INDEX`, plus platform-local `platform/device` coordinates. The
 OpenCL compression backend writes native FLAC and requires an available OpenCL
 device at runtime. Vulkan indexes are backend-local and used by
-`compress --backend vulkan --device INDEX`; the current Vulkan compression path
-is a 1.1 development path that requires `--threads 1` and a compute-capable
-device with `shaderInt64`.
+`compress --backend vulkan --device INDEX`; Vulkan compression requires
+`--threads 1` and a compute-capable device with `shaderInt64`.
 
 ## Install Layout
 
@@ -235,7 +234,9 @@ The CMake install target installs:
 - `ld-compress-ng` under `${CMAKE_INSTALL_BINDIR}`.
 - `README.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, and `CHANGELOG.md` under
   `${CMAKE_INSTALL_DOCDIR}`.
-- Markdown files from `docs/` under `${CMAKE_INSTALL_DOCDIR}/docs`.
+- Release-facing Markdown files from `docs/` under
+  `${CMAKE_INSTALL_DOCDIR}/docs`. Maintainer-only notes such as
+  `docs/remote-sync.md` stay source-tree-only and are not installed.
 
 Use a temporary prefix for local install validation:
 
@@ -378,8 +379,9 @@ When Python and the local `reference/ld-decode/` loader dependencies are
 available, the same CMake option also adds skip-safe external compatibility
 tests. Those compress the first fixture to native `.flac.ldf` output and verify
 the reference `ld-decode` loader can read both `.flac.ldf` and `.flac` suffixes.
-An OpenCL real-fixture loader test is added too; it skips cleanly when OpenCL
-support, a runtime device, or the reference loader dependencies are unavailable.
+OpenCL and Vulkan real-fixture loader tests are added too; they skip cleanly
+when backend support, a runtime device, or the reference loader dependencies
+are unavailable.
 Use `ctest --test-dir build-real-fixtures -L real-fixtures -LE "opencl|vulkan"`
 when you want the scalar real-fixture suite without accelerator runtime checks.
 The fixture tree remains ignored by Git.

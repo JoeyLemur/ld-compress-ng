@@ -50,6 +50,7 @@ Confirm the installed files include:
 - `share/doc/ld-compress-ng/LICENSE`
 - `share/doc/ld-compress-ng/THIRD_PARTY_NOTICES.md`
 - `share/doc/ld-compress-ng/CHANGELOG.md`
+- `share/doc/ld-compress-ng/docs/PROJECT_PLAN.md`
 - `share/doc/ld-compress-ng/docs/build-and-testing.md`
 - `share/doc/ld-compress-ng/docs/release-checklist.md`
 
@@ -67,10 +68,13 @@ python3 tools/check_local_matrix.py \
     --opencl-device 1 \
     --include-vulkan-real-fixture \
     --vulkan-device 1 \
-    --python-executable /home/epowell/.pyenv/versions/3.13.13/envs/ld/bin/python \
+    --python-executable /path/to/ld-decode-env/bin/python \
     --jobs 2 \
     --strict-optional
 ```
+
+Adjust the device indexes and PyAV-capable Python interpreter path for the
+local validation host.
 
 Then run the full accelerator round-trip check across every local real fixture.
 This compresses, verifies against the source `.lds`, decompresses, and compares

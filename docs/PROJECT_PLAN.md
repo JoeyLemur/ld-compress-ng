@@ -542,12 +542,12 @@ Remaining Vulkan work:
   `1`.
 - Full accelerator real-fixture roundtrip coverage is now repeatable through
   `tools/roundtrip_real_fixtures.py`. The latest GPU-visible run wrote
-  `build/real-fixture-roundtrips/real-fixture-roundtrip-20260707-001349/`
+  `build/real-fixture-roundtrips/real-fixture-roundtrip-20260707-003152/`
   and passed all six local fixtures on OpenCL device `1` and Vulkan device `1`.
   Each row compressed, verified with `verify --source`, decompressed, and
   compared decoded size plus MD5 against the source `.lds`. Aggregate input was
-  `149,954,560` bytes; OpenCL output was `79,892,119` bytes with `9.067`
-  compress seconds, and Vulkan output was `79,892,217` bytes with `9.155`
+  `149,954,560` bytes; OpenCL output was `79,892,119` bytes with `9.078`
+  compress seconds, and Vulkan output was `79,892,217` bytes with `9.134`
   compress seconds.
 
 Immediate engineering focus:
@@ -562,8 +562,8 @@ Immediate engineering focus:
   RF input (`.ldf`, `.raw.oga`, and FlaLDF `.flac.ldf`). Keep
   `reference/decode-orc/` for later decoded TBC/CVBS pipeline compatibility.
 - The current Linux host has `ffmpeg`/`ffprobe`, plus PyAV and the full
-  reference `ld-decode` loader dependency set available through
-  `/home/epowell/.pyenv/versions/3.13.13/envs/ld/bin/python`. With CMake
+  reference `ld-decode` loader dependency set available through a
+  PyAV-capable Python environment. With CMake
   configured using that `Python3_EXECUTABLE`, `ffmpeg_native_flac_compat`,
   `ld_decode_pyav_compat`, and `ld_decode_loader_compat` pass against
   generated compatibility fixtures. The opt-in
@@ -803,8 +803,8 @@ provided.
 
 ## Constraints
 
-- Stay inside `/Users/epowell/Development/laserdisc/compress` unless explicit
-  permission is granted first.
+- Stay inside the active project checkout unless explicit permission is granted
+  first.
 - Do not edit vendored or cloned source trees (`FlaLDF/`, `ld-decode-tools/`)
   or ignored reference trees under `reference/` unless the change is intentional
   and documented.

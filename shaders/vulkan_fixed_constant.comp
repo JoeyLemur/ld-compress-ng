@@ -1,3 +1,18 @@
+/*
+ * Portions adapted from CUETools.FLACCL-compatible mono analysis kernels.
+ * Copyright (c) 2010-2022 Gregory S. Chudov
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * Local modifications for ld-compress-ng, 2026-07-07:
+ * - Ported the mono task ABI and analysis flow to Vulkan GLSL compute.
+ * - Uses workgroup reductions for generated LPC and exact Rice analysis.
+ * - Writes selected task and Rice-parameter sidecar data for the native writer.
+ */
+
 #version 450
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 

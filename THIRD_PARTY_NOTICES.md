@@ -9,14 +9,17 @@ CPU/Ogg FLAC path. The native FLAC encoder is project code, but its FLAC
 analysis work is checked against the Xiph.org FLAC reference implementation
 under `reference/flac/`.
 
-The OpenCL analysis path includes a reduced, locally modified kernel slice
-derived from CUETools.FLACCL. Preserve the LGPL notice in the kernel source and
+The OpenCL and Vulkan analysis paths include reduced, locally modified
+kernel/shader code and ABI-compatible analysis structures adapted from
+CUETools.FLACCL. Preserve the LGPL notice in the kernel or shader source and
 keep local modification notes when changing that code.
 
-## CUETools.FLACCL OpenCL Kernels
+## CUETools.FLACCL Analysis Kernels
 
-Portions of `src/opencl_analysis.cpp` are derived from the CUETools.FLACCL
-OpenCL encoder kernels for mono wasted-bits and residual-size analysis.
+Portions of `src/opencl_analysis.cpp`, `shaders/vulkan_fixed_constant.comp`,
+and the related Vulkan analysis glue are derived from or adapted from the
+CUETools.FLACCL OpenCL encoder kernels for mono wasted-bits, LPC, residual, and
+Rice-cost analysis.
 
 ```text
 CUETools.FLACCL: FLAC audio encoder using OpenCL

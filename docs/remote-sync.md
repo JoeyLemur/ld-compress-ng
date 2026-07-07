@@ -1,7 +1,8 @@
-# Remote Sync Notes
+# Maintainer Remote Sync Notes
 
-Use this when moving the macOS working repo to the Linux OpenCL validation host
-(`smaug`) for Codex CLI work.
+Use this maintainer-only note when moving the macOS working repo to the Linux
+accelerator validation host (`smaug`) for Codex CLI work. These commands are
+not required for normal source builds or releases.
 
 ## One-Shot Bundle Sync
 
@@ -67,19 +68,24 @@ git fetch smaug-local
 git merge --ff-only smaug-local/main
 ```
 
-For a single handoff, the bundle workflow is simpler. For ongoing OpenCL work,
-the bare repo workflow avoids repeated bundle files.
+For a single handoff, the bundle workflow is simpler. For ongoing accelerator
+work, the bare repo workflow avoids repeated bundle files.
 
-## Linux OpenCL Validation Commands
+## Linux Accelerator Validation Commands
 
 ```sh
 cd ~/Development/compress
-cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLDCOMPRESS_ENABLE_OPENCL=ON
+cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DLDCOMPRESS_ENABLE_OPENCL=ON \
+    -DLDCOMPRESS_ENABLE_VULKAN=ON
 cmake --build build --parallel
 build/ld-compress-ng devices
 build/test_opencl_analysis
+ctest --test-dir build -L vulkan --output-on-failure
 ctest --test-dir build --output-on-failure
 ```
 
 If `build/test_opencl_analysis` prints no skip messages and exits `0`, the
-OpenCL analysis kernels compiled and ran on an available device.
+OpenCL analysis kernels compiled and ran on an available device. The Vulkan
+labelled tests cover device enumeration, smoke compute, and analysis parity when
+Vulkan support and suitable devices are visible.

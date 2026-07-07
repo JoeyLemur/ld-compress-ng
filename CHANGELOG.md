@@ -1,18 +1,21 @@
 # Changelog
 
-## 1.1.0 - Unreleased
+## 1.1.0 - 2026-07-07
 
 - Added the Linux-first Vulkan native FLAC acceleration backend, using Vulkan
   compute for fixed/Rice and GPU-generated LPC candidate analysis while keeping
   the CPU native FLAC writer as the compatibility authority.
 - Validated Vulkan native FLAC output against the reference `ld-decode` loader
-  on the local Linux/NVIDIA fixture lane; AMD remains intended-supported through
-  standard Vulkan compute but not yet hardware-validated.
+  on the local Linux/NVIDIA fixture lane; AMD remains intended to be supported
+  through standard Vulkan compute but is not yet hardware-validated.
 - Improved OpenCL throughput with larger batches, persistent analysis state,
   best-task readback, parallel exact/Rice costing, and cooperative generated
   autocorrelation.
 - Added mixed OpenCL/Vulkan device-selection hardening, accelerator real-fixture
   matrix coverage, and parser tests for mixed-GPU device output.
+- Added exhaustive OpenCL/Vulkan real-fixture roundtrip validation tooling that
+  compresses, verifies against source LDS, decompresses, and byte-compares every
+  local fixture/backend pair.
 - Refreshed build, testing, and release documentation for source releases with
   optional OpenCL and Vulkan accelerator lanes.
 

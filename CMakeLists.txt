@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ld-compress-ng
-    VERSION 1.0.0
+    VERSION 1.1.0
     LANGUAGES CXX
 )
 
@@ -201,9 +201,11 @@ install(FILES
     DESTINATION ${CMAKE_INSTALL_DOCDIR}
 )
 
-install(DIRECTORY docs/
+install(FILES
+    docs/PROJECT_PLAN.md
+    docs/build-and-testing.md
+    docs/release-checklist.md
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/docs
-    FILES_MATCHING PATTERN "*.md"
 )
 
 if(BUILD_TESTING)
