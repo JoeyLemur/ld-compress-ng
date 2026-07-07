@@ -329,6 +329,25 @@ void require_rice_parameters_valid(
     }
 }
 
+void require_selected_rice_parameters_match(
+    const std::vector<ldcompress::opencl_detail::FlacClSubframeTask>& actual_tasks,
+    const std::vector<ldcompress::opencl_detail::FlacClRiceParameterSet>& actual_parameters,
+    const std::vector<ldcompress::opencl_detail::FlacClSubframeTask>& expected_tasks,
+    const std::vector<ldcompress::opencl_detail::FlacClRiceParameterSet>& expected_parameters,
+    const char* label)
+{
+    require(actual_tasks.size() == expected_tasks.size(), label);
+    require(actual_parameters.size() == actual_tasks.size(), label);
+    require(expected_parameters.size() == expected_tasks.size(), label);
+    for (std::size_t i = 0; i < actual_tasks.size(); ++i) {
+        const auto actual = flaccl_task_to_selected_rice_parameters(
+            actual_tasks[i], actual_parameters[i]);
+        const auto expected = flaccl_task_to_selected_rice_parameters(
+            expected_tasks[i], expected_parameters[i]);
+        require(actual == expected, label);
+    }
+}
+
 void require_lpc_task_matches(
     const ldcompress::opencl_detail::FlacClSubframeTask& actual,
     const ldcompress::opencl_detail::FlacClSubframeTask& expected,
@@ -1850,6 +1869,12 @@ void test_opencl_fixed_constant_analysis_smoke()
     require_analysis_matches(result, expected, "OpenCL exact fixed/constant analysis diverged from scalar oracle");
     require_rice_parameters_valid(result.best_tasks, result.best_rice_parameters,
         "OpenCL fixed/constant Rice sidecar was invalid");
+    require_selected_rice_parameters_match(
+        result.best_tasks,
+        result.best_rice_parameters,
+        expected.best_tasks,
+        expected.best_rice_parameters,
+        "OpenCL fixed/constant Rice sidecar diverged from scalar oracle");
 
     for (std::size_t i = 0; i < tasks_per_frame; ++i) {
         require(result.analyzed_tasks[i].data.wbits == 10,
@@ -1887,6 +1912,12 @@ void test_opencl_fixed_constant_analysis_smoke()
     require_rice_parameters_valid(result_unpartitioned.best_tasks,
         result_unpartitioned.best_rice_parameters,
         "OpenCL fixed/constant unpartitioned Rice sidecar was invalid");
+    require_selected_rice_parameters_match(
+        result_unpartitioned.best_tasks,
+        result_unpartitioned.best_rice_parameters,
+        expected_unpartitioned.best_tasks,
+        expected_unpartitioned.best_rice_parameters,
+        "OpenCL fixed/constant unpartitioned Rice sidecar diverged from scalar oracle");
     require(result_unpartitioned.best_tasks[2].data.porder == 0,
         "partitioned frame did not honor max partition order 0");
     require(result_unpartitioned.best_tasks[2].data.size > result.best_tasks[2].data.size,

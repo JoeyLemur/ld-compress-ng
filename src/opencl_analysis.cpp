@@ -2198,10 +2198,14 @@ void ldcompressAnalyzeSubframeExact(
     __global const int* selectedTasks,
     __global FLACCLSubframeTask* tasks,
     int maxRicePartitionOrder,
-    int analysisProfile)
+    int analysisProfile,
+    __global uint* taskRiceParameters)
 {
     __local ulong reduceScratchUlong[EXACT_WORKGROUP_SIZE];
     __local uint reduceScratchUint[EXACT_WORKGROUP_SIZE];
+    __local uint candidateRiceParameters[MAX_RICE_PARTITION_COUNT];
+    __local uint bestRiceParameters[MAX_RICE_PARTITION_COUNT];
+    const int lane = (int)get_local_id(0);
     const int selectedTask = selectedTasks[get_group_id(0)];
     FLACCLSubframeTask task = tasks[selectedTask];
     const int ro = task.data.residualOrder;
@@ -2209,10 +2213,14 @@ void ldcompressAnalyzeSubframeExact(
     const int wbits = task.data.wbits;
     const int obits = task.data.obits - wbits;
     __global const int* data = &samples[task.data.samplesOffs];
+    const int riceOutputBase = selectedTask * MAX_RICE_PARTITION_COUNT;
+
+    for (int i = lane; i < MAX_RICE_PARTITION_COUNT; i += EXACT_WORKGROUP_SIZE)
+        taskRiceParameters[riceOutputBase + i] = 0U;
 
     if (task.data.size == 0x7fffffff)
     {
-        if (get_local_id(0) == 0)
+        if (lane == 0)
             tasks[selectedTask] = task;
         return;
     }
@@ -2228,7 +2236,7 @@ void ldcompressAnalyzeSubframeExact(
             task.data.size = 0x7fffffff;
         else
             task.data.size = 8 + obits + (wbits == 0 ? 0 : wbits);
-        if (get_local_id(0) == 0)
+        if (lane == 0)
             tasks[selectedTask] = task;
         return;
     }
@@ -2241,7 +2249,7 @@ void ldcompressAnalyzeSubframeExact(
                                       task.data.cbits <= 0 || task.data.cbits > 15)))
     {
         task.data.size = 0x7fffffff;
-        if (get_local_id(0) == 0)
+        if (lane == 0)
             tasks[selectedTask] = task;
         return;
     }
@@ -2255,7 +2263,7 @@ void ldcompressAnalyzeSubframeExact(
         if (!coefficientsValid)
         {
             task.data.size = 0x7fffffff;
-            if (get_local_id(0) == 0)
+            if (lane == 0)
                 tasks[selectedTask] = task;
             return;
         }
@@ -2304,14 +2312,19 @@ void ldcompressAnalyzeSubframeExact(
                 const MeanRiceChoice choice = ldcompressCooperativeMeanRiceForPartition(
                     data, partitionStart, residualCount, task, reduceScratchUlong, 0);
                 estimatedBits += choice.estimatedBits;
+                if (lane == 0)
+                    candidateRiceParameters[partition] = choice.parameter;
             }
             else
             {
-                bits += 4UL;
-                bits += ldcompressCooperativeBestRiceBitsForPartition(
+                const RiceChoice choice = ldcompressCooperativeBestRiceForPartition(
                     data, partitionStart, residualCount, task, reduceScratchUlong);
+                bits += 4UL + choice.bits;
+                if (lane == 0)
+                    candidateRiceParameters[partition] = choice.parameter;
             }
         }
+        barrier(CLK_LOCAL_MEM_FENCE);
 
         if ((useMeanRice && estimatedBits < bestEstimatedBits) ||
             (!useMeanRice && bits < bestBits))
@@ -2319,6 +2332,8 @@ void ldcompressAnalyzeSubframeExact(
             bestEstimatedBits = estimatedBits;
             bestBits = bits;
             bestPartitionOrder = partitionOrder;
+            for (int partition = lane; partition < partitionCount; partition += EXACT_WORKGROUP_SIZE)
+                bestRiceParameters[partition] = candidateRiceParameters[partition];
         }
     }
 
@@ -2341,9 +2356,13 @@ void ldcompressAnalyzeSubframeExact(
         }
     }
 
+    const int bestPartitionCount = 1 << bestPartitionOrder;
+    for (int partition = lane; partition < bestPartitionCount; partition += EXACT_WORKGROUP_SIZE)
+        taskRiceParameters[riceOutputBase + partition] = bestRiceParameters[partition];
+
     task.data.porder = bestPartitionOrder;
     task.data.size = bestBits > 0x7fffffffUL ? 0x7fffffff : (int)bestBits;
-    if (get_local_id(0) == 0)
+    if (lane == 0)
         tasks[selectedTask] = task;
 }
 
@@ -2373,62 +2392,33 @@ __kernel void ldcompressChooseBestMethod(
 
 __kernel __attribute__((reqd_work_group_size(EXACT_WORKGROUP_SIZE, 1, 1)))
 void ldcompressWriteBestRiceParameters(
-    __global const int* samples,
-    __global const FLACCLSubframeTask* bestTasks,
+    __global const FLACCLSubframeTask* tasks,
+    __global const int* selectedTasks,
+    __global const uint* taskRiceParameters,
     __global uint* bestRiceParameters,
-    int analysisProfile)
+    int taskCount)
 {
-    __local ulong reduceScratchUlong[EXACT_WORKGROUP_SIZE];
     const int lane = (int)get_local_id(0);
     const int frame = (int)get_group_id(0);
     const int outputBase = frame * MAX_RICE_PARTITION_COUNT;
+    const int selectedBase = frame * taskCount;
+    int bestTask = selectedTasks[selectedBase];
+    int bestSize = tasks[bestTask].data.size;
 
+    for (int i = 1; i < taskCount; i++)
+    {
+        const int task = selectedTasks[selectedBase + i];
+        const int size = tasks[task].data.size;
+        if (size < bestSize)
+        {
+            bestTask = task;
+            bestSize = size;
+        }
+    }
+
+    const int inputBase = bestTask * MAX_RICE_PARTITION_COUNT;
     for (int i = lane; i < MAX_RICE_PARTITION_COUNT; i += EXACT_WORKGROUP_SIZE)
-        bestRiceParameters[outputBase + i] = 0U;
-    barrier(CLK_GLOBAL_MEM_FENCE);
-
-    FLACCLSubframeTask task = bestTasks[frame];
-    const int ro = task.data.residualOrder;
-    const int bs = task.data.blocksize;
-    const int partitionOrder = task.data.porder;
-    if ((task.data.type != Fixed && task.data.type != LPC) ||
-        partitionOrder < 0 ||
-        partitionOrder > 8 ||
-        ro < 0 ||
-        ro >= bs ||
-        !ldcompressValidPartitionOrder(bs, ro, partitionOrder))
-    {
-        return;
-    }
-
-    __global const int* data = &samples[task.data.samplesOffs];
-    const int partitionCount = 1 << partitionOrder;
-    const int partitionSamples = bs >> partitionOrder;
-    const int useMeanRice = ldcompressProfileUsesMeanRice(analysisProfile);
-    for (int partition = 0; partition < partitionCount; partition++)
-    {
-        const int residualCount = partition == 0
-            ? partitionSamples - ro
-            : partitionSamples;
-        const int partitionStart = partition == 0
-            ? ro
-            : partition * partitionSamples;
-        uint parameter = 0U;
-        if (useMeanRice)
-        {
-            const MeanRiceChoice choice = ldcompressCooperativeMeanRiceForPartition(
-                data, partitionStart, residualCount, task, reduceScratchUlong, 0);
-            parameter = choice.parameter;
-        }
-        else
-        {
-            const RiceChoice choice = ldcompressCooperativeBestRiceForPartition(
-                data, partitionStart, residualCount, task, reduceScratchUlong);
-            parameter = choice.parameter;
-        }
-        if (lane == 0)
-            bestRiceParameters[outputBase + partition] = parameter;
-    }
+        bestRiceParameters[outputBase + i] = taskRiceParameters[inputBase + i];
 }
 )CLC";
 }
@@ -2680,6 +2670,7 @@ struct OpenClGeneratedAnalysisRuntime {
     ClMem autocor_buffer;
     ClMem lpc_buffer;
     ClMem best_buffer;
+    ClMem task_rice_parameters_buffer;
     ClMem best_rice_parameters_buffer;
     std::vector<float> cached_window;
     std::size_t samples_buffer_bytes = 0;
@@ -2689,6 +2680,7 @@ struct OpenClGeneratedAnalysisRuntime {
     std::size_t autocor_buffer_bytes = 0;
     std::size_t lpc_buffer_bytes = 0;
     std::size_t best_buffer_bytes = 0;
+    std::size_t task_rice_parameters_buffer_bytes = 0;
     std::size_t best_rice_parameters_buffer_bytes = 0;
     std::size_t cached_window_blocksize = 0;
     std::size_t cached_window_count = 0;
@@ -2814,26 +2806,29 @@ void write_opencl_buffer(
 void enqueue_opencl_best_rice_parameters(
     const ClCommandQueue& queue,
     const ClKernel& kernel,
-    const ClMem& samples_buffer,
-    const ClMem& best_buffer,
+    const ClMem& tasks_buffer,
+    const ClMem& selected_buffer,
+    const ClMem& task_rice_parameters_buffer,
     const ClMem& best_rice_parameters_buffer,
     std::size_t frame_count,
-    NativeAnalysisProfile analysis_profile)
+    std::size_t tasks_per_frame)
 {
-    cl_mem samples_mem = samples_buffer.get();
-    cl_mem best_mem = best_buffer.get();
+    cl_mem tasks_mem = tasks_buffer.get();
+    cl_mem selected_mem = selected_buffer.get();
+    cl_mem task_rice_mem = task_rice_parameters_buffer.get();
     cl_mem best_rice_mem = best_rice_parameters_buffer.get();
-    const auto analysis_profile_arg = opencl_analysis_profile_arg(analysis_profile);
+    const auto task_count = static_cast<std::int32_t>(tasks_per_frame);
 
-    require_cl(clSetKernelArg(kernel.get(), 0, sizeof(samples_mem), &samples_mem),
-        "clSetKernelArg(rice.samples)");
-    require_cl(clSetKernelArg(kernel.get(), 1, sizeof(best_mem), &best_mem),
-        "clSetKernelArg(rice.bestTasks)");
-    require_cl(clSetKernelArg(kernel.get(), 2, sizeof(best_rice_mem), &best_rice_mem),
+    require_cl(clSetKernelArg(kernel.get(), 0, sizeof(tasks_mem), &tasks_mem),
+        "clSetKernelArg(rice.tasks)");
+    require_cl(clSetKernelArg(kernel.get(), 1, sizeof(selected_mem), &selected_mem),
+        "clSetKernelArg(rice.selectedTasks)");
+    require_cl(clSetKernelArg(kernel.get(), 2, sizeof(task_rice_mem), &task_rice_mem),
+        "clSetKernelArg(rice.taskRiceParameters)");
+    require_cl(clSetKernelArg(kernel.get(), 3, sizeof(best_rice_mem), &best_rice_mem),
         "clSetKernelArg(rice.bestRiceParameters)");
-    require_cl(clSetKernelArg(kernel.get(), 3, sizeof(analysis_profile_arg),
-                   &analysis_profile_arg),
-        "clSetKernelArg(rice.analysisProfile)");
+    require_cl(clSetKernelArg(kernel.get(), 4, sizeof(task_count), &task_count),
+        "clSetKernelArg(rice.taskCount)");
 
     const std::size_t local_work_size = kOpenClExactWorkgroupSize;
     const std::size_t global_work_size = frame_count * local_work_size;
@@ -3463,12 +3458,20 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
     std::vector<FlacClSubframeTask> analyzed_tasks(plan.residual_tasks.size());
     std::vector<FlacClSubframeTask> best_tasks(frame_count);
     std::vector<FlacClRiceParameterSet> best_rice_parameters(frame_count);
+    const auto task_rice_parameters_bytes =
+        plan.residual_tasks.size() * sizeof(FlacClRiceParameterSet);
     ClMem best_buffer(clCreateBuffer(context.get(),
         CL_MEM_WRITE_ONLY,
         best_tasks.size() * sizeof(FlacClSubframeTask),
         nullptr,
         &status));
     require_cl(status, "clCreateBuffer(tasks_out)");
+    ClMem task_rice_parameters_buffer(clCreateBuffer(context.get(),
+        CL_MEM_READ_WRITE,
+        task_rice_parameters_bytes,
+        nullptr,
+        &status));
+    require_cl(status, "clCreateBuffer(taskRiceParameters)");
     ClMem best_rice_parameters_buffer(clCreateBuffer(context.get(),
         CL_MEM_WRITE_ONLY,
         best_rice_parameters.size() * sizeof(FlacClRiceParameterSet),
@@ -3480,6 +3483,7 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
     cl_mem samples_mem = samples_buffer.get();
     cl_mem selected_mem = selected_buffer.get();
     cl_mem best_mem = best_buffer.get();
+    cl_mem task_rice_mem = task_rice_parameters_buffer.get();
     const auto task_count = static_cast<std::int32_t>(plan.estimate_tasks_per_frame);
 
     require_cl(clSetKernelArg(wasted_kernel.get(), 0, sizeof(tasks_mem), &tasks_mem),
@@ -3511,6 +3515,8 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
     require_cl(clSetKernelArg(exact_kernel.get(), 4, sizeof(exact_analysis_profile_arg),
                    &exact_analysis_profile_arg),
         "clSetKernelArg(exact.analysisProfile)");
+    require_cl(clSetKernelArg(exact_kernel.get(), 5, sizeof(task_rice_mem), &task_rice_mem),
+        "clSetKernelArg(exact.taskRiceParameters)");
 
     const std::size_t exact_local_work_size = kOpenClExactWorkgroupSize;
     const std::size_t estimate_global_work_size =
@@ -3535,11 +3541,12 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
     enqueue_opencl_best_rice_parameters(
         queue,
         rice_kernel,
-        samples_buffer,
-        best_buffer,
+        tasks_buffer,
+        selected_buffer,
+        task_rice_parameters_buffer,
         best_rice_parameters_buffer,
         frame_count,
-        NativeAnalysisProfile::Exact);
+        plan.estimate_tasks_per_frame);
 
     require_cl(clEnqueueReadBuffer(queue.get(), tasks_buffer.get(), CL_TRUE, 0,
                    analyzed_tasks.size() * sizeof(FlacClSubframeTask), analyzed_tasks.data(),
@@ -3638,12 +3645,20 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_analysis(
     std::vector<FlacClSubframeTask> analyzed_tasks(plan.residual_tasks.size());
     std::vector<FlacClSubframeTask> best_tasks(frame_count);
     std::vector<FlacClRiceParameterSet> best_rice_parameters(frame_count);
+    const auto task_rice_parameters_bytes =
+        plan.residual_tasks.size() * sizeof(FlacClRiceParameterSet);
     ClMem best_buffer(clCreateBuffer(context.get(),
         CL_MEM_WRITE_ONLY,
         best_tasks.size() * sizeof(FlacClSubframeTask),
         nullptr,
         &status));
     require_cl(status, "clCreateBuffer(tasks_out)");
+    ClMem task_rice_parameters_buffer(clCreateBuffer(context.get(),
+        CL_MEM_READ_WRITE,
+        task_rice_parameters_bytes,
+        nullptr,
+        &status));
+    require_cl(status, "clCreateBuffer(taskRiceParameters)");
     ClMem best_rice_parameters_buffer(clCreateBuffer(context.get(),
         CL_MEM_WRITE_ONLY,
         best_rice_parameters.size() * sizeof(FlacClRiceParameterSet),
@@ -3655,6 +3670,7 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_analysis(
     cl_mem samples_mem = samples_buffer.get();
     cl_mem selected_mem = selected_buffer.get();
     cl_mem best_mem = best_buffer.get();
+    cl_mem task_rice_mem = task_rice_parameters_buffer.get();
     const auto task_count = static_cast<std::int32_t>(plan.estimate_tasks_per_frame);
 
     require_cl(clSetKernelArg(wasted_kernel.get(), 0, sizeof(tasks_mem), &tasks_mem),
@@ -3686,6 +3702,8 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_analysis(
     require_cl(clSetKernelArg(exact_kernel.get(), 4, sizeof(exact_analysis_profile_arg),
                    &exact_analysis_profile_arg),
         "clSetKernelArg(exact.analysisProfile)");
+    require_cl(clSetKernelArg(exact_kernel.get(), 5, sizeof(task_rice_mem), &task_rice_mem),
+        "clSetKernelArg(exact.taskRiceParameters)");
 
     const std::size_t exact_local_work_size = kOpenClExactWorkgroupSize;
     const std::size_t estimate_global_work_size =
@@ -3710,11 +3728,12 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_analysis(
     enqueue_opencl_best_rice_parameters(
         queue,
         rice_kernel,
-        samples_buffer,
-        best_buffer,
+        tasks_buffer,
+        selected_buffer,
+        task_rice_parameters_buffer,
         best_rice_parameters_buffer,
         frame_count,
-        NativeAnalysisProfile::Exact);
+        plan.estimate_tasks_per_frame);
 
     require_cl(clEnqueueReadBuffer(queue.get(), tasks_buffer.get(), CL_TRUE, 0,
                    analyzed_tasks.size() * sizeof(FlacClSubframeTask), analyzed_tasks.data(),
@@ -3848,6 +3867,11 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
     const auto best_bytes = best_tasks.size() * sizeof(FlacClSubframeTask);
     ensure_opencl_buffer(runtime.context, runtime.best_buffer,
         runtime.best_buffer_bytes, CL_MEM_WRITE_ONLY, best_bytes, "tasks_out");
+    const auto task_rice_parameters_bytes =
+        plan.residual_tasks.size() * sizeof(FlacClRiceParameterSet);
+    ensure_opencl_buffer(runtime.context, runtime.task_rice_parameters_buffer,
+        runtime.task_rice_parameters_buffer_bytes, CL_MEM_READ_WRITE,
+        task_rice_parameters_bytes, "taskRiceParameters");
     std::vector<FlacClRiceParameterSet> best_rice_parameters(frame_count);
     const auto best_rice_parameters_bytes =
         best_rice_parameters.size() * sizeof(FlacClRiceParameterSet);
@@ -3862,6 +3886,7 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
     cl_mem autocor_mem = runtime.autocor_buffer.get();
     cl_mem lpc_mem = runtime.lpc_buffer.get();
     cl_mem best_mem = runtime.best_buffer.get();
+    cl_mem task_rice_mem = runtime.task_rice_parameters_buffer.get();
     const auto residual_tasks_per_frame =
         static_cast<std::int32_t>(plan.residual_tasks_per_frame);
     const auto estimate_tasks_per_frame =
@@ -4028,6 +4053,9 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
     require_cl(clSetKernelArg(runtime.exact_kernel.get(), 4, sizeof(analysis_profile_arg),
                    &analysis_profile_arg),
         "clSetKernelArg(exact.analysisProfile)");
+    require_cl(clSetKernelArg(runtime.exact_kernel.get(), 5, sizeof(task_rice_mem),
+                   &task_rice_mem),
+        "clSetKernelArg(exact.taskRiceParameters)");
 
     const std::size_t exact_local_work_size = kOpenClExactWorkgroupSize;
     const std::size_t estimate_global_work_size =
@@ -4064,11 +4092,12 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
     enqueue_opencl_best_rice_parameters(
         runtime.queue,
         runtime.rice_kernel,
-        runtime.samples_buffer,
-        runtime.best_buffer,
+        runtime.tasks_buffer,
+        runtime.selected_buffer,
+        runtime.task_rice_parameters_buffer,
         runtime.best_rice_parameters_buffer,
         frame_count,
-        plan.analysis_profile);
+        plan.estimate_tasks_per_frame);
     finish_timed(
         &OpenClGeneratedAnalysisTimings::choose_best_ns,
         rice_started,
