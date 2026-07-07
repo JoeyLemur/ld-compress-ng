@@ -532,6 +532,14 @@ Remaining Vulkan work:
   backend-usable non-CPU device, and skips CPU Vulkan unless it was explicitly
   requested. The parser policy is covered by the
   `external_decode_device_selection` CTest.
+- The full GPU-visible local matrix now passes with default, no-OpenCL,
+  no-Vulkan, FLAC test-file, and real-fixture lanes enabled via
+  `tools/check_local_matrix.py`, `--all-local`, both accelerator real-fixture
+  switches, OpenCL device `1`, and Vulkan device `1`. The real-fixture lane ran
+  four tests successfully: scalar fixture compression, scalar `ld-decode`
+  loader compatibility, OpenCL real-fixture loader compatibility on OpenCL
+  device `1`, and Vulkan real-fixture loader compatibility on Vulkan device
+  `1`.
 
 Immediate engineering focus:
 
@@ -614,7 +622,7 @@ Initial behavior:
 - `compress` defaults to CPU compression using Ogg FLAC-compatible `.ldf` output.
 - `compress --backend cpu|native-verbatim|native-fixed|opencl|vulkan` should
   select between the implemented CPU path, native FLAC writer paths, the
-  OpenCL-native FLAC encoder, and the in-development Vulkan encoder.
+  OpenCL-native FLAC encoder, and the Linux-first Vulkan encoder.
 - `decompress` accepts existing `.ldf`, `.raw.oga`, and `.flac.ldf` inputs where
   supported by the implemented decoder path.
 - `verify` reports hashes for the compressed input and the decompressed/repacked

@@ -1,7 +1,7 @@
-# 1.0 Release Checklist
+# Release Checklist
 
-Use this checklist for the `v1.0.0` source release. Binary packages and GitHub
-Actions are intentionally out of scope for this release.
+Use this checklist for source releases. Binary packages and GitHub Actions are
+intentionally out of scope unless a future release explicitly adds them.
 
 ## Required Local Gate
 
@@ -28,9 +28,11 @@ build/ld-compress-ng --help
 Run a CPU-only build/test lane:
 
 ```sh
-cmake -S . -B build-release-noopencl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLDCOMPRESS_ENABLE_OPENCL=OFF
-cmake --build build-release-noopencl --parallel
-ctest --test-dir build-release-noopencl -LE real-fixtures --output-on-failure
+cmake -S . -B build-release-cpu-only -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DLDCOMPRESS_ENABLE_OPENCL=OFF \
+    -DLDCOMPRESS_ENABLE_VULKAN=OFF
+cmake --build build-release-cpu-only --parallel
+ctest --test-dir build-release-cpu-only -LE real-fixtures --output-on-failure
 ```
 
 Smoke-test installation:
@@ -62,22 +64,24 @@ python3 tools/check_local_matrix.py \
     --build-root build/local-check-release \
     --all-local \
     --include-opencl-real-fixture \
-    --opencl-device 0 \
+    --opencl-device 1 \
     --include-vulkan-real-fixture \
     --vulkan-device 1 \
     --python-executable /home/epowell/.pyenv/versions/3.13.13/envs/ld/bin/python \
-    --jobs 2
+    --jobs 2 \
+    --strict-optional
 ```
 
 ## Tag And Publish
 
-After the required gate passes, tag and push:
+After the required gate passes, tag and push the chosen release version. For
+example, for a `v1.1.0` source release:
 
 ```sh
-git tag -a v1.0.0 -m "ld-compress-ng 1.0.0"
+git tag -a v1.1.0 -m "ld-compress-ng 1.1.0"
 git push origin main
-git push origin v1.0.0
+git push origin v1.1.0
 ```
 
-Create the GitHub source release manually from tag `v1.0.0`, using
+Create the GitHub source release manually from the release tag, using
 `CHANGELOG.md` as the release-note source.

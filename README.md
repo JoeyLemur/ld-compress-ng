@@ -6,12 +6,11 @@ decompresses them back to `.lds`, and verifies round trips without requiring the
 old shell pipeline or helper tools.
 
 The default CPU backend writes Ogg FLAC `.ldf` files with system `libFLAC` and
-`libogg`. The native scalar and OpenCL backends write native FLAC `.flac.ldf`
-files. CPU, scalar native, and OpenCL compression paths are ready for normal
-use; OpenCL just requires a build and runtime environment with a usable OpenCL
-device. The Vulkan backend is in 1.1 development; it can write compatible
-native FLAC using Vulkan exact costing for fixed/Rice and GPU-generated LPC
-candidates, but it is not performance-tuned yet.
+`libogg`. The native scalar, OpenCL, and Vulkan backends write native FLAC
+`.flac.ldf` files. CPU, scalar native, and OpenCL compression paths are ready
+for normal use. The Linux-first Vulkan backend is 1.1-scoped and validated on
+local NVIDIA hardware for compatible native FLAC output; AMD is intended through
+standard Vulkan compute but not yet hardware-validated.
 
 `ld-compress-ng` does not depend at runtime on Qt, ffmpeg, `.NET`, Mono, FlaLDF,
 OpenSSL, or `ld-lds-converter`.
@@ -32,7 +31,7 @@ Requirements:
 - Optional OpenCL headers and loader/framework for `devices` and
   `--backend opencl`.
 - Optional Vulkan headers, loader, and `glslangValidator` for Vulkan device
-  enumeration and the in-development Vulkan backend.
+  enumeration and the Linux-first Vulkan backend.
 
 ### Linux
 
@@ -66,10 +65,11 @@ package names include `ocl-icd-opencl-dev`/`opencl-headers` on Debian/Ubuntu,
 `ocl-icd-devel`/`opencl-headers` on Fedora, and `ocl-icd`/`opencl-headers` on
 Arch.
 
-For the in-development Vulkan backend, install Vulkan development headers, the
-loader, `glslangValidator`, and a vendor Vulkan runtime. Current 1.1 work uses
-Vulkan for Linux-first compute acceleration; the current backend supports
-`--backend vulkan` and requires a compute-capable device with `shaderInt64`.
+For the Vulkan backend, install Vulkan development headers, the loader,
+`glslangValidator`, and a vendor Vulkan runtime. Current 1.1 work uses Vulkan
+for Linux-first compute acceleration; the backend supports `--backend vulkan`
+and requires a compute-capable non-CPU device with `shaderInt64` unless you
+explicitly select a CPU Vulkan device for functional testing.
 
 ### macOS
 
@@ -83,11 +83,14 @@ cmake --build build --parallel
 
 Xcode Command Line Tools provide AppleClang and the macOS SDK. The SDK may also
 provide the deprecated OpenCL framework, but Apple platform OpenCL availability
-varies by OS and hardware. If you want a CPU-only build, use:
+varies by OS and hardware. If you want a CPU-only build, disable both
+accelerator backends:
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLDCOMPRESS_ENABLE_OPENCL=OFF
-cmake --build build --parallel
+cmake -S . -B build-cpu-only -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DLDCOMPRESS_ENABLE_OPENCL=OFF \
+    -DLDCOMPRESS_ENABLE_VULKAN=OFF
+cmake --build build-cpu-only --parallel
 ```
 
 Install from a configured build:
@@ -134,7 +137,7 @@ build/ld-compress-ng decompress --overwrite capture.ldf capture.lds
 | `cpu` | Ogg FLAC `.ldf` | Default, portable, uses system `libFLAC`/`libogg`; supports `--level`. |
 | `native-fixed` | Native FLAC `.flac.ldf` | Scalar native encoder with fixed/LPC prediction, Rice coding, threading, and tuning controls. |
 | `opencl` | Native FLAC `.flac.ldf` | GPU-assisted native encoder; list devices with `devices`, select one with `--device INDEX` or `--opencl-device INDEX`. |
-| `vulkan` | Native FLAC `.flac.ldf` | 1.1 development backend with Vulkan exact costing for fixed/Rice and GPU-generated LPC candidates; select one with `--device INDEX` or `--vulkan-device INDEX`. |
+| `vulkan` | Native FLAC `.flac.ldf` | Linux-first 1.1 acceleration backend with Vulkan exact costing for fixed/Rice and GPU-generated LPC candidates; validated locally on NVIDIA and intended for standard Vulkan compute devices; select one with `--device INDEX` or `--vulkan-device INDEX`. |
 | `native-verbatim` | Native FLAC `.flac.ldf` | Compatibility/debug path using verbatim FLAC frames. |
 
 Use the scalar native backend:
@@ -150,7 +153,7 @@ build/ld-compress-ng devices
 build/ld-compress-ng compress --backend opencl --device INDEX capture.lds
 ```
 
-Use the current Vulkan path:
+Use Vulkan:
 
 ```sh
 build/ld-compress-ng devices
@@ -211,8 +214,8 @@ Benchmark available backends on one capture:
 
 ```sh
 build/ld-compress-ng bench --threads 8 capture.lds
-build/ld-compress-ng bench --threads 8 --include-opencl --device 0 capture.lds
-build/ld-compress-ng bench --threads 8 --include-vulkan --vulkan-device 1 capture.lds
+build/ld-compress-ng bench --threads 8 --include-opencl --opencl-device INDEX capture.lds
+build/ld-compress-ng bench --threads 8 --include-vulkan --vulkan-device INDEX capture.lds
 ```
 
 Convert between packed LDS and signed 16-bit little-endian mono PCM:

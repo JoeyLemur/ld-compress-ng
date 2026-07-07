@@ -16,7 +16,7 @@ tools when they are available and skip cleanly when they are not.
 | `libFLAC` development files | Yes | CPU FLAC encode/decode | Requires pkg-config module `flac`. |
 | `libogg` development files | Yes | Ogg FLAC container support | Requires pkg-config module `ogg`. |
 | OpenCL headers + loader/framework | Optional | `devices` enumeration and OpenCL compression backend | Disable with `-DLDCOMPRESS_ENABLE_OPENCL=OFF`. |
-| Vulkan headers + loader + `glslangValidator` | Optional | Vulkan `devices` enumeration and in-development Vulkan backend | Disable with `-DLDCOMPRESS_ENABLE_VULKAN=OFF`; Vulkan compression currently requires `--threads 1`. |
+| Vulkan headers + loader + `glslangValidator` | Optional | Vulkan `devices` enumeration and Linux-first Vulkan backend | Disable with `-DLDCOMPRESS_ENABLE_VULKAN=OFF`; Vulkan compression currently requires `--threads 1`. |
 | Python 3 interpreter | Optional | Skip-safe external decode compatibility CTests and helper scripts | CMake adds Python-based tests only when an interpreter is found. |
 | `ffmpeg`/`ffprobe` | Optional | External native-FLAC decode compatibility CTest and legacy fixture regeneration | The compatibility test skips if `ffmpeg` is unavailable. |
 | PyAV and reference `ld-decode` dependencies | Optional | External `ld-decode` loader compatibility CTests | Tests skip if the local reference tree or imports are unavailable. |
@@ -55,9 +55,11 @@ cmake --install build --prefix /usr/local
 CPU-only configure:
 
 ```sh
-cmake -S . -B build-noopencl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLDCOMPRESS_ENABLE_OPENCL=OFF
-cmake --build build-noopencl --parallel
-ctest --test-dir build-noopencl --output-on-failure
+cmake -S . -B build-cpu-only -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DLDCOMPRESS_ENABLE_OPENCL=OFF \
+    -DLDCOMPRESS_ENABLE_VULKAN=OFF
+cmake --build build-cpu-only --parallel
+ctest --test-dir build-cpu-only --output-on-failure
 ```
 
 ## Linux
@@ -183,9 +185,11 @@ validation.
 CPU-only configure on Linux is the same as macOS:
 
 ```sh
-cmake -S . -B build-noopencl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLDCOMPRESS_ENABLE_OPENCL=OFF
-cmake --build build-noopencl --parallel
-ctest --test-dir build-noopencl --output-on-failure
+cmake -S . -B build-cpu-only -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DLDCOMPRESS_ENABLE_OPENCL=OFF \
+    -DLDCOMPRESS_ENABLE_VULKAN=OFF
+cmake --build build-cpu-only --parallel
+ctest --test-dir build-cpu-only --output-on-failure
 ```
 
 ## Verifying The Built Binary
