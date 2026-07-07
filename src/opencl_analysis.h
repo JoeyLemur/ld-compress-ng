@@ -117,6 +117,11 @@ OpenClMonoAnalysisTaskPlan build_mono_analysis_task_plan(
     std::size_t frame_count,
     const OpenClMonoAnalysisTaskOptions& options);
 
+OpenClMonoAnalysisTaskPlan build_mono_analysis_task_plan_for_samples(
+    const std::vector<std::int32_t>& samples,
+    std::size_t frame_count,
+    const OpenClMonoAnalysisTaskOptions& options);
+
 void apply_mono_analysis_profile_to_plan(
     const std::vector<std::int32_t>& samples,
     OpenClMonoAnalysisTaskPlan& plan);

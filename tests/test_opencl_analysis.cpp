@@ -1040,6 +1040,166 @@ void test_subdivide_tukey3_profile_task_plan()
     }
 }
 
+void test_compact_order_guess_profile_task_plan()
+{
+    using namespace ldcompress::opencl_detail;
+
+    OpenClMonoAnalysisTaskOptions options;
+    options.frame_samples = 64;
+    options.max_lpc_order = 4;
+    options.include_constant = true;
+    options.min_fixed_order = 0;
+    options.max_fixed_order = 4;
+    options.analysis_profile = ldcompress::NativeAnalysisProfile::OrderGuessMeanRice;
+
+    std::vector<std::int32_t> samples;
+    samples.reserve(128);
+    for (int i = 0; i < 64; ++i) {
+        samples.push_back(((i % 17) * 128) - 1024);
+    }
+    for (int i = 0; i < 64; ++i) {
+        samples.push_back((((i * i) % 31) * 64) - 960);
+    }
+
+    auto expanded = build_mono_analysis_task_plan(2, options);
+    require(expanded.residual_tasks_per_frame == 9,
+        "expanded order-guess profile task count mismatch");
+    apply_mono_analysis_profile_to_plan(samples, expanded);
+
+    const auto compact = build_mono_analysis_task_plan_for_samples(samples, 2, options);
+    require(compact.analysis_profile == ldcompress::NativeAnalysisProfile::OrderGuessMeanRice,
+        "compact order-guess profile did not retain analysis profile");
+    require(compact.max_lpc_order == 4,
+        "compact order-guess profile did not retain max LPC order");
+    require(compact.residual_tasks_per_frame == 5,
+        "compact order-guess profile task count mismatch");
+    require(compact.estimate_tasks_per_frame == compact.residual_tasks_per_frame,
+        "compact order-guess selected count mismatch");
+    require(compact.residual_tasks.size() == 10,
+        "compact order-guess residual task vector size mismatch");
+    require(compact.selected_tasks.size() == 10,
+        "compact order-guess selected task vector size mismatch");
+
+    for (std::size_t i = 0; i < compact.selected_tasks.size(); ++i) {
+        require(compact.selected_tasks[i] == static_cast<int>(i),
+            "compact order-guess selected task index mismatch");
+    }
+
+    for (std::size_t frame = 0; frame < 2; ++frame) {
+        const auto expanded_base = frame * expanded.residual_tasks_per_frame;
+        const auto compact_base = frame * compact.residual_tasks_per_frame;
+        const auto expected_offset = static_cast<int>(frame * options.frame_samples);
+
+        for (std::size_t window = 0; window < 3; ++window) {
+            const auto& task = compact.residual_tasks[compact_base + window];
+            require(task.data.type == kFlacClSubframeLpc,
+                "compact order-guess LPC task type mismatch");
+            require(task.data.residualOrder == 1,
+                "compact order-guess LPC placeholder order mismatch");
+            require(task.data.samplesOffs == expected_offset,
+                "compact order-guess LPC sample offset mismatch");
+            require(task.data.blocksize == static_cast<int>(options.frame_samples),
+                "compact order-guess LPC block size mismatch");
+        }
+
+        const auto& constant = compact.residual_tasks[compact_base + 3];
+        require(constant.data.type == kFlacClSubframeConstant,
+            "compact order-guess constant task type mismatch");
+        require(constant.coefs[0] == 1,
+            "compact order-guess constant coefficient mismatch");
+
+        unsigned live_fixed = 0;
+        int live_fixed_order = -1;
+        for (std::size_t i = 0; i < expanded.residual_tasks_per_frame; ++i) {
+            const auto& task = expanded.residual_tasks[expanded_base + i];
+            if (task.data.type == kFlacClSubframeFixed &&
+                task.data.size != std::numeric_limits<std::int32_t>::max()) {
+                ++live_fixed;
+                live_fixed_order = task.data.residualOrder;
+            }
+        }
+        require(live_fixed == 1,
+            "expanded order-guess profile did not leave exactly one fixed predictor live");
+
+        const auto& fixed = compact.residual_tasks[compact_base + 4];
+        require(fixed.data.type == kFlacClSubframeFixed,
+            "compact order-guess fixed task type mismatch");
+        require(fixed.data.residualOrder == live_fixed_order,
+            "compact order-guess fixed order did not match expanded pruning");
+        require(fixed.data.samplesOffs == expected_offset,
+            "compact order-guess fixed sample offset mismatch");
+        require(fixed.data.blocksize == static_cast<int>(options.frame_samples),
+            "compact order-guess fixed block size mismatch");
+    }
+
+    auto fixed_only_options = options;
+    fixed_only_options.max_lpc_order = 0;
+    auto fixed_only_expanded = build_mono_analysis_task_plan(2, fixed_only_options);
+    require(fixed_only_expanded.residual_tasks_per_frame == 6,
+        "expanded fixed-only order-guess profile task count mismatch");
+    apply_mono_analysis_profile_to_plan(samples, fixed_only_expanded);
+    const auto fixed_only_compact =
+        build_mono_analysis_task_plan_for_samples(samples, 2, fixed_only_options);
+    require(fixed_only_compact.residual_tasks_per_frame == 2,
+        "compact fixed-only order-guess profile task count mismatch");
+    for (std::size_t frame = 0; frame < 2; ++frame) {
+        const auto expanded_base = frame * fixed_only_expanded.residual_tasks_per_frame;
+        const auto compact_base = frame * fixed_only_compact.residual_tasks_per_frame;
+        int live_fixed_order = -1;
+        for (std::size_t i = 0; i < fixed_only_expanded.residual_tasks_per_frame; ++i) {
+            const auto& task = fixed_only_expanded.residual_tasks[expanded_base + i];
+            if (task.data.type == kFlacClSubframeFixed &&
+                task.data.size != std::numeric_limits<std::int32_t>::max()) {
+                live_fixed_order = task.data.residualOrder;
+            }
+        }
+        require(fixed_only_compact.residual_tasks[compact_base].data.type ==
+                kFlacClSubframeConstant,
+            "compact fixed-only order-guess constant task mismatch");
+        require(fixed_only_compact.residual_tasks[compact_base + 1].data.type ==
+                kFlacClSubframeFixed,
+            "compact fixed-only order-guess fixed task mismatch");
+        require(fixed_only_compact.residual_tasks[compact_base + 1].data.residualOrder ==
+                live_fixed_order,
+            "compact fixed-only order-guess fixed order mismatch");
+    }
+
+    auto subdivide_options = options;
+    subdivide_options.analysis_profile =
+        ldcompress::NativeAnalysisProfile::SubdivideTukey3MeanRice;
+    auto subdivide_expanded = build_mono_analysis_task_plan(2, subdivide_options);
+    require(subdivide_expanded.residual_tasks_per_frame == 15,
+        "expanded subdivide order-guess profile task count mismatch");
+    apply_mono_analysis_profile_to_plan(samples, subdivide_expanded);
+    const auto subdivide_compact =
+        build_mono_analysis_task_plan_for_samples(samples, 2, subdivide_options);
+    require(subdivide_compact.residual_tasks_per_frame == 11,
+        "compact subdivide order-guess profile task count mismatch");
+    for (std::size_t frame = 0; frame < 2; ++frame) {
+        const auto expanded_base = frame * subdivide_expanded.residual_tasks_per_frame;
+        const auto compact_base = frame * subdivide_compact.residual_tasks_per_frame;
+        for (std::size_t window = 0; window < 9; ++window) {
+            require(subdivide_compact.residual_tasks[compact_base + window].data.type ==
+                    kFlacClSubframeLpc,
+                "compact subdivide LPC task mismatch");
+        }
+        int live_fixed_order = -1;
+        for (std::size_t i = 0; i < subdivide_expanded.residual_tasks_per_frame; ++i) {
+            const auto& task = subdivide_expanded.residual_tasks[expanded_base + i];
+            if (task.data.type == kFlacClSubframeFixed &&
+                task.data.size != std::numeric_limits<std::int32_t>::max()) {
+                live_fixed_order = task.data.residualOrder;
+            }
+        }
+        require(subdivide_compact.residual_tasks[compact_base + 10].data.type ==
+                kFlacClSubframeFixed,
+            "compact subdivide fixed task mismatch");
+        require(subdivide_compact.residual_tasks[compact_base + 10].data.residualOrder ==
+                live_fixed_order,
+            "compact subdivide fixed order mismatch");
+    }
+}
+
 void test_small_custom_task_plan()
 {
     using namespace ldcompress::opencl_detail;
@@ -2203,6 +2363,7 @@ int main()
         test_flaccl_abi_layout();
         test_default_mono_task_plan();
         test_subdivide_tukey3_profile_task_plan();
+        test_compact_order_guess_profile_task_plan();
         test_small_custom_task_plan();
         test_invalid_options();
         test_flaccl_task_decision_mapping();

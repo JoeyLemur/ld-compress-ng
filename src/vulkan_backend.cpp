@@ -75,6 +75,7 @@ std::vector<unsigned> selected_rice_parameters_from_result(
 }
 
 opencl_detail::OpenClMonoAnalysisTaskPlan build_vulkan_fixed_constant_task_plan(
+    const std::vector<std::int32_t>& samples,
     std::size_t frame_count,
     const FlacFrameInfo& frame_info,
     unsigned frame_samples,
@@ -89,7 +90,8 @@ opencl_detail::OpenClMonoAnalysisTaskPlan build_vulkan_fixed_constant_task_plan(
     task_options.max_fixed_order = 4;
     task_options.analysis_profile = analysis_profile;
 
-    return opencl_detail::build_mono_analysis_task_plan(frame_count, task_options);
+    return opencl_detail::build_mono_analysis_task_plan_for_samples(
+        samples, frame_count, task_options);
 }
 
 opencl_detail::OpenClMonoAnalysisTaskPlan build_vulkan_mixed_lpc_task_plan(
@@ -101,7 +103,7 @@ opencl_detail::OpenClMonoAnalysisTaskPlan build_vulkan_mixed_lpc_task_plan(
     const auto frame_count = samples.size() / frame_samples;
     if (frame_info.max_lpc_order == 0 || frame_samples < 256) {
         return build_vulkan_fixed_constant_task_plan(
-            frame_count, frame_info, frame_samples, analysis_profile);
+            samples, frame_count, frame_info, frame_samples, analysis_profile);
     }
 
     opencl_detail::OpenClMonoAnalysisTaskOptions task_options;
@@ -113,7 +115,8 @@ opencl_detail::OpenClMonoAnalysisTaskPlan build_vulkan_mixed_lpc_task_plan(
     task_options.max_fixed_order = 4;
     task_options.analysis_profile = analysis_profile;
 
-    return opencl_detail::build_mono_analysis_task_plan(frame_count, task_options);
+    return opencl_detail::build_mono_analysis_task_plan_for_samples(
+        samples, frame_count, task_options);
 }
 
 AcceleratedSelectedFrameAnalysis analyze_vulkan_selected_frames(
@@ -128,10 +131,9 @@ AcceleratedSelectedFrameAnalysis analyze_vulkan_selected_frames(
     const auto plan_started = Clock::now();
     auto plan = frame_info.max_lpc_order == 0
         ? build_vulkan_fixed_constant_task_plan(
-            frame_count, frame_info, frame_samples, analysis_profile)
+            samples, frame_count, frame_info, frame_samples, analysis_profile)
         : build_vulkan_mixed_lpc_task_plan(
             samples, frame_info, frame_samples, analysis_profile);
-    opencl_detail::apply_mono_analysis_profile_to_plan(samples, plan);
     if (stats != nullptr) {
         add_elapsed_ns(stats->accelerated_task_plan_ns, plan_started);
     }

@@ -83,8 +83,8 @@ AcceleratedSelectedFrameAnalysis analyze_opencl_selected_frames(
 
         const auto frame_count = samples.size() / frame_samples;
         const auto plan_started = Clock::now();
-        auto plan = opencl_detail::build_mono_analysis_task_plan(frame_count, task_options);
-        opencl_detail::apply_mono_analysis_profile_to_plan(samples, plan);
+        auto plan = opencl_detail::build_mono_analysis_task_plan_for_samples(
+            samples, frame_count, task_options);
         if (stats != nullptr) {
             add_elapsed_ns(stats->accelerated_task_plan_ns, plan_started);
         }
@@ -133,8 +133,8 @@ AcceleratedSelectedFrameAnalysis analyze_opencl_selected_frames(
 
     const auto frame_count = samples.size() / frame_samples;
     const auto plan_started = Clock::now();
-    auto plan = opencl_detail::build_mono_analysis_task_plan(frame_count, task_options);
-    opencl_detail::apply_mono_analysis_profile_to_plan(samples, plan);
+    auto plan = opencl_detail::build_mono_analysis_task_plan_for_samples(
+        samples, frame_count, task_options);
     if (stats != nullptr) {
         add_elapsed_ns(stats->accelerated_task_plan_ns, plan_started);
     }

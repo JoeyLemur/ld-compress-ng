@@ -1152,6 +1152,62 @@ unsigned guess_fixed_predictor_order(
     return best_order;
 }
 
+std::int64_t fixed_prediction_residual_at(
+    const std::vector<std::int32_t>& samples,
+    std::size_t index,
+    unsigned order)
+{
+    switch (order) {
+    case 0:
+        return samples[index];
+    case 1:
+        return static_cast<std::int64_t>(samples[index]) - samples[index - 1U];
+    case 2:
+        return static_cast<std::int64_t>(samples[index]) -
+            (2LL * samples[index - 1U]) + samples[index - 2U];
+    case 3:
+        return static_cast<std::int64_t>(samples[index]) -
+            (3LL * samples[index - 1U]) + (3LL * samples[index - 2U]) -
+            samples[index - 3U];
+    case 4:
+        return static_cast<std::int64_t>(samples[index]) -
+            (4LL * samples[index - 1U]) + (6LL * samples[index - 2U]) -
+            (4LL * samples[index - 3U]) + samples[index - 4U];
+    default:
+        throw std::runtime_error("OpenCL profile fixed-order guess received invalid order");
+    }
+}
+
+unsigned guess_fixed_predictor_order_for_frame(
+    const std::vector<std::int32_t>& samples,
+    std::size_t offset,
+    std::size_t count,
+    unsigned max_fixed_order)
+{
+    const auto max_order = count > 1
+        ? std::min<std::size_t>(max_fixed_order, count - 1U)
+        : 0;
+    unsigned best_order = 0;
+    std::uint64_t best_sum = std::numeric_limits<std::uint64_t>::max();
+    for (unsigned order = 0; order <= max_order; ++order) {
+        std::uint64_t sum = 0;
+        for (std::size_t i = order; i < count; ++i) {
+            const auto residual = fixed_prediction_residual_at(samples, offset + i, order);
+            sum += residual < 0
+                ? static_cast<std::uint64_t>(-(residual + 1)) + 1U
+                : static_cast<std::uint64_t>(residual);
+            if (sum >= best_sum) {
+                break;
+            }
+        }
+        if (sum < best_sum) {
+            best_sum = sum;
+            best_order = order;
+        }
+    }
+    return best_order;
+}
+
 void mark_task_pruned(FlacClSubframeTask& task)
 {
     task.data.size = std::numeric_limits<std::int32_t>::max();
@@ -2584,6 +2640,86 @@ OpenClMonoAnalysisTaskPlan build_mono_analysis_task_plan(
 
         for (std::size_t i = 0; i < tasks_per_frame; ++i) {
             plan.selected_tasks.push_back(checked_i32(frame_task_base + i, "OpenCL mono analysis selected task"));
+        }
+    }
+
+    return plan;
+}
+
+OpenClMonoAnalysisTaskPlan build_mono_analysis_task_plan_for_samples(
+    const std::vector<std::int32_t>& samples,
+    std::size_t frame_count,
+    const OpenClMonoAnalysisTaskOptions& options)
+{
+    if (!generated_profile_uses_order_guess(options.analysis_profile) ||
+        options.min_fixed_order != 0) {
+        auto plan = build_mono_analysis_task_plan(frame_count, options);
+        apply_mono_analysis_profile_to_plan(samples, plan);
+        return plan;
+    }
+
+    validate_options(options);
+    if (frame_count != 0 &&
+        frame_count - 1U >
+            static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()) / options.frame_samples) {
+        throw std::runtime_error("OpenCL mono analysis frame offset exceeds int32");
+    }
+    const auto required_samples = frame_count * static_cast<std::size_t>(options.frame_samples);
+    if (required_samples > samples.size()) {
+        throw std::runtime_error("OpenCL mono sampled task plan samples are out of range");
+    }
+
+    const auto lpc_tasks_per_frame = generated_lpc_task_count(options);
+    const auto available_fixed_tasks = fixed_task_count(options);
+    const auto compact_fixed_tasks = available_fixed_tasks == 0 ? 0U : 1U;
+    const auto tasks_per_frame =
+        lpc_tasks_per_frame +
+        (options.include_constant ? 1U : 0U) +
+        compact_fixed_tasks;
+    if (tasks_per_frame == 0 || tasks_per_frame > kFlacClMaxOrder) {
+        throw std::runtime_error("OpenCL mono sampled task plan has invalid task count");
+    }
+    if (frame_count != 0 &&
+        frame_count > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()) / tasks_per_frame) {
+        throw std::runtime_error("OpenCL mono analysis selected task index exceeds int32");
+    }
+
+    OpenClMonoAnalysisTaskPlan plan;
+    plan.residual_tasks_per_frame = tasks_per_frame;
+    plan.estimate_tasks_per_frame = tasks_per_frame;
+    plan.analysis_profile = options.analysis_profile;
+    plan.max_lpc_order = options.max_lpc_order;
+    plan.residual_tasks.reserve(frame_count * tasks_per_frame);
+    plan.selected_tasks.reserve(frame_count * tasks_per_frame);
+
+    const auto largest_usable = static_cast<unsigned>(options.frame_samples - 1U);
+    const auto max_fixed =
+        options.max_fixed_order < largest_usable ? options.max_fixed_order : largest_usable;
+    for (std::size_t frame = 0; frame < frame_count; ++frame) {
+        const auto frame_task_base = plan.residual_tasks.size();
+        for (std::size_t window = 0; window < lpc_tasks_per_frame; ++window) {
+            plan.residual_tasks.push_back(
+                make_common_task(options, frame, kFlacClSubframeLpc, 1));
+        }
+
+        if (options.include_constant) {
+            auto task = make_common_task(options, frame, kFlacClSubframeConstant, 1);
+            task.coefs[0] = 1;
+            plan.residual_tasks.push_back(task);
+        }
+
+        if (compact_fixed_tasks != 0) {
+            const auto offset = frame * static_cast<std::size_t>(options.frame_samples);
+            const auto order = guess_fixed_predictor_order_for_frame(
+                samples, offset, options.frame_samples, max_fixed);
+            auto task = make_common_task(options, frame, kFlacClSubframeFixed, order);
+            populate_fixed_coefficients(task, order);
+            plan.residual_tasks.push_back(task);
+        }
+
+        for (std::size_t i = 0; i < tasks_per_frame; ++i) {
+            plan.selected_tasks.push_back(
+                checked_i32(frame_task_base + i, "OpenCL mono analysis selected task"));
         }
     }
 
