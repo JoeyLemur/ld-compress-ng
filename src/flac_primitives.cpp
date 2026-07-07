@@ -64,6 +64,11 @@ void BitWriter::clear()
     bit_count_ = 0;
 }
 
+void BitWriter::reserve_bits(std::size_t bits)
+{
+    bytes_.reserve((bits + 7U) / 8U);
+}
+
 bool BitWriter::byte_aligned() const
 {
     return (bit_count_ % 8U) == 0;

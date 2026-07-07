@@ -13,6 +13,7 @@ public:
     void write_unary(unsigned zero_count);
     void align_zero();
     void clear();
+    void reserve_bits(std::size_t bit_count);
 
     bool byte_aligned() const;
     std::size_t bit_count() const { return bit_count_; }

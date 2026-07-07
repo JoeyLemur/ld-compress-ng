@@ -200,7 +200,7 @@ struct SelectedEncodedFrame {
 struct SelectedFrameJob {
     std::uint64_t frame_number = 0;
     FlacFrameInfo frame_info;
-    std::vector<std::int32_t> samples;
+    std::span<const std::int32_t> samples;
     FlacSelectedSubframe selected;
     FlacSubframeDecision decision;
     bool collect_timings = false;
@@ -226,7 +226,7 @@ SelectedEncodedFrame encode_selected_frame(SelectedFrameJob job)
     FlacSelectedFrameWriteTimings timings;
     const auto decision = write_mono_selected_frame_with_decision(
         output,
-        std::span<const std::int32_t>(job.samples.data(), job.samples.size()),
+        job.samples,
         job.frame_info,
         job.selected,
         job.decision,
@@ -403,8 +403,7 @@ void write_accelerated_selected_batch(
             frame_pool->submit(SelectedFrameJob {
                 .frame_number = first_frame_number + frame,
                 .frame_info = frame_info,
-                .samples = std::vector<std::int32_t>(
-                    frame_samples.begin(), frame_samples.end()),
+                .samples = frame_samples,
                 .selected = analysis.selected_subframes[frame],
                 .decision = analysis.decisions[frame],
                 .collect_timings = options.native_stats != nullptr,

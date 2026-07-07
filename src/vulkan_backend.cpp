@@ -18,7 +18,7 @@
 namespace ldcompress {
 namespace {
 
-constexpr std::size_t kVulkanBatchFrames = 128;
+constexpr std::size_t kVulkanBatchFrames = 512;
 constexpr unsigned kMinimumStreamInfoBlockSize = 16;
 constexpr unsigned kMaxVulkanFrameSamples = 4608;
 constexpr unsigned kMaxVulkanLpcOrder = 12;

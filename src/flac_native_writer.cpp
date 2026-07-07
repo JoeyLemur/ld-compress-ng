@@ -2056,6 +2056,7 @@ FlacSubframeDecision write_fixed_rice_frame(
 {
     const auto bitstream_started = Clock::now();
     BitWriter frame_body;
+    frame_body.reserve_bits(subframe.bits);
     write_subframe_header(frame_body, 0x08U + subframe.order, subframe.wasted_bits);
     for (unsigned i = 0; i < subframe.order; ++i) {
         frame_body.write_signed(subframe.shifted_samples[i],
@@ -2110,6 +2111,7 @@ FlacSubframeDecision write_lpc_rice_frame(
 
     const auto bitstream_started = Clock::now();
     BitWriter frame_body;
+    frame_body.reserve_bits(subframe.bits);
     write_subframe_header(frame_body, 0x20U + subframe.order - 1U, subframe.wasted_bits);
     for (unsigned i = 0; i < subframe.order; ++i) {
         frame_body.write_signed(subframe.shifted_samples[i],

@@ -19,7 +19,7 @@
 namespace ldcompress {
 namespace {
 
-constexpr std::size_t kOpenClBatchFrames = 128;
+constexpr std::size_t kOpenClBatchFrames = 512;
 constexpr unsigned kMinimumStreamInfoBlockSize = 16;
 constexpr unsigned kMaxOpenClFrameSamples = 4608;
 constexpr unsigned kMaxOpenClLpcOrder = 12;
