@@ -128,8 +128,8 @@ Native FLAC backends write `.flac.ldf`:
 
 ```sh
 build/ld-compress-ng compress --backend native-fixed --threads 8 capture.lds
-build/ld-compress-ng compress --backend opencl --device 1 capture.lds
-build/ld-compress-ng compress --backend vulkan --device 1 capture.lds
+build/ld-compress-ng compress --backend opencl --device 1 --threads 8 capture.lds
+build/ld-compress-ng compress --backend vulkan --device 1 --threads 8 capture.lds
 ```
 
 Native tuning defaults:
@@ -140,8 +140,9 @@ Native tuning defaults:
 - `--rice-partition-order 5`
 - `--threads 1` by default
 
-For routine scalar native benchmark comparisons, use `--threads 8`. OpenCL and
-Vulkan compression currently require `--threads 1`.
+For routine native/OpenCL/Vulkan benchmark comparisons, use `--threads 8`.
+OpenCL and Vulkan still default to one thread, but additional threads
+parallelize the CPU selected-frame writer after GPU analysis.
 
 ## Important Decisions To Preserve
 

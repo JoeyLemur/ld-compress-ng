@@ -145,9 +145,6 @@ void validate_opencl_options(const OpenClCompressionOptions& options)
     if (options.container != FlacContainer::Native) {
         throw std::runtime_error("opencl backend writes native FLAC only");
     }
-    if (options.thread_count != 1) {
-        throw std::runtime_error("OpenCL FLAC backend currently requires --threads 1");
-    }
     if (options.frame_samples < kMinimumStreamInfoBlockSize ||
         options.frame_samples > kMaxOpenClFrameSamples) {
         throw std::runtime_error("OpenCL FLAC frame sample count must be 16..4608");
@@ -178,6 +175,9 @@ ConversionStats compress_lds_to_opencl_native_flac(
     std::unique_ptr<opencl_detail::OpenClMonoAnalysisSession> generated_session;
     if (options.max_lpc_order > 0) {
         generated_session = std::make_unique<opencl_detail::OpenClMonoAnalysisSession>(device_index);
+    }
+    if (options.native_stats != nullptr) {
+        add_elapsed_ns(options.native_stats->accelerated_setup_ns, total_started);
     }
 
     const AcceleratedNativeCompressionOptions accelerated_options {

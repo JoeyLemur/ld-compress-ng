@@ -106,7 +106,7 @@ struct Options {
         << "Compress options:\n"
         << "  --backend cpu|native-verbatim|native-fixed|opencl|vulkan\n"
         << "  --level N                    CPU/libFLAC level, 1..12; default 11.\n"
-        << "  --threads N                  Native scalar frame threads; default 1. OpenCL/Vulkan require 1.\n"
+        << "  --threads N                  Native FLAC frame writer threads; default 1.\n"
         << "  --frame-samples N            Native FLAC block size, 16..4608; default 4608.\n"
         << "  --lpc-order N                Predictive native max LPC order, 0..12; default 12.\n"
         << "  --lpc-precision N            Predictive native LPC precision, 1..15; default 12.\n"
@@ -921,7 +921,8 @@ void print_native_stats(const ldcompress::NativeCompressionStats& stats)
         std::cerr << std::fixed << std::setprecision(6)
                   << "accelerated timings: batches=" << stats.accelerated_batches
                   << " total=" << seconds_from_ns(stats.accelerated_total_ns) << "s"
-                  << " scan=" << seconds_from_ns(stats.accelerated_scan_ns) << "s"
+                  << " setup=" << seconds_from_ns(stats.accelerated_setup_ns) << "s"
+                  << " ingest=" << seconds_from_ns(stats.accelerated_scan_ns) << "s"
                   << " analyzer=" << seconds_from_ns(stats.accelerated_analyzer_ns) << "s"
                   << " selected-write="
                   << seconds_from_ns(stats.accelerated_selected_write_ns) << "s"
@@ -1353,21 +1354,23 @@ int run_bench(const Options& options)
                 for (const unsigned lpc_order : options.bench_lpc_orders) {
                     for (const unsigned lpc_precision : options.bench_lpc_precisions) {
                         for (const unsigned rice_partition_order : options.bench_rice_partition_orders) {
-                            cases.push_back(BenchCase {
-                                .backend = ldcompress::CompressionBackend::OpenClNativeFlac,
-                                .container = ldcompress::FlacContainer::Native,
-                                .threads = 1,
-                                .native_frame_samples = frame_samples,
-                                .native_max_lpc_order = lpc_order,
-                                .native_lpc_precision = lpc_precision,
-                                .native_max_rice_partition_order = rice_partition_order,
-                                .opencl_device_index = opencl_device_index,
-                                .vulkan_device_index = std::nullopt,
-                                .show_frame_samples = true,
-                                .show_lpc_order = true,
-                                .show_lpc_precision = true,
-                                .show_rice_partition_order = true,
-                            });
+                            for (const unsigned threads : options.bench_threads) {
+                                cases.push_back(BenchCase {
+                                    .backend = ldcompress::CompressionBackend::OpenClNativeFlac,
+                                    .container = ldcompress::FlacContainer::Native,
+                                    .threads = threads,
+                                    .native_frame_samples = frame_samples,
+                                    .native_max_lpc_order = lpc_order,
+                                    .native_lpc_precision = lpc_precision,
+                                    .native_max_rice_partition_order = rice_partition_order,
+                                    .opencl_device_index = opencl_device_index,
+                                    .vulkan_device_index = std::nullopt,
+                                    .show_frame_samples = true,
+                                    .show_lpc_order = true,
+                                    .show_lpc_precision = true,
+                                    .show_rice_partition_order = true,
+                                });
+                            }
                         }
                     }
                 }
@@ -1392,21 +1395,23 @@ int run_bench(const Options& options)
                 for (const unsigned lpc_order : options.bench_lpc_orders) {
                     for (const unsigned lpc_precision : options.bench_lpc_precisions) {
                         for (const unsigned rice_partition_order : options.bench_rice_partition_orders) {
-                            cases.push_back(BenchCase {
-                                .backend = ldcompress::CompressionBackend::VulkanNativeFlac,
-                                .container = ldcompress::FlacContainer::Native,
-                                .threads = 1,
-                                .native_frame_samples = frame_samples,
-                                .native_max_lpc_order = lpc_order,
-                                .native_lpc_precision = lpc_precision,
-                                .native_max_rice_partition_order = rice_partition_order,
-                                .opencl_device_index = std::nullopt,
-                                .vulkan_device_index = vulkan_device_index,
-                                .show_frame_samples = true,
-                                .show_lpc_order = true,
-                                .show_lpc_precision = true,
-                                .show_rice_partition_order = true,
-                            });
+                            for (const unsigned threads : options.bench_threads) {
+                                cases.push_back(BenchCase {
+                                    .backend = ldcompress::CompressionBackend::VulkanNativeFlac,
+                                    .container = ldcompress::FlacContainer::Native,
+                                    .threads = threads,
+                                    .native_frame_samples = frame_samples,
+                                    .native_max_lpc_order = lpc_order,
+                                    .native_lpc_precision = lpc_precision,
+                                    .native_max_rice_partition_order = rice_partition_order,
+                                    .opencl_device_index = std::nullopt,
+                                    .vulkan_device_index = vulkan_device_index,
+                                    .show_frame_samples = true,
+                                    .show_lpc_order = true,
+                                    .show_lpc_precision = true,
+                                    .show_rice_partition_order = true,
+                                });
+                            }
                         }
                     }
                 }

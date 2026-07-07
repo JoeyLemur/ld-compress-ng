@@ -16,7 +16,7 @@ tools when they are available and skip cleanly when they are not.
 | `libFLAC` development files | Yes | CPU FLAC encode/decode | Requires pkg-config module `flac`. |
 | `libogg` development files | Yes | Ogg FLAC container support | Requires pkg-config module `ogg`. |
 | OpenCL headers + loader/framework | Optional | `devices` enumeration and OpenCL compression backend | Disable with `-DLDCOMPRESS_ENABLE_OPENCL=OFF`. |
-| Vulkan headers + loader + `glslangValidator` | Optional | Vulkan `devices` enumeration and Linux-first Vulkan backend | Disable with `-DLDCOMPRESS_ENABLE_VULKAN=OFF`; Vulkan compression requires `--threads 1`. |
+| Vulkan headers + loader + `glslangValidator` | Optional | Vulkan `devices` enumeration and Linux-first Vulkan backend | Disable with `-DLDCOMPRESS_ENABLE_VULKAN=OFF`. |
 | Python 3 interpreter | Optional | Skip-safe external decode compatibility CTests and helper scripts | CMake adds Python-based tests only when an interpreter is found. |
 | `ffmpeg`/`ffprobe` | Optional | External native-FLAC decode compatibility CTest and legacy fixture regeneration | The compatibility test skips if `ffmpeg` is unavailable. |
 | PyAV and reference `ld-decode` dependencies | Optional | External `ld-decode` loader compatibility CTests | Tests skip if the local reference tree or imports are unavailable. |
@@ -224,8 +224,8 @@ OpenCL indexes are used by `compress --backend opencl --device INDEX` or
 `--opencl-device INDEX`, plus platform-local `platform/device` coordinates. The
 OpenCL compression backend writes native FLAC and requires an available OpenCL
 device at runtime. Vulkan indexes are backend-local and used by
-`compress --backend vulkan --device INDEX`; Vulkan compression requires
-`--threads 1` and a compute-capable device with `shaderInt64`.
+`compress --backend vulkan --device INDEX`; Vulkan compression requires a
+compute-capable device with `shaderInt64`.
 
 ## Install Layout
 
@@ -275,10 +275,11 @@ The current recommended native defaults are frame size `4608`, maximum LPC
 order `12`, LPC coefficient precision `12`, and maximum Rice partition order
 `5`. Compression still defaults to one thread unless `--threads` is specified;
 use `--threads 8` for routine native benchmark comparisons. OpenCL and Vulkan
-use the same native tuning options, but currently require `--threads 1`.
+use the same native tuning options, and `--threads` parallelizes their CPU
+selected-frame writer after GPU analysis.
 Vulkan exact-costs fixed/Rice and GPU-generated LPC candidates. Use `--stats`
 on native/OpenCL/Vulkan compression when investigating backend behavior;
-accelerated backends also print coarse timing splits for scan, analyzer,
+accelerated backends also print coarse timing splits for setup, ingest, analyzer,
 selected-frame writing, and accelerator plan/exact-analysis stages. Vulkan
 additionally prints GPU queue timestamp splits when the selected compute queue
 supports timestamp queries, which helps separate transfer/readback cost from

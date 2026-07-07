@@ -316,10 +316,10 @@ Implemented for the first 1.1 checkpoint:
   against the scalar task oracle, including Rice partition search and
   partition-order limit behavior.
 - The OpenCL native-FLAC backend now uses a shared accelerated native-FLAC host
-  flow for LDS scanning, STREAMINFO/PCM MD5 generation, frame batching, selected
-  native-subframe writing, scalar tail fallback, and native stats. OpenCL owns
-  only OpenCL validation/device selection and the batch analyzer callback, giving
-  Vulkan a matching plug-in point.
+  flow for one-pass LDS ingest, seek-back STREAMINFO/PCM MD5 finalization, frame
+  batching, selected native-subframe writing, scalar tail fallback, and native
+  stats. OpenCL owns only OpenCL validation/device selection and the batch
+  analyzer callback, giving Vulkan a matching plug-in point.
 - The Vulkan backend is wired through that shared host flow, including
   selected-subframe handoff, `verify --source` compatibility, fixed/Rice
   diagnostics through `--lpc-order 0`, and default LPC-enabled compression.
@@ -329,8 +329,9 @@ Implemented for the first 1.1 checkpoint:
   buffers across batches. The old one-shot analysis functions remain as
   compatibility wrappers for tests and diagnostics.
 - Native `--stats` now reports coarse accelerated timing splits for backend
-  total time, LDS scan, analyzer callback, selected-frame writing, accelerator
-  task-plan generation, and accelerator exact analysis. Vulkan compression also
+  total time, accelerator setup, LDS ingest, analyzer callback, selected-frame
+  writing, accelerator task-plan generation, and accelerator exact analysis.
+  Vulkan compression also
   reports GPU queue timestamp splits when the selected compute queue supports
   timestamp queries.
 - Vulkan exact analysis now dispatches one workgroup per task and uses

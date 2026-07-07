@@ -171,9 +171,6 @@ void validate_vulkan_options(const VulkanCompressionOptions& options)
     if (options.container != FlacContainer::Native) {
         throw std::runtime_error("vulkan backend writes native FLAC only");
     }
-    if (options.thread_count != 1) {
-        throw std::runtime_error("Vulkan FLAC backend currently requires --threads 1");
-    }
     if (options.frame_samples < kMinimumStreamInfoBlockSize ||
         options.frame_samples > kMaxVulkanFrameSamples) {
         throw std::runtime_error("Vulkan FLAC frame sample count must be 16..4608");
@@ -236,6 +233,9 @@ ConversionStats compress_lds_to_vulkan_native_flac(
     const auto selected_device = select_vulkan_analysis_device(options.device_index);
     const auto device_index = std::optional<std::size_t>(selected_device.index);
     vulkan_detail::VulkanMonoExactAnalysisSession session(device_index);
+    if (options.native_stats != nullptr) {
+        add_elapsed_ns(options.native_stats->accelerated_setup_ns, total_started);
+    }
 
     const AcceleratedNativeCompressionOptions accelerated_options {
         .backend_label = "Vulkan",

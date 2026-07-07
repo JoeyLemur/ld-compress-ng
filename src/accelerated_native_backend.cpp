@@ -5,13 +5,22 @@
 
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <istream>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <ostream>
 #include <span>
+#include <sstream>
 #include <stdexcept>
+#include <string>
+#include <thread>
 #include <vector>
 
 namespace ldcompress {
@@ -32,18 +41,19 @@ void add_elapsed_ns(std::uint64_t& counter, Clock::time_point start)
     counter += elapsed_ns(start, Clock::now());
 }
 
-void update_md5_s16le(Md5& md5, std::int16_t sample)
+void update_md5_s16le(Md5& md5, const SampleGroup& samples)
 {
-    const auto value = static_cast<std::uint16_t>(sample);
-    const std::array<std::uint8_t, 2> bytes {
-        static_cast<std::uint8_t>(value & 0xffU),
-        static_cast<std::uint8_t>((value >> 8U) & 0xffU),
-    };
+    std::array<std::uint8_t, 8> bytes {};
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        const auto value = static_cast<std::uint16_t>(samples[i]);
+        bytes[(i * 2U) + 0U] = static_cast<std::uint8_t>(value & 0xffU);
+        bytes[(i * 2U) + 1U] = static_cast<std::uint8_t>((value >> 8U) & 0xffU);
+    }
     md5.update(bytes.data(), bytes.size());
 }
 
-template <typename OnSample>
-ConversionStats process_lds_samples(std::istream& input, OnSample&& on_sample)
+template <typename OnGroup>
+ConversionStats process_lds_sample_groups(std::istream& input, OnGroup&& on_group)
 {
     ConversionStats stats;
     std::vector<std::uint8_t> input_buffer(5 * kGroupsPerChunk);
@@ -64,9 +74,7 @@ ConversionStats process_lds_samples(std::istream& input, OnSample&& on_sample)
             PackedLdsGroup packed;
             std::memcpy(packed.data(), input_buffer.data() + (i * 5), packed.size());
             const SampleGroup samples = unpack_group(packed);
-            for (const auto sample : samples) {
-                on_sample(sample);
-            }
+            on_group(samples);
         }
 
         stats.input_bytes += static_cast<std::uint64_t>(got);
@@ -80,15 +88,19 @@ ConversionStats process_lds_samples(std::istream& input, OnSample&& on_sample)
     return stats;
 }
 
-void rewind_to(std::istream& input, std::streampos position, const char* backend_label)
+void rewrite_native_flac_streaminfo(
+    std::ostream& output,
+    const FlacStreamInfo& streaminfo,
+    const std::string& output_path,
+    const char* backend_label)
 {
-    input.clear();
-    input.seekg(position);
-    if (!input) {
+    output.seekp(0, std::ios::beg);
+    if (!output) {
         throw std::runtime_error(
-            "failed to rewind LDS input for " + std::string(backend_label) +
-            " FLAC encoding");
+            "failed to seek " + std::string(backend_label) +
+            " FLAC output for STREAMINFO rewrite: " + output_path);
     }
+    write_native_flac_streaminfo(output, streaminfo);
 }
 
 FlacStreamInfo make_streaminfo(
@@ -179,6 +191,21 @@ void record_selected_write_timings(
     stats->accelerated_selected_frame_output_ns += timings.frame_output_ns;
 }
 
+struct SelectedEncodedFrame {
+    std::string bytes;
+    FlacSubframeDecision decision;
+    FlacSelectedFrameWriteTimings timings;
+};
+
+struct SelectedFrameJob {
+    std::uint64_t frame_number = 0;
+    FlacFrameInfo frame_info;
+    std::vector<std::int32_t> samples;
+    FlacSelectedSubframe selected;
+    FlacSubframeDecision decision;
+    bool collect_timings = false;
+};
+
 FlacFrameInfo make_frame_info(
     std::uint64_t frame_number,
     const AcceleratedNativeCompressionOptions& options)
@@ -193,12 +220,151 @@ FlacFrameInfo make_frame_info(
     };
 }
 
+SelectedEncodedFrame encode_selected_frame(SelectedFrameJob job)
+{
+    std::ostringstream output(std::ios::out | std::ios::binary);
+    FlacSelectedFrameWriteTimings timings;
+    const auto decision = write_mono_selected_frame_with_decision(
+        output,
+        std::span<const std::int32_t>(job.samples.data(), job.samples.size()),
+        job.frame_info,
+        job.selected,
+        job.decision,
+        job.collect_timings ? &timings : nullptr);
+    if (!output) {
+        throw std::runtime_error("failed to encode selected native FLAC frame");
+    }
+    return SelectedEncodedFrame {
+        .bytes = output.str(),
+        .decision = decision,
+        .timings = timings,
+    };
+}
+
+void write_frame_bytes(std::ostream& output, const std::string& bytes)
+{
+    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!output) {
+        throw std::runtime_error("failed to write selected native FLAC frame output");
+    }
+}
+
+class SelectedFrameWriterPool final {
+public:
+    explicit SelectedFrameWriterPool(unsigned thread_count)
+    {
+        workers_.reserve(thread_count);
+        for (unsigned i = 0; i < thread_count; ++i) {
+            workers_.emplace_back([this] {
+                worker_loop();
+            });
+        }
+    }
+
+    SelectedFrameWriterPool(const SelectedFrameWriterPool&) = delete;
+    SelectedFrameWriterPool& operator=(const SelectedFrameWriterPool&) = delete;
+
+    ~SelectedFrameWriterPool()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+        }
+        jobs_available_.notify_all();
+        for (auto& worker : workers_) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
+    }
+
+    void submit(SelectedFrameJob job)
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            rethrow_exception_if_present();
+            jobs_.push_back(std::move(job));
+        }
+        jobs_available_.notify_one();
+    }
+
+    SelectedEncodedFrame take(std::uint64_t frame_number)
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        results_available_.wait(lock, [&] {
+            return exception_ != nullptr || results_.find(frame_number) != results_.end();
+        });
+        rethrow_exception_if_present();
+
+        auto result = std::move(results_.at(frame_number));
+        results_.erase(frame_number);
+        return result;
+    }
+
+private:
+    void rethrow_exception_if_present() const
+    {
+        if (exception_ != nullptr) {
+            std::rethrow_exception(exception_);
+        }
+    }
+
+    void worker_loop()
+    {
+        while (true) {
+            SelectedFrameJob job;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                jobs_available_.wait(lock, [&] {
+                    return stopping_ || !jobs_.empty();
+                });
+                if (stopping_) {
+                    return;
+                }
+                job = std::move(jobs_.front());
+                jobs_.pop_front();
+            }
+
+            try {
+                const auto frame_number = job.frame_number;
+                auto frame = encode_selected_frame(std::move(job));
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    results_.emplace(frame_number, std::move(frame));
+                }
+                results_available_.notify_all();
+            } catch (...) {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if (exception_ == nullptr) {
+                        exception_ = std::current_exception();
+                    }
+                    stopping_ = true;
+                }
+                jobs_available_.notify_all();
+                results_available_.notify_all();
+                return;
+            }
+        }
+    }
+
+    mutable std::mutex mutex_;
+    std::condition_variable jobs_available_;
+    std::condition_variable results_available_;
+    std::deque<SelectedFrameJob> jobs_;
+    std::map<std::uint64_t, SelectedEncodedFrame> results_;
+    std::vector<std::thread> workers_;
+    std::exception_ptr exception_;
+    bool stopping_ = false;
+};
+
 void write_accelerated_selected_batch(
     std::ostream& output,
     const std::vector<std::int32_t>& batch_samples,
     std::uint64_t first_frame_number,
     const AcceleratedNativeCompressionOptions& options,
-    const AcceleratedBatchAnalyzer& analyzer)
+    const AcceleratedBatchAnalyzer& analyzer,
+    SelectedFrameWriterPool* frame_pool)
 {
     if (batch_samples.empty()) {
         return;
@@ -233,6 +399,18 @@ void write_accelerated_selected_batch(
             batch_samples.data() + offset,
             static_cast<std::size_t>(options.frame_samples));
         auto frame_info = make_frame_info(first_frame_number + frame, options);
+        if (frame_pool != nullptr) {
+            frame_pool->submit(SelectedFrameJob {
+                .frame_number = first_frame_number + frame,
+                .frame_info = frame_info,
+                .samples = std::vector<std::int32_t>(
+                    frame_samples.begin(), frame_samples.end()),
+                .selected = analysis.selected_subframes[frame],
+                .decision = analysis.decisions[frame],
+                .collect_timings = options.native_stats != nullptr,
+            });
+            continue;
+        }
         FlacSelectedFrameWriteTimings writer_timings;
         const auto decision = write_mono_selected_frame_with_decision(
             output,
@@ -243,6 +421,14 @@ void write_accelerated_selected_batch(
             options.native_stats != nullptr ? &writer_timings : nullptr);
         record_native_stats(options.native_stats, decision);
         record_selected_write_timings(options.native_stats, writer_timings);
+    }
+    if (frame_pool != nullptr) {
+        for (std::size_t frame = 0; frame < frame_count; ++frame) {
+            auto encoded = frame_pool->take(first_frame_number + frame);
+            write_frame_bytes(output, encoded.bytes);
+            record_native_stats(options.native_stats, encoded.decision);
+            record_selected_write_timings(options.native_stats, encoded.timings);
+        }
     }
     if (options.native_stats != nullptr) {
         add_elapsed_ns(options.native_stats->accelerated_selected_write_ns, write_started);
@@ -276,38 +462,35 @@ ConversionStats compress_lds_to_accelerated_native_flac(
     const AcceleratedNativeCompressionOptions& options,
     const AcceleratedBatchAnalyzer& analyzer)
 {
-    const auto start = lds_input.tellg();
-    if (start == std::streampos(-1)) {
+    if (options.thread_count == 0) {
         throw std::runtime_error(
             std::string(options.backend_label) +
-            " FLAC backend requires a seekable LDS input");
+            " FLAC thread count must be at least 1");
     }
-
-    Md5 pcm_md5;
-    const auto scan_started = Clock::now();
-    auto stats = process_lds_samples(lds_input, [&pcm_md5](std::int16_t sample) {
-        update_md5_s16le(pcm_md5, sample);
-    });
-    if (options.native_stats != nullptr) {
-        add_elapsed_ns(options.native_stats->accelerated_scan_ns, scan_started);
-    }
-    const auto streaminfo = make_streaminfo(
-        stats, options.frame_samples, options.sample_rate, pcm_md5.digest());
-
-    rewind_to(lds_input, start, options.backend_label);
 
     std::ofstream output(output_path, std::ios::binary);
     if (!output) {
         throw std::runtime_error("could not open output: " + output_path);
     }
 
-    write_native_flac_streaminfo(output, streaminfo);
+    write_native_flac_streaminfo(
+        output,
+        make_streaminfo(
+            ConversionStats {}, options.frame_samples, options.sample_rate,
+            std::array<std::uint8_t, 16> {}));
+
+    Md5 pcm_md5;
 
     std::vector<std::int32_t> batch_samples;
     const auto frame_sample_count = static_cast<std::size_t>(options.frame_samples);
     const auto batch_sample_count = frame_sample_count * options.batch_frames;
     batch_samples.reserve(batch_sample_count);
     std::uint64_t frame_number = 0;
+    std::size_t samples_in_current_frame = 0;
+    std::unique_ptr<SelectedFrameWriterPool> frame_pool;
+    if (options.thread_count != 1) {
+        frame_pool = std::make_unique<SelectedFrameWriterPool>(options.thread_count);
+    }
 
     const auto flush_batch = [&] {
         if (batch_samples.empty()) {
@@ -316,17 +499,37 @@ ConversionStats compress_lds_to_accelerated_native_flac(
         const auto batch_first_frame =
             frame_number - (batch_samples.size() / frame_sample_count);
         write_accelerated_selected_batch(
-            output, batch_samples, batch_first_frame, options, analyzer);
+            output, batch_samples, batch_first_frame, options, analyzer, frame_pool.get());
         batch_samples.clear();
     };
 
-    const auto encoded_stats = process_lds_samples(lds_input, [&](std::int16_t sample) {
+    const auto ingest_started = Clock::now();
+    const auto analyzer_before = options.native_stats != nullptr
+        ? options.native_stats->accelerated_analyzer_ns
+        : 0;
+    const auto selected_write_before = options.native_stats != nullptr
+        ? options.native_stats->accelerated_selected_write_ns
+        : 0;
+    const auto tail_write_before = options.native_stats != nullptr
+        ? options.native_stats->accelerated_tail_write_ns
+        : 0;
+
+    const auto append_sample = [&](std::int16_t sample) {
         batch_samples.push_back(sample);
-        if ((batch_samples.size() % frame_sample_count) == 0) {
+        ++samples_in_current_frame;
+        if (samples_in_current_frame == frame_sample_count) {
+            samples_in_current_frame = 0;
             ++frame_number;
             if (batch_samples.size() == batch_sample_count) {
                 flush_batch();
             }
+        }
+    };
+
+    auto stats = process_lds_sample_groups(lds_input, [&](const SampleGroup& samples) {
+        update_md5_s16le(pcm_md5, samples);
+        for (const auto sample : samples) {
+            append_sample(sample);
         }
     });
 
@@ -345,12 +548,20 @@ ConversionStats compress_lds_to_accelerated_native_flac(
         ++frame_number;
     }
 
-    if (encoded_stats.input_bytes != stats.input_bytes ||
-        encoded_stats.samples != stats.samples) {
-        throw std::runtime_error(
-            "LDS input changed while " + std::string(options.backend_label) +
-            " FLAC backend was encoding");
+    if (options.native_stats != nullptr) {
+        const auto ingest_ns = elapsed_ns(ingest_started, Clock::now());
+        const auto nested_ns =
+            (options.native_stats->accelerated_analyzer_ns - analyzer_before) +
+            (options.native_stats->accelerated_selected_write_ns - selected_write_before) +
+            (options.native_stats->accelerated_tail_write_ns - tail_write_before);
+        if (ingest_ns > nested_ns) {
+            options.native_stats->accelerated_scan_ns += ingest_ns - nested_ns;
+        }
     }
+
+    const auto streaminfo = make_streaminfo(
+        stats, options.frame_samples, options.sample_rate, pcm_md5.digest());
+    rewrite_native_flac_streaminfo(output, streaminfo, output_path, options.backend_label);
 
     output.close();
     if (!output) {

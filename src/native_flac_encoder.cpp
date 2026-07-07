@@ -38,18 +38,19 @@ enum class NativeFrameCoding {
     FixedRice,
 };
 
-void update_md5_s16le(Md5& md5, std::int16_t sample)
+void update_md5_s16le(Md5& md5, const SampleGroup& samples)
 {
-    const auto value = static_cast<std::uint16_t>(sample);
-    const std::array<std::uint8_t, 2> bytes {
-        static_cast<std::uint8_t>(value & 0xffU),
-        static_cast<std::uint8_t>((value >> 8U) & 0xffU),
-    };
+    std::array<std::uint8_t, 8> bytes {};
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        const auto value = static_cast<std::uint16_t>(samples[i]);
+        bytes[(i * 2U) + 0U] = static_cast<std::uint8_t>(value & 0xffU);
+        bytes[(i * 2U) + 1U] = static_cast<std::uint8_t>((value >> 8U) & 0xffU);
+    }
     md5.update(bytes.data(), bytes.size());
 }
 
-template <typename OnSample>
-ConversionStats process_lds_samples(std::istream& input, OnSample&& on_sample)
+template <typename OnGroup>
+ConversionStats process_lds_sample_groups(std::istream& input, OnGroup&& on_group)
 {
     ConversionStats stats;
     std::vector<std::uint8_t> input_buffer(5 * kGroupsPerChunk);
@@ -70,9 +71,7 @@ ConversionStats process_lds_samples(std::istream& input, OnSample&& on_sample)
             PackedLdsGroup packed;
             std::memcpy(packed.data(), input_buffer.data() + (i * 5), packed.size());
             const SampleGroup samples = unpack_group(packed);
-            for (const auto sample : samples) {
-                on_sample(sample);
-            }
+            on_group(samples);
         }
 
         stats.input_bytes += static_cast<std::uint64_t>(got);
@@ -86,13 +85,17 @@ ConversionStats process_lds_samples(std::istream& input, OnSample&& on_sample)
     return stats;
 }
 
-void rewind_to(std::istream& input, std::streampos position)
+void rewrite_native_flac_streaminfo(
+    std::ostream& output,
+    const FlacStreamInfo& streaminfo,
+    const std::string& output_path)
 {
-    input.clear();
-    input.seekg(position);
-    if (!input) {
-        throw std::runtime_error("failed to rewind LDS input for native FLAC encoding");
+    output.seekp(0, std::ios::beg);
+    if (!output) {
+        throw std::runtime_error(
+            "failed to seek native FLAC output for STREAMINFO rewrite: " + output_path);
     }
+    write_native_flac_streaminfo(output, streaminfo);
 }
 
 FlacStreamInfo make_streaminfo(
@@ -403,27 +406,18 @@ ConversionStats compress_lds_to_native_flac(
         throw std::runtime_error("native FLAC max Rice partition order must be 0..8");
     }
 
-    const auto start = lds_input.tellg();
-    if (start == std::streampos(-1)) {
-        throw std::runtime_error("native FLAC backend requires a seekable LDS input");
-    }
-
-    Md5 pcm_md5;
-    auto stats = process_lds_samples(lds_input, [&pcm_md5](std::int16_t sample) {
-        update_md5_s16le(pcm_md5, sample);
-    });
-    const auto streaminfo = make_streaminfo(
-        stats, frame_sample_count, sample_rate, pcm_md5.digest());
-
-    rewind_to(lds_input, start);
-
     std::ofstream output(output_path, std::ios::binary);
     if (!output) {
         throw std::runtime_error("could not open output: " + output_path);
     }
 
-    write_native_flac_streaminfo(output, streaminfo);
+    write_native_flac_streaminfo(
+        output,
+        make_streaminfo(
+            ConversionStats {}, frame_sample_count, sample_rate,
+            std::array<std::uint8_t, 16> {}));
 
+    Md5 pcm_md5;
     std::vector<std::int32_t> frame_samples;
     frame_samples.reserve(frame_sample_count);
     std::uint64_t frame_number = 0;
@@ -462,13 +456,16 @@ ConversionStats compress_lds_to_native_flac(
         frame_pool->submit(current_frame, std::move(samples));
     };
 
-    const auto encoded_stats = process_lds_samples(lds_input, [&](std::int16_t sample) {
-        frame_samples.push_back(sample);
-        if (frame_samples.size() == frame_sample_count) {
-            submit_frame(std::move(frame_samples), frame_number);
-            ++frame_number;
-            frame_samples.clear();
-            frame_samples.reserve(frame_sample_count);
+    auto stats = process_lds_sample_groups(lds_input, [&](const SampleGroup& samples) {
+        update_md5_s16le(pcm_md5, samples);
+        for (const auto sample : samples) {
+            frame_samples.push_back(sample);
+            if (frame_samples.size() == frame_sample_count) {
+                submit_frame(std::move(frame_samples), frame_number);
+                ++frame_number;
+                frame_samples.clear();
+                frame_samples.reserve(frame_sample_count);
+            }
         }
     });
     if (!frame_samples.empty()) {
@@ -482,10 +479,9 @@ ConversionStats compress_lds_to_native_flac(
         throw std::runtime_error("internal native FLAC frame count mismatch");
     }
 
-    if (encoded_stats.input_bytes != stats.input_bytes ||
-        encoded_stats.samples != stats.samples) {
-        throw std::runtime_error("LDS input changed while native FLAC backend was encoding");
-    }
+    const auto streaminfo = make_streaminfo(
+        stats, frame_sample_count, sample_rate, pcm_md5.digest());
+    rewrite_native_flac_streaminfo(output, streaminfo, output_path);
 
     output.close();
     if (!output) {

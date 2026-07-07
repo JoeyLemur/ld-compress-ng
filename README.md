@@ -194,9 +194,9 @@ build/ld-compress-ng compress --backend native-fixed --threads 8 --stats capture
 Native tuning defaults are `--frame-samples 4608`, `--lpc-order 12`,
 `--lpc-precision 12`, `--rice-partition-order 5`, and `--threads 1`; the
 defaults are the recommended settings for normal use. The OpenCL and Vulkan
-backends use the same native FLAC tuning controls, but currently require
-`--threads 1`. Vulkan still supports `--lpc-order 0` for fixed/Rice-only
-diagnostics.
+backends use the same native FLAC tuning controls. For OpenCL and Vulkan,
+`--threads` parallelizes the CPU selected-frame writer after GPU analysis.
+Vulkan still supports `--lpc-order 0` for fixed/Rice-only diagnostics.
 
 Use explicit native FLAC tuning controls when you are comparing size/speed
 tradeoffs:

@@ -223,7 +223,6 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_native_device = temp_dir / "fixture.bad-native-device.ldf";
     const auto bad_native_opencl_device = temp_dir / "fixture.bad-native-opencl-device.ldf";
     const auto bad_native_vulkan_device = temp_dir / "fixture.bad-native-vulkan-device.ldf";
-    const auto bad_opencl_threads = temp_dir / "fixture.bad-opencl-threads.flac.ldf";
     const auto bad_opencl_level = temp_dir / "fixture.bad-opencl-level.flac.ldf";
     const auto empty_lds = temp_dir / "empty.lds";
     const auto empty_native_verbatim = temp_dir / "empty.native-verbatim.flac.ldf";
@@ -238,6 +237,8 @@ void test_cli(const std::filesystem::path& exe)
     const auto opencl_container_out = temp_dir / "fixture.opencl-container.out.lds";
     const auto opencl_fixed_only = temp_dir / "fixture.opencl-fixed-only.flac.ldf";
     const auto opencl_fixed_only_out = temp_dir / "fixture.opencl-fixed-only.out.lds";
+    const auto opencl_threads = temp_dir / "fixture.opencl-threads.flac.ldf";
+    const auto opencl_threads_out = temp_dir / "fixture.opencl-threads.out.lds";
     const auto opencl_default = temp_dir / "opencl-default.flac.ldf";
     const auto opencl_default_out = temp_dir / "opencl-default.out.lds";
     const auto empty_opencl = temp_dir / "empty.opencl.flac.ldf";
@@ -250,7 +251,8 @@ void test_cli(const std::filesystem::path& exe)
     const auto vulkan_fixed_only_out = temp_dir / "fixture.vulkan-fixed-only.out.lds";
     const auto empty_vulkan = temp_dir / "empty.vulkan.flac.ldf";
     const auto empty_vulkan_out = temp_dir / "empty.vulkan.out.lds";
-    const auto bad_vulkan_threads = temp_dir / "fixture.bad-vulkan-threads.flac.ldf";
+    const auto vulkan_threads = temp_dir / "fixture.vulkan-threads.flac.ldf";
+    const auto vulkan_threads_out = temp_dir / "fixture.vulkan-threads.out.lds";
     const auto bad_vulkan_opencl_device = temp_dir / "fixture.bad-vulkan-opencl-device.flac.ldf";
     const auto bad_vulkan_device = temp_dir / "fixture.bad-vulkan-device.flac.ldf";
     const auto bad_vulkan_device_out_of_range =
@@ -448,6 +450,10 @@ void test_cli(const std::filesystem::path& exe)
         run_ok(shell_quote(exe) + " decompress " + shell_quote(opencl_fixed_only) + " " + shell_quote(opencl_fixed_only_out));
         require(read_file(opencl_fixed_only_out) == fixture,
             "OpenCL fixed-only round trip changed LDS bytes");
+        run_ok(shell_quote(exe) + " compress --backend opencl --threads 2" + opencl_device_arg + " " + shell_quote(lds) + " " + shell_quote(opencl_threads));
+        run_ok(shell_quote(exe) + " decompress " + shell_quote(opencl_threads) + " " + shell_quote(opencl_threads_out));
+        require(read_file(opencl_threads_out) == fixture,
+            "OpenCL threaded writer round trip changed LDS bytes");
         run_ok("cd " + shell_quote(temp_dir) + " && " + shell_quote(exe) + " compress --backend opencl" + opencl_device_arg + " opencl-default.lds");
         require(std::filesystem::exists(opencl_default), "OpenCL default output name was not .flac.ldf");
         run_ok(shell_quote(exe) + " decompress " + shell_quote(opencl_default) + " " + shell_quote(opencl_default_out));
@@ -461,8 +467,6 @@ void test_cli(const std::filesystem::path& exe)
         run_fails(shell_quote(exe) + " compress --backend opencl " + shell_quote(lds) + " " + shell_quote(opencl_output));
         require(!std::filesystem::exists(opencl_output), "unavailable OpenCL backend wrote output");
     }
-    run_fails(shell_quote(exe) + " compress --backend opencl --threads 2 " + shell_quote(lds) + " " + shell_quote(bad_opencl_threads));
-    require(!std::filesystem::exists(bad_opencl_threads), "OpenCL --threads rejection wrote output");
     run_fails(shell_quote(exe) + " compress --backend opencl --level 8 " + shell_quote(lds) + " " + shell_quote(bad_opencl_level));
     require(!std::filesystem::exists(bad_opencl_level), "OpenCL --level rejection wrote output");
     run_fails(shell_quote(exe) + " compress --backend opencl --device nope " + shell_quote(lds) + " " + shell_quote(bad_opencl_device));
@@ -480,6 +484,10 @@ void test_cli(const std::filesystem::path& exe)
         run_ok(shell_quote(exe) + " decompress " + shell_quote(vulkan_fixed_only) + " " + shell_quote(vulkan_fixed_only_out));
         require(read_file(vulkan_fixed_only_out) == fixture,
             "Vulkan fixed-only FLAC round trip changed LDS bytes");
+        run_ok(shell_quote(exe) + " compress --backend vulkan --threads 2 --lpc-order 0" + vulkan_device_arg + " " + shell_quote(lds) + " " + shell_quote(vulkan_threads));
+        run_ok(shell_quote(exe) + " decompress " + shell_quote(vulkan_threads) + " " + shell_quote(vulkan_threads_out));
+        require(read_file(vulkan_threads_out) == fixture,
+            "Vulkan threaded writer round trip changed LDS bytes");
         run_ok(shell_quote(exe) + " compress --backend vulkan --lpc-order 0" + vulkan_device_arg + " " + shell_quote(empty_lds) + " " + shell_quote(empty_vulkan));
         run_ok(shell_quote(exe) + " verify --source " + shell_quote(empty_lds) + " " + shell_quote(empty_vulkan));
         run_ok(shell_quote(exe) + " decompress " + shell_quote(empty_vulkan) + " " + shell_quote(empty_vulkan_out));
@@ -488,12 +496,6 @@ void test_cli(const std::filesystem::path& exe)
         run_fails(shell_quote(exe) + " compress --backend vulkan --lpc-order 0 " + shell_quote(lds) + " " + shell_quote(vulkan_output));
         require(!std::filesystem::exists(vulkan_output), "unavailable Vulkan backend wrote output");
     }
-    run_fails_with_stderr(
-        shell_quote(exe) + " compress --backend vulkan --threads 2 --lpc-order 0 " +
-            shell_quote(lds) + " " + shell_quote(bad_vulkan_threads),
-        command_stderr,
-        "Vulkan FLAC backend currently requires --threads 1");
-    require(!std::filesystem::exists(bad_vulkan_threads), "Vulkan --threads rejection wrote output");
     run_fails_with_stderr(
         shell_quote(exe) + " compress --backend vulkan --opencl-device 0 " +
             shell_quote(lds) + " " + shell_quote(bad_vulkan_opencl_device),
