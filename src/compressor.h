@@ -47,6 +47,12 @@ struct NativeCompressionStats {
     std::uint64_t accelerated_selected_frame_output_ns = 0;
     std::uint64_t accelerated_task_plan_ns = 0;
     std::uint64_t accelerated_exact_analysis_ns = 0;
+    std::uint64_t opencl_setup_device_ns = 0;
+    std::uint64_t opencl_setup_context_ns = 0;
+    std::uint64_t opencl_setup_queue_ns = 0;
+    std::uint64_t opencl_setup_program_source_ns = 0;
+    std::uint64_t opencl_setup_program_build_ns = 0;
+    std::uint64_t opencl_setup_kernels_ns = 0;
     std::uint64_t opencl_timed_batches = 0;
     std::uint64_t opencl_upload_ns = 0;
     std::uint64_t opencl_wasted_bits_ns = 0;

@@ -90,6 +90,15 @@ struct OpenClMonoFixedConstantAnalysisResult {
     std::string device_name;
 };
 
+struct OpenClGeneratedSetupTimings {
+    std::uint64_t device_ns = 0;
+    std::uint64_t context_ns = 0;
+    std::uint64_t queue_ns = 0;
+    std::uint64_t program_source_ns = 0;
+    std::uint64_t program_build_ns = 0;
+    std::uint64_t kernels_ns = 0;
+};
+
 struct OpenClGeneratedAnalysisTimings {
     std::uint64_t batches = 0;
     std::uint64_t upload_ns = 0;
@@ -167,7 +176,8 @@ OpenClMonoBestMethodResult run_opencl_mono_generated_best_analysis(
 class OpenClMonoAnalysisSession final {
 public:
     explicit OpenClMonoAnalysisSession(
-        std::optional<std::size_t> requested_device_index = std::nullopt);
+        std::optional<std::size_t> requested_device_index = std::nullopt,
+        OpenClGeneratedSetupTimings* setup_timings = nullptr);
     ~OpenClMonoAnalysisSession();
 
     OpenClMonoAnalysisSession(const OpenClMonoAnalysisSession&) = delete;

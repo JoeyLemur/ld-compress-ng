@@ -2434,6 +2434,7 @@ struct OpenClGeneratedAnalysisRuntime {
     ClMem lpc_buffer;
     ClMem best_buffer;
     ClMem best_rice_parameters_buffer;
+    std::vector<float> cached_window;
     std::size_t samples_buffer_bytes = 0;
     std::size_t tasks_buffer_bytes = 0;
     std::size_t selected_buffer_bytes = 0;
@@ -2442,29 +2443,51 @@ struct OpenClGeneratedAnalysisRuntime {
     std::size_t lpc_buffer_bytes = 0;
     std::size_t best_buffer_bytes = 0;
     std::size_t best_rice_parameters_buffer_bytes = 0;
+    std::size_t cached_window_blocksize = 0;
+    std::size_t cached_window_count = 0;
+    NativeAnalysisProfile cached_window_profile = NativeAnalysisProfile::Exact;
+    bool cached_window_valid = false;
 };
 
 OpenClGeneratedAnalysisRuntime make_opencl_generated_analysis_runtime(
-    std::optional<std::size_t> requested_device_index)
+    std::optional<std::size_t> requested_device_index,
+    OpenClGeneratedSetupTimings* setup_timings = nullptr)
 {
     OpenClGeneratedAnalysisRuntime runtime;
+    auto setup_started = Clock::now();
     runtime.selected_device = choose_opencl_device(requested_device_index);
+    if (setup_timings != nullptr) {
+        add_elapsed_ns(setup_timings->device_ns, setup_started);
+    }
 
     cl_int status = CL_SUCCESS;
+    setup_started = Clock::now();
     runtime.context.reset(clCreateContext(
         nullptr, 1, &runtime.selected_device.id, nullptr, nullptr, &status));
     require_cl(status, "clCreateContext");
+    if (setup_timings != nullptr) {
+        add_elapsed_ns(setup_timings->context_ns, setup_started);
+    }
 
+    setup_started = Clock::now();
     runtime.queue.reset(clCreateCommandQueue(
         runtime.context.get(), runtime.selected_device.id, 0, &status));
     require_cl(status, "clCreateCommandQueue");
+    if (setup_timings != nullptr) {
+        add_elapsed_ns(setup_timings->queue_ns, setup_started);
+    }
 
+    setup_started = Clock::now();
     const char* source = mono_analysis_kernel_source();
     const std::size_t source_length = std::char_traits<char>::length(source);
     runtime.program.reset(clCreateProgramWithSource(
         runtime.context.get(), 1, &source, &source_length, &status));
     require_cl(status, "clCreateProgramWithSource");
+    if (setup_timings != nullptr) {
+        add_elapsed_ns(setup_timings->program_source_ns, setup_started);
+    }
 
+    setup_started = Clock::now();
     const cl_int build_status = clBuildProgram(
         runtime.program.get(), 1, &runtime.selected_device.id, nullptr, nullptr, nullptr);
     if (build_status != CL_SUCCESS) {
@@ -2472,7 +2495,11 @@ OpenClGeneratedAnalysisRuntime make_opencl_generated_analysis_runtime(
         throw std::runtime_error("clBuildProgram failed: " + cl_error_name(build_status) +
             (log.empty() ? std::string {} : "\n" + log));
     }
+    if (setup_timings != nullptr) {
+        add_elapsed_ns(setup_timings->program_build_ns, setup_started);
+    }
 
+    setup_started = Clock::now();
     runtime.wasted_kernel.reset(
         clCreateKernel(runtime.program.get(), "ldcompressFindWastedBits", &status));
     require_cl(status, "clCreateKernel(ldcompressFindWastedBits)");
@@ -2494,6 +2521,9 @@ OpenClGeneratedAnalysisRuntime make_opencl_generated_analysis_runtime(
     runtime.rice_kernel.reset(
         clCreateKernel(runtime.program.get(), "ldcompressWriteBestRiceParameters", &status));
     require_cl(status, "clCreateKernel(ldcompressWriteBestRiceParameters)");
+    if (setup_timings != nullptr) {
+        add_elapsed_ns(setup_timings->kernels_ns, setup_started);
+    }
 
     return runtime;
 }
@@ -3447,13 +3477,28 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
 
     const auto frame_count = plan.selected_tasks.size() / plan.estimate_tasks_per_frame;
     const auto blocksize = static_cast<std::size_t>(plan.residual_tasks.front().data.blocksize);
-    std::vector<float> window =
-        make_generated_lpc_windows(blocksize, generated_window_count, plan.analysis_profile);
-    const auto window_bytes = window.size() * sizeof(float);
+    const bool window_cache_miss =
+        !runtime.cached_window_valid ||
+        runtime.cached_window_blocksize != blocksize ||
+        runtime.cached_window_count != generated_window_count ||
+        runtime.cached_window_profile != plan.analysis_profile;
+    if (window_cache_miss) {
+        runtime.cached_window =
+            make_generated_lpc_windows(blocksize, generated_window_count, plan.analysis_profile);
+        runtime.cached_window_blocksize = blocksize;
+        runtime.cached_window_count = generated_window_count;
+        runtime.cached_window_profile = plan.analysis_profile;
+        runtime.cached_window_valid = true;
+    }
+    const auto window_bytes = runtime.cached_window.size() * sizeof(float);
+    const bool upload_window =
+        window_cache_miss || window_bytes > runtime.window_buffer_bytes;
     ensure_opencl_buffer(runtime.context, runtime.window_buffer,
         runtime.window_buffer_bytes, CL_MEM_READ_ONLY, window_bytes, "window");
-    write_opencl_buffer(
-        runtime.queue, runtime.window_buffer, window.data(), window_bytes, "window");
+    if (upload_window) {
+        write_opencl_buffer(runtime.queue, runtime.window_buffer,
+            runtime.cached_window.data(), window_bytes, "window");
+    }
     if (timings != nullptr) {
         add_elapsed_ns(timings->upload_ns, upload_started);
     }
@@ -3721,8 +3766,10 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_impl(
 class OpenClMonoAnalysisSession::Impl final {
 public:
 #if LDCOMPRESS_HAVE_OPENCL
-    explicit Impl(std::optional<std::size_t> requested_device_index)
-        : runtime_(make_opencl_generated_analysis_runtime(requested_device_index))
+    explicit Impl(
+        std::optional<std::size_t> requested_device_index,
+        OpenClGeneratedSetupTimings* setup_timings)
+        : runtime_(make_opencl_generated_analysis_runtime(requested_device_index, setup_timings))
     {
     }
 
@@ -3754,12 +3801,14 @@ private:
 };
 
 OpenClMonoAnalysisSession::OpenClMonoAnalysisSession(
-    std::optional<std::size_t> requested_device_index)
+    std::optional<std::size_t> requested_device_index,
+    OpenClGeneratedSetupTimings* setup_timings)
 {
 #if LDCOMPRESS_HAVE_OPENCL
-    impl_ = std::make_unique<Impl>(requested_device_index);
+    impl_ = std::make_unique<Impl>(requested_device_index, setup_timings);
 #else
     (void)requested_device_index;
+    (void)setup_timings;
     throw std::runtime_error("OpenCL support was not built");
 #endif
 }

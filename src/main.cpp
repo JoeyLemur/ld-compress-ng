@@ -974,6 +974,33 @@ void print_native_stats(const ldcompress::NativeCompressionStats& stats)
                   << seconds_from_ns(stats.accelerated_selected_write_ns) << "s"
                   << " tail-write=" << seconds_from_ns(stats.accelerated_tail_write_ns) << "s"
                   << '\n';
+        const auto opencl_setup_detail_ns =
+            stats.opencl_setup_device_ns +
+            stats.opencl_setup_context_ns +
+            stats.opencl_setup_queue_ns +
+            stats.opencl_setup_program_source_ns +
+            stats.opencl_setup_program_build_ns +
+            stats.opencl_setup_kernels_ns;
+        if (opencl_setup_detail_ns != 0) {
+            const auto opencl_setup_other_ns =
+                stats.accelerated_setup_ns > opencl_setup_detail_ns
+                ? stats.accelerated_setup_ns - opencl_setup_detail_ns
+                : 0;
+            std::cerr << "opencl setup timings: device="
+                      << seconds_from_ns(stats.opencl_setup_device_ns) << "s"
+                      << " context=" << seconds_from_ns(stats.opencl_setup_context_ns)
+                      << "s"
+                      << " queue=" << seconds_from_ns(stats.opencl_setup_queue_ns)
+                      << "s"
+                      << " program-source="
+                      << seconds_from_ns(stats.opencl_setup_program_source_ns) << "s"
+                      << " program-build="
+                      << seconds_from_ns(stats.opencl_setup_program_build_ns) << "s"
+                      << " kernels=" << seconds_from_ns(stats.opencl_setup_kernels_ns)
+                      << "s"
+                      << " other=" << seconds_from_ns(opencl_setup_other_ns) << "s"
+                      << '\n';
+        }
         if (stats.accelerated_task_plan_ns != 0 ||
             stats.accelerated_exact_analysis_ns != 0) {
             std::cerr << "accelerator timings: task-plan="
@@ -1356,6 +1383,12 @@ void print_bench_result(const BenchResult& result)
     print_seconds_field(result.native_stats.accelerated_analyzer_ns);
     print_seconds_field(result.native_stats.accelerated_task_plan_ns);
     print_seconds_field(result.native_stats.accelerated_exact_analysis_ns);
+    print_seconds_field(result.native_stats.opencl_setup_device_ns);
+    print_seconds_field(result.native_stats.opencl_setup_context_ns);
+    print_seconds_field(result.native_stats.opencl_setup_queue_ns);
+    print_seconds_field(result.native_stats.opencl_setup_program_source_ns);
+    print_seconds_field(result.native_stats.opencl_setup_program_build_ns);
+    print_seconds_field(result.native_stats.opencl_setup_kernels_ns);
     print_seconds_field(result.native_stats.accelerated_selected_write_ns);
     print_seconds_field(result.native_stats.accelerated_tail_write_ns);
     print_seconds_field(result.native_stats.accelerated_selected_validation_ns);
@@ -1571,6 +1604,12 @@ int run_bench(const Options& options)
               << std::setw(18) << "accel_analyze_s"
               << std::setw(18) << "accel_plan_s"
               << std::setw(18) << "accel_exact_s"
+              << std::setw(18) << "ocl_setup_dev_s"
+              << std::setw(18) << "ocl_setup_ctx_s"
+              << std::setw(18) << "ocl_setup_q_s"
+              << std::setw(18) << "ocl_setup_src_s"
+              << std::setw(18) << "ocl_setup_build_s"
+              << std::setw(19) << "ocl_setup_kernel_s"
               << std::setw(18) << "writer_total_s"
               << std::setw(18) << "tail_write_s"
               << std::setw(18) << "writer_val_s"

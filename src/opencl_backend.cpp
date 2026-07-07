@@ -49,6 +49,18 @@ void add_opencl_timings(
     stats.opencl_readback_ns += timings.readback_ns;
 }
 
+void add_opencl_setup_timings(
+    NativeCompressionStats& stats,
+    const opencl_detail::OpenClGeneratedSetupTimings& timings)
+{
+    stats.opencl_setup_device_ns += timings.device_ns;
+    stats.opencl_setup_context_ns += timings.context_ns;
+    stats.opencl_setup_queue_ns += timings.queue_ns;
+    stats.opencl_setup_program_source_ns += timings.program_source_ns;
+    stats.opencl_setup_program_build_ns += timings.program_build_ns;
+    stats.opencl_setup_kernels_ns += timings.kernels_ns;
+}
+
 AcceleratedSelectedFrameAnalysis analyze_opencl_selected_frames(
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& frame_info,
@@ -196,11 +208,19 @@ ConversionStats compress_lds_to_opencl_native_flac(
 {
     const auto total_started = Clock::now();
     validate_opencl_options(options);
-    const auto selected_device = select_opencl_device(options.device_index);
-    const auto device_index = std::optional<std::size_t>(selected_device.flat_index);
+    const auto device_index = options.device_index;
     std::unique_ptr<opencl_detail::OpenClMonoAnalysisSession> generated_session;
     if (options.max_lpc_order > 0) {
-        generated_session = std::make_unique<opencl_detail::OpenClMonoAnalysisSession>(device_index);
+        opencl_detail::OpenClGeneratedSetupTimings setup_timings;
+        generated_session =
+            std::make_unique<opencl_detail::OpenClMonoAnalysisSession>(
+                device_index,
+                options.native_stats == nullptr ? nullptr : &setup_timings);
+        if (options.native_stats != nullptr) {
+            add_opencl_setup_timings(*options.native_stats, setup_timings);
+        }
+    } else {
+        (void)select_opencl_device(device_index);
     }
     if (options.native_stats != nullptr) {
         add_elapsed_ns(options.native_stats->accelerated_setup_ns, total_started);
