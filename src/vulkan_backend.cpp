@@ -33,6 +33,23 @@ void add_elapsed_ns(std::uint64_t& counter, Clock::time_point start)
         std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count());
 }
 
+void add_vulkan_gpu_timings(
+    NativeCompressionStats& stats,
+    const vulkan_detail::VulkanGpuTimingStats& gpu_timings)
+{
+    stats.vulkan_gpu_timed_batches += gpu_timings.batches;
+    stats.vulkan_gpu_total_ns += gpu_timings.total_ns;
+    stats.vulkan_gpu_upload_ns += gpu_timings.upload_ns;
+    stats.vulkan_gpu_generated_prepare_ns += gpu_timings.generated_prepare_ns;
+    stats.vulkan_gpu_generated_autocorrelation_ns +=
+        gpu_timings.generated_autocorrelation_ns;
+    stats.vulkan_gpu_generated_lpc_ns += gpu_timings.generated_lpc_ns;
+    stats.vulkan_gpu_generated_quantize_ns += gpu_timings.generated_quantize_ns;
+    stats.vulkan_gpu_exact_analysis_ns += gpu_timings.exact_analysis_ns;
+    stats.vulkan_gpu_choose_best_ns += gpu_timings.choose_best_ns;
+    stats.vulkan_gpu_readback_ns += gpu_timings.readback_ns;
+}
+
 opencl_detail::OpenClMonoAnalysisTaskPlan build_vulkan_fixed_constant_task_plan(
     std::size_t frame_count,
     const FlacFrameInfo& frame_info,
@@ -86,17 +103,23 @@ AcceleratedSelectedFrameAnalysis analyze_vulkan_selected_frames(
         add_elapsed_ns(stats->accelerated_task_plan_ns, plan_started);
     }
 
+    vulkan_detail::VulkanGpuTimingStats gpu_timings;
     const auto analysis_started = Clock::now();
     auto result = frame_info.max_lpc_order == 0
         ? session.run_fixed_constant_best_analysis(
-            samples, plan, frame_info.max_rice_partition_order)
+            samples,
+            plan,
+            frame_info.max_rice_partition_order,
+            stats != nullptr ? &gpu_timings : nullptr)
         : session.run_generated_best_analysis(
             samples,
             plan,
             frame_info.lpc_coefficient_precision,
-            frame_info.max_rice_partition_order);
+            frame_info.max_rice_partition_order,
+            stats != nullptr ? &gpu_timings : nullptr);
     if (stats != nullptr) {
         add_elapsed_ns(stats->accelerated_exact_analysis_ns, analysis_started);
+        add_vulkan_gpu_timings(*stats, gpu_timings);
     }
 
     AcceleratedSelectedFrameAnalysis selected;

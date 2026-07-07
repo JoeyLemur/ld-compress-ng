@@ -39,6 +39,16 @@ struct NativeCompressionStats {
     std::uint64_t accelerated_tail_write_ns = 0;
     std::uint64_t accelerated_task_plan_ns = 0;
     std::uint64_t accelerated_exact_analysis_ns = 0;
+    std::uint64_t vulkan_gpu_timed_batches = 0;
+    std::uint64_t vulkan_gpu_total_ns = 0;
+    std::uint64_t vulkan_gpu_upload_ns = 0;
+    std::uint64_t vulkan_gpu_generated_prepare_ns = 0;
+    std::uint64_t vulkan_gpu_generated_autocorrelation_ns = 0;
+    std::uint64_t vulkan_gpu_generated_lpc_ns = 0;
+    std::uint64_t vulkan_gpu_generated_quantize_ns = 0;
+    std::uint64_t vulkan_gpu_exact_analysis_ns = 0;
+    std::uint64_t vulkan_gpu_choose_best_ns = 0;
+    std::uint64_t vulkan_gpu_readback_ns = 0;
 };
 
 struct CompressionOptions {

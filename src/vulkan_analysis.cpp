@@ -39,6 +39,16 @@ constexpr unsigned kVulkanExactMaxRicePartitionOrder = 8;
 constexpr std::uint32_t kWorkGroupSize = 64;
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kGeneratedTukeyTaperFraction = 0.5;
+constexpr std::uint32_t kTimestampBegin = 0;
+constexpr std::uint32_t kTimestampAfterUpload = 1;
+constexpr std::uint32_t kTimestampAfterGeneratedPrepare = 2;
+constexpr std::uint32_t kTimestampAfterGeneratedAutocorrelation = 3;
+constexpr std::uint32_t kTimestampAfterGeneratedLpc = 4;
+constexpr std::uint32_t kTimestampAfterGeneratedQuantize = 5;
+constexpr std::uint32_t kTimestampAfterExactAnalysis = 6;
+constexpr std::uint32_t kTimestampAfterChooseBest = 7;
+constexpr std::uint32_t kTimestampAfterReadback = 8;
+constexpr std::uint32_t kTimestampQueryCount = 9;
 
 struct GeneratedLpcConfig {
     std::size_t lpc_tasks_per_window = 0;
@@ -67,6 +77,36 @@ struct GeneratedLpcConfig {
         throw std::runtime_error(std::string("Vulkan analysis ") + name + " exceeds uint32");
     }
     return static_cast<std::uint32_t>(value);
+}
+
+[[maybe_unused]] std::uint64_t timestamp_delta_ticks(
+    std::uint64_t begin,
+    std::uint64_t end,
+    std::uint32_t valid_bits)
+{
+    if (valid_bits == 0) {
+        return 0;
+    }
+    if (valid_bits >= 64) {
+        return end - begin;
+    }
+    const auto mask = (std::uint64_t {1} << valid_bits) - 1U;
+    return ((end & mask) - (begin & mask)) & mask;
+}
+
+[[maybe_unused]] std::uint64_t timestamp_delta_ns(
+    std::uint64_t begin,
+    std::uint64_t end,
+    std::uint32_t valid_bits,
+    float timestamp_period_ns)
+{
+    const auto ticks = timestamp_delta_ticks(begin, end, valid_bits);
+    const auto nanoseconds =
+        static_cast<double>(ticks) * static_cast<double>(timestamp_period_ns);
+    if (nanoseconds >= static_cast<double>(std::numeric_limits<std::uint64_t>::max())) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return static_cast<std::uint64_t>(nanoseconds);
 }
 
 void validate_best_method_plan(const OpenClMonoAnalysisTaskPlan& plan)
@@ -511,7 +551,12 @@ std::vector<VkPhysicalDevice> enumerate_physical_devices(VkInstance instance)
     return devices;
 }
 
-std::optional<std::uint32_t> compute_queue_family(VkPhysicalDevice device)
+struct ComputeQueueFamily {
+    std::uint32_t index = 0;
+    VkQueueFamilyProperties properties {};
+};
+
+std::optional<ComputeQueueFamily> compute_queue_family(VkPhysicalDevice device)
 {
     std::uint32_t count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(device, &count, nullptr);
@@ -524,7 +569,10 @@ std::optional<std::uint32_t> compute_queue_family(VkPhysicalDevice device)
     for (std::uint32_t i = 0; i < count; ++i) {
         if ((families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0 &&
             families[i].queueCount > 0) {
-            return i;
+            return ComputeQueueFamily {
+                .index = i,
+                .properties = families[i],
+            };
         }
     }
     return std::nullopt;
@@ -541,6 +589,8 @@ struct SelectedDevice {
     std::uint32_t index = 0;
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
     std::uint32_t queue_family_index = 0;
+    std::uint32_t timestamp_valid_bits = 0;
+    float timestamp_period_ns = 0.0F;
     std::string name;
 };
 
@@ -568,15 +618,18 @@ SelectedDevice select_physical_device(
         return SelectedDevice {
             .index = static_cast<std::uint32_t>(index),
             .physical_device = devices[index],
-            .queue_family_index = *queue_family,
+            .queue_family_index = queue_family->index,
+            .timestamp_valid_bits = queue_family->properties.timestampValidBits,
+            .timestamp_period_ns = properties.limits.timestampPeriod,
             .name = properties.deviceName,
         };
     };
 
     if (requested_device_index.has_value()) {
         if (*requested_device_index >= devices.size()) {
-            throw std::runtime_error("Vulkan device index out of range: " +
-                std::to_string(*requested_device_index));
+            throw std::runtime_error("Vulkan analysis device index out of range: " +
+                std::to_string(*requested_device_index) + " (visible devices: " +
+                std::to_string(devices.size()) + ")");
         }
         return make_selection(*requested_device_index);
     }
@@ -1008,6 +1061,20 @@ public:
                 .flags = 0,
             };
             require_vk(vkCreateFence(device_, &fence_info, nullptr, &fence_), "vkCreateFence");
+
+            if (selected_.timestamp_valid_bits != 0) {
+                const VkQueryPoolCreateInfo query_pool_info {
+                    .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+                    .pNext = nullptr,
+                    .flags = 0,
+                    .queryType = VK_QUERY_TYPE_TIMESTAMP,
+                    .queryCount = kTimestampQueryCount,
+                    .pipelineStatistics = 0,
+                };
+                require_vk(
+                    vkCreateQueryPool(device_, &query_pool_info, nullptr, &query_pool_),
+                    "vkCreateQueryPool");
+            }
         } catch (...) {
             cleanup();
             throw;
@@ -1028,7 +1095,8 @@ public:
         unsigned max_rice_partition_order,
         bool allow_lpc,
         std::optional<GeneratedLpcConfig> generated_lpc = std::nullopt,
-        bool read_analyzed_tasks = true)
+        bool read_analyzed_tasks = true,
+        VulkanGpuTimingStats* gpu_timings = nullptr)
     {
         (void)allow_lpc;
 
@@ -1139,6 +1207,8 @@ public:
             tasks_readback_buffer = &ensure_host_buffer(
                 tasks_readback_buffer_, tasks_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
         }
+        const bool collect_timestamps =
+            gpu_timings != nullptr && query_pool_ != VK_NULL_HANDLE;
 
         samples_upload_buffer.copy_from(samples);
         tasks_upload_buffer.copy_from(plan.residual_tasks);
@@ -1216,6 +1286,17 @@ public:
             .pInheritanceInfo = nullptr,
         };
         require_vk(vkBeginCommandBuffer(command_buffer_, &begin_info), "vkBeginCommandBuffer");
+        auto write_timestamp = [&](
+                                   std::uint32_t index,
+                                   VkPipelineStageFlagBits stage) {
+            if (collect_timestamps) {
+                vkCmdWriteTimestamp(command_buffer_, stage, query_pool_, index);
+            }
+        };
+        if (collect_timestamps) {
+            vkCmdResetQueryPool(command_buffer_, query_pool_, 0, kTimestampQueryCount);
+            write_timestamp(kTimestampBegin, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+        }
         auto copy_buffer = [&](
                                VkBuffer source,
                                VkBuffer destination,
@@ -1250,6 +1331,7 @@ public:
             nullptr,
             0,
             nullptr);
+        write_timestamp(kTimestampAfterUpload, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
         vkCmdBindPipeline(command_buffer_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
         vkCmdBindDescriptorSets(
@@ -1300,20 +1382,38 @@ public:
         if (generated_lpc.has_value()) {
             dispatch_mode(2, base_push.frame_count);
             shader_write_to_read_barrier();
+            write_timestamp(
+                kTimestampAfterGeneratedPrepare, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
             dispatch_mode(
                 3,
                 base_push.frame_count,
                 base_push.generated_window_count,
                 checked_u32(opencl_detail::kFlacClMaxOrder + 1U, "autocorrelation lag count"));
             shader_write_to_read_barrier();
+            write_timestamp(
+                kTimestampAfterGeneratedAutocorrelation,
+                VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
             dispatch_mode(4, base_push.frame_count, base_push.generated_window_count);
             shader_write_to_read_barrier();
+            write_timestamp(kTimestampAfterGeneratedLpc, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
             dispatch_mode(5, base_push.frame_count, base_push.generated_window_count);
             shader_write_to_read_barrier();
+            write_timestamp(
+                kTimestampAfterGeneratedQuantize, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        } else {
+            write_timestamp(
+                kTimestampAfterGeneratedPrepare, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+            write_timestamp(
+                kTimestampAfterGeneratedAutocorrelation,
+                VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+            write_timestamp(kTimestampAfterGeneratedLpc, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+            write_timestamp(
+                kTimestampAfterGeneratedQuantize, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
         }
 
         dispatch_mode(0, base_push.task_count);
         shader_write_to_read_barrier();
+        write_timestamp(kTimestampAfterExactAnalysis, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
         dispatch_mode(1, dispatch_groups(base_push.frame_count));
 
         const VkMemoryBarrier shader_to_transfer_barrier {
@@ -1333,6 +1433,7 @@ public:
             nullptr,
             0,
             nullptr);
+        write_timestamp(kTimestampAfterChooseBest, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
         copy_buffer(best_buffer.get(), best_readback_buffer.get(), best_bytes);
         if (tasks_readback_buffer != nullptr) {
@@ -1356,6 +1457,7 @@ public:
             nullptr,
             0,
             nullptr);
+        write_timestamp(kTimestampAfterReadback, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
         require_vk(vkEndCommandBuffer(command_buffer_), "vkEndCommandBuffer");
         require_vk(vkResetFences(device_, 1, &fence_), "vkResetFences");
@@ -1374,6 +1476,50 @@ public:
         require_vk(vkQueueSubmit(queue_, 1, &submit_info, fence_), "vkQueueSubmit");
         require_vk(vkWaitForFences(device_, 1, &fence_, VK_TRUE, kFenceTimeoutNs),
             "vkWaitForFences");
+
+        if (collect_timestamps) {
+            std::array<std::uint64_t, kTimestampQueryCount> timestamps {};
+            require_vk(
+                vkGetQueryPoolResults(
+                    device_,
+                    query_pool_,
+                    0,
+                    kTimestampQueryCount,
+                    sizeof(timestamps),
+                    timestamps.data(),
+                    sizeof(timestamps[0]),
+                    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT),
+                "vkGetQueryPoolResults");
+            auto delta_ns = [&](std::uint32_t begin, std::uint32_t end) {
+                return timestamp_delta_ns(
+                    timestamps.at(begin),
+                    timestamps.at(end),
+                    selected_.timestamp_valid_bits,
+                    selected_.timestamp_period_ns);
+            };
+            ++gpu_timings->batches;
+            gpu_timings->total_ns += delta_ns(kTimestampBegin, kTimestampAfterReadback);
+            gpu_timings->upload_ns += delta_ns(kTimestampBegin, kTimestampAfterUpload);
+            if (generated_lpc.has_value()) {
+                gpu_timings->generated_prepare_ns +=
+                    delta_ns(kTimestampAfterUpload, kTimestampAfterGeneratedPrepare);
+                gpu_timings->generated_autocorrelation_ns += delta_ns(
+                    kTimestampAfterGeneratedPrepare,
+                    kTimestampAfterGeneratedAutocorrelation);
+                gpu_timings->generated_lpc_ns += delta_ns(
+                    kTimestampAfterGeneratedAutocorrelation,
+                    kTimestampAfterGeneratedLpc);
+                gpu_timings->generated_quantize_ns += delta_ns(
+                    kTimestampAfterGeneratedLpc,
+                    kTimestampAfterGeneratedQuantize);
+            }
+            gpu_timings->exact_analysis_ns += delta_ns(
+                kTimestampAfterGeneratedQuantize, kTimestampAfterExactAnalysis);
+            gpu_timings->choose_best_ns += delta_ns(
+                kTimestampAfterExactAnalysis, kTimestampAfterChooseBest);
+            gpu_timings->readback_ns +=
+                delta_ns(kTimestampAfterChooseBest, kTimestampAfterReadback);
+        }
 
         best_readback_buffer.invalidate();
         best_readback_buffer.copy_to(best_tasks);
@@ -1440,6 +1586,10 @@ private:
                 vkDestroyCommandPool(device_, command_pool_, nullptr);
                 command_pool_ = VK_NULL_HANDLE;
             }
+            if (query_pool_ != VK_NULL_HANDLE) {
+                vkDestroyQueryPool(device_, query_pool_, nullptr);
+                query_pool_ = VK_NULL_HANDLE;
+            }
             if (descriptor_pool_ != VK_NULL_HANDLE) {
                 vkDestroyDescriptorPool(device_, descriptor_pool_, nullptr);
                 descriptor_pool_ = VK_NULL_HANDLE;
@@ -1483,6 +1633,7 @@ private:
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
     VkCommandBuffer command_buffer_ = VK_NULL_HANDLE;
     VkFence fence_ = VK_NULL_HANDLE;
+    VkQueryPool query_pool_ = VK_NULL_HANDLE;
     std::unique_ptr<DeviceBuffer> samples_buffer_;
     std::unique_ptr<DeviceBuffer> tasks_buffer_;
     std::unique_ptr<DeviceBuffer> selected_buffer_;
@@ -1533,17 +1684,25 @@ OpenClMonoFixedConstantAnalysisResult VulkanMonoExactAnalysisSession::run_fixed_
 OpenClMonoBestMethodResult VulkanMonoExactAnalysisSession::run_fixed_constant_best_analysis(
     const std::vector<std::int32_t>& samples,
     const OpenClMonoAnalysisTaskPlan& plan,
-    unsigned max_rice_partition_order)
+    unsigned max_rice_partition_order,
+    VulkanGpuTimingStats* gpu_timings)
 {
     validate_vulkan_exact_analysis_inputs(samples, plan, max_rice_partition_order, false);
 #if LDCOMPRESS_HAVE_VULKAN
     auto result = impl_->run_validated(
-        samples, plan, max_rice_partition_order, false, std::nullopt, false);
+        samples,
+        plan,
+        max_rice_partition_order,
+        false,
+        std::nullopt,
+        false,
+        gpu_timings);
     return OpenClMonoBestMethodResult {
         .best_tasks = std::move(result.best_tasks),
         .device_name = std::move(result.device_name),
     };
 #else
+    (void)gpu_timings;
     throw std::runtime_error("Vulkan support was not built");
 #endif
 }
@@ -1581,19 +1740,27 @@ OpenClMonoBestMethodResult VulkanMonoExactAnalysisSession::run_generated_best_an
     const std::vector<std::int32_t>& samples,
     const OpenClMonoAnalysisTaskPlan& plan,
     unsigned lpc_coefficient_precision,
-    unsigned max_rice_partition_order)
+    unsigned max_rice_partition_order,
+    VulkanGpuTimingStats* gpu_timings)
 {
     const auto generated_lpc = validate_vulkan_generated_analysis_inputs(
         samples, plan, lpc_coefficient_precision, max_rice_partition_order);
 #if LDCOMPRESS_HAVE_VULKAN
     auto result = impl_->run_validated(
-        samples, plan, max_rice_partition_order, true, generated_lpc, false);
+        samples,
+        plan,
+        max_rice_partition_order,
+        true,
+        generated_lpc,
+        false,
+        gpu_timings);
     return OpenClMonoBestMethodResult {
         .best_tasks = std::move(result.best_tasks),
         .device_name = std::move(result.device_name),
     };
 #else
     (void)generated_lpc;
+    (void)gpu_timings;
     throw std::runtime_error("Vulkan support was not built");
 #endif
 }

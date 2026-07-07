@@ -271,12 +271,13 @@ order `12`, LPC coefficient precision `12`, and maximum Rice partition order
 `5`. Compression still defaults to one thread unless `--threads` is specified;
 use `--threads 8` for routine native benchmark comparisons. OpenCL and Vulkan
 use the same native tuning options, but currently require `--threads 1`.
-Vulkan exact-costs
-fixed/Rice and scalar-generated LPC candidates; generated-LPC-on-GPU and
-throughput tuning are still future 1.1 work.
-Use `--stats` on native/OpenCL/Vulkan compression when investigating backend
-behavior; accelerated backends also print coarse timing splits for scan,
-analyzer, selected-frame writing, and accelerator plan/exact-analysis stages.
+Vulkan exact-costs fixed/Rice and GPU-generated LPC candidates. Use `--stats`
+on native/OpenCL/Vulkan compression when investigating backend behavior;
+accelerated backends also print coarse timing splits for scan, analyzer,
+selected-frame writing, and accelerator plan/exact-analysis stages. Vulkan
+additionally prints GPU queue timestamp splits when the selected compute queue
+supports timestamp queries, which helps separate transfer/readback cost from
+generated-LPC and exact residual/Rice shader work.
 
 ## Local Validation Matrix
 

@@ -10,6 +10,19 @@
 
 namespace ldcompress::vulkan_detail {
 
+struct VulkanGpuTimingStats {
+    std::uint64_t batches = 0;
+    std::uint64_t total_ns = 0;
+    std::uint64_t upload_ns = 0;
+    std::uint64_t generated_prepare_ns = 0;
+    std::uint64_t generated_autocorrelation_ns = 0;
+    std::uint64_t generated_lpc_ns = 0;
+    std::uint64_t generated_quantize_ns = 0;
+    std::uint64_t exact_analysis_ns = 0;
+    std::uint64_t choose_best_ns = 0;
+    std::uint64_t readback_ns = 0;
+};
+
 class VulkanMonoExactAnalysisSession final {
 public:
     explicit VulkanMonoExactAnalysisSession(
@@ -27,7 +40,8 @@ public:
     opencl_detail::OpenClMonoBestMethodResult run_fixed_constant_best_analysis(
         const std::vector<std::int32_t>& samples,
         const opencl_detail::OpenClMonoAnalysisTaskPlan& plan,
-        unsigned max_rice_partition_order = 5);
+        unsigned max_rice_partition_order = 5,
+        VulkanGpuTimingStats* gpu_timings = nullptr);
 
     opencl_detail::OpenClMonoFixedConstantAnalysisResult run_lpc_analysis(
         const std::vector<std::int32_t>& samples,
@@ -44,7 +58,8 @@ public:
         const std::vector<std::int32_t>& samples,
         const opencl_detail::OpenClMonoAnalysisTaskPlan& plan,
         unsigned lpc_coefficient_precision = 12,
-        unsigned max_rice_partition_order = 5);
+        unsigned max_rice_partition_order = 5,
+        VulkanGpuTimingStats* gpu_timings = nullptr);
 
 private:
     class Impl;

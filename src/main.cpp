@@ -936,6 +936,24 @@ void print_native_stats(const ldcompress::NativeCompressionStats& stats)
                       << " analyzer-other=" << seconds_from_ns(analyzer_other_ns) << "s"
                       << '\n';
         }
+        if (stats.vulkan_gpu_timed_batches != 0) {
+            std::cerr << "vulkan gpu timings: batches=" << stats.vulkan_gpu_timed_batches
+                      << " total=" << seconds_from_ns(stats.vulkan_gpu_total_ns) << "s"
+                      << " upload=" << seconds_from_ns(stats.vulkan_gpu_upload_ns) << "s"
+                      << " prepare="
+                      << seconds_from_ns(stats.vulkan_gpu_generated_prepare_ns) << "s"
+                      << " autocor="
+                      << seconds_from_ns(stats.vulkan_gpu_generated_autocorrelation_ns) << "s"
+                      << " lpc=" << seconds_from_ns(stats.vulkan_gpu_generated_lpc_ns) << "s"
+                      << " quantize="
+                      << seconds_from_ns(stats.vulkan_gpu_generated_quantize_ns) << "s"
+                      << " exact="
+                      << seconds_from_ns(stats.vulkan_gpu_exact_analysis_ns) << "s"
+                      << " choose=" << seconds_from_ns(stats.vulkan_gpu_choose_best_ns) << "s"
+                      << " readback="
+                      << seconds_from_ns(stats.vulkan_gpu_readback_ns) << "s"
+                      << '\n';
+        }
         std::cerr.unsetf(std::ios::floatfield);
     }
 }

@@ -329,8 +329,10 @@ Implemented for the first 1.1 checkpoint:
   buffers across batches. The old one-shot analysis functions remain as
   compatibility wrappers for tests and diagnostics.
 - Native `--stats` now reports coarse accelerated timing splits for backend
-  total time, LDS scan, analyzer callback, selected-frame writing, Vulkan task
-  plan generation, and Vulkan exact analysis.
+  total time, LDS scan, analyzer callback, selected-frame writing, accelerator
+  task-plan generation, and accelerator exact analysis. Vulkan compression also
+  reports GPU queue timestamp splits when the selected compute queue supports
+  timestamp queries.
 - Vulkan exact analysis now dispatches one workgroup per task and uses
   workgroup reductions for wasted-bit scans, amplitude scans, constant checks,
   and exact Rice bit sums. This keeps the task ABI, selected-task handoff, and
@@ -372,16 +374,21 @@ Remaining Vulkan work:
 - Treat Vulkan/OpenCL throughput as an architecture problem before any
   shader-level micro-tuning. Current NVIDIA RTX 5070 Ti timings on
   `ntsc/issue176.lds` after the Vulkan best-task-only readback, 128-frame
-  batching, device-local buffer placement, and shared writer-copy cleanup show
-  CPU/libFLAC at about `0.137` seconds, scalar native-fixed at `1.687` seconds
-  with `8` threads, OpenCL at `10.132` seconds, and Vulkan at `1.995` seconds.
+  batching, device-local buffer placement, shared writer-copy cleanup, and GPU
+  queue timestamp instrumentation show CPU/libFLAC at about `0.138` seconds,
+  scalar native-fixed at `1.675` seconds with `8` threads, OpenCL at `10.132`
+  seconds, and Vulkan at `2.005` seconds.
   Vulkan output on that fixture is `4,292,100` bytes: `1,508` bytes larger than
   scalar native-fixed's `4,290,592` bytes, `22,033` bytes smaller than
   CPU/libFLAC's `4,314,133` bytes, and `6,134` bytes smaller than OpenCL's
   `4,298,234` bytes. A focused `compress --backend vulkan --stats` run measured
-  `12` batches with about `1.40` analyzer seconds: `0.0008` seconds in Vulkan
-  task-plan generation and `1.40` seconds in generated LPC plus exact analysis.
-  Shared selected-frame writing is now about `0.30` seconds.
+  `12` batches, `1.994` total backend seconds, `1.394` analyzer seconds, and
+  `0.305` selected-frame write seconds. Vulkan queue timestamps measured
+  `1.381` GPU seconds: `0.0014` upload, `0.0074` total generated-LPC
+  preparation/autocorrelation/LPC/quantization, `1.3719` exact residual/Rice
+  analysis, `0.0001` choose-best, and `0.0001` readback. On the NVIDIA fixture
+  path, PCIe transfer/readback is not the primary bottleneck; the exact-analysis
+  shader work is.
 - The latest six-fixture sweep at frame size `4608`, LPC order `12`,
   coefficient precision `12`, Rice partition order `5`, native-fixed `8`
   threads, OpenCL device `1`, and Vulkan device `1` produced aggregate sizes:
@@ -391,14 +398,13 @@ Remaining Vulkan work:
   scalar native-fixed, `59,870` bytes smaller than OpenCL, and much faster than
   OpenCL on the NVIDIA validation device.
 - Continue Vulkan throughput architecture before shader-level micro-tuning:
-  the current path uses device-local storage but still performs one synchronous
-  upload/compute/readback submission per batch. Future work should consider
-  staging-buffer consolidation, overlapping upload/compute/readback across
-  batches, and profiling the remaining selected-frame writer cost before
-  changing writer internals further. The readback split is also useful for
-  OpenCL: normal OpenCL compression discards full analyzed tasks too, so a
-  future OpenCL best-only analyzer path could skip the `tasks_buffer` readback
-  while keeping the current full-result APIs for parity diagnostics.
+  first profile and reshape the exact residual/Rice analysis shader, because it
+  dominates measured NVIDIA queue time. After that, revisit overlapping
+  upload/compute/readback across batches and the remaining selected-frame writer
+  cost. The readback split is still useful for OpenCL: normal OpenCL compression
+  discards full analyzed tasks too, so a future OpenCL best-only analyzer path
+  could skip the `tasks_buffer` readback while keeping the current full-result
+  APIs for parity diagnostics.
 
 Immediate engineering focus:
 
