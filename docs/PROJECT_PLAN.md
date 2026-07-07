@@ -483,6 +483,19 @@ Remaining Vulkan work:
   `0.0001` readback. The matching no-stats bench row stayed at `1.089`
   seconds. The remaining OpenCL analyzer bottleneck is generated
   autocorrelation, not exact/Rice, readback, choose-best, or LPC quantization.
+- OpenCL generated autocorrelation now uses the same broad workgroup shape as
+  Vulkan: one `64`-lane workgroup per frame/window/lag, with local float
+  reductions. This intentionally changes floating-point summation order, so
+  generated LPC coefficients and exact selected candidates are not byte-identical
+  to the prior serial OpenCL path. On `ntsc/issue176.lds` with NVIDIA OpenCL
+  device `1`, the focused stats run measured about `0.011` seconds in
+  autocorrelation and `0.126` analyzer seconds total, down from `0.587` and
+  `0.702` respectively. The matching no-stats bench row improved to `0.516`
+  seconds with `4,291,949` byte output, source verification passed, and this is
+  slightly smaller/faster than the current Vulkan row on that fixture
+  (`4,292,100` bytes in `0.715` seconds). The largest remaining OpenCL time is
+  now outside generated analysis, primarily selected-frame writer work and
+  backend/host overhead.
 
 Immediate engineering focus:
 

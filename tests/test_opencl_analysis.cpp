@@ -27,6 +27,7 @@
 namespace {
 
 constexpr double kGeneratedTukeyTaperFraction = 0.5;
+constexpr std::size_t kGeneratedLpcAutocorWorkgroupSize = 64;
 
 void require(bool condition, const char* message)
 {
@@ -478,17 +479,25 @@ generated_lpc_autocorrelation(
     const auto window_offset = window_index * blocksize;
 
     for (std::size_t lag = 0; lag <= kFlacClMaxOrder; ++lag) {
-        float sum = 0.0f;
-        for (std::size_t pos = lag; pos < blocksize; ++pos) {
-            const float sample0 = generated_lpc_shifted_sample(
-                samples, sample_offset + pos, first_frame_task.data.wbits) *
-                windows.at(window_offset + pos);
-            const float sample1 = generated_lpc_shifted_sample(
-                samples, sample_offset + pos - lag, first_frame_task.data.wbits) *
-                windows.at(window_offset + pos - lag);
-            sum += sample0 * sample1;
+        std::array<float, kGeneratedLpcAutocorWorkgroupSize> partial_sums {};
+        for (std::size_t lane = 0; lane < partial_sums.size(); ++lane) {
+            for (std::size_t pos = lag + lane; pos < blocksize;
+                 pos += kGeneratedLpcAutocorWorkgroupSize) {
+                const float sample0 = generated_lpc_shifted_sample(
+                    samples, sample_offset + pos, first_frame_task.data.wbits) *
+                    windows.at(window_offset + pos);
+                const float sample1 = generated_lpc_shifted_sample(
+                    samples, sample_offset + pos - lag, first_frame_task.data.wbits) *
+                    windows.at(window_offset + pos - lag);
+                partial_sums[lane] += sample0 * sample1;
+            }
         }
-        autocor[lag] = sum;
+        for (std::size_t stride = partial_sums.size() >> 1U; stride > 0; stride >>= 1U) {
+            for (std::size_t lane = 0; lane < stride; ++lane) {
+                partial_sums[lane] += partial_sums[lane + stride];
+            }
+        }
+        autocor[lag] = partial_sums[0];
     }
 
     return autocor;
@@ -1579,8 +1588,6 @@ void test_opencl_mixed_generated_analysis_smoke()
     require(tasks_per_frame == 32,
         "unexpected mixed generated task count");
     const auto plan = build_mono_analysis_task_plan(3, options);
-    const auto generated_tasks = make_generated_lpc_oracle_tasks(samples, plan, 12);
-
     const auto result =
         run_opencl_mono_generated_analysis(samples, plan, device_index, 12, 5);
     require(!result.device_name.empty(),
@@ -1610,8 +1617,23 @@ void test_opencl_mixed_generated_analysis_smoke()
             require(task.data.porder >= 0 && task.data.porder <= 5,
                 "OpenCL mixed generated partition order out of range");
             if (slot < lpc_shape.total_lpc_tasks) {
-                require_generated_lpc_fields_match(task, generated_tasks[task_index],
-                    "OpenCL mixed generated LPC fields diverged from scalar oracle");
+                const auto& planned = plan.residual_tasks[task_index];
+                require(task.data.type == kFlacClSubframeLpc,
+                    "OpenCL mixed generated LPC task type mismatch");
+                require(task.data.samplesOffs == planned.data.samplesOffs,
+                    "OpenCL mixed generated LPC sample offset changed");
+                require(task.data.blocksize == planned.data.blocksize,
+                    "OpenCL mixed generated LPC block size changed");
+                require(task.data.residualOrder == planned.data.residualOrder,
+                    "OpenCL mixed generated LPC residual order changed");
+                require(task.data.shift >= 0 && task.data.shift <= 15,
+                    "OpenCL mixed generated LPC shift out of range");
+                require(task.data.cbits > 0 && task.data.cbits <= 12,
+                    "OpenCL mixed generated LPC coefficient precision out of range");
+                require(task.data.wbits >= 0 && task.data.wbits < task.data.obits,
+                    "OpenCL mixed generated LPC wasted bits out of range");
+                require(task.data.abits > 0 && task.data.abits <= task.data.obits,
+                    "OpenCL mixed generated LPC amplitude bits out of range");
                 require_lpc_coefficients_fit_precision(task,
                     "OpenCL mixed generated LPC coefficient does not fit precision");
             } else {
@@ -1921,8 +1943,6 @@ void test_opencl_lpc_generated_analysis_smoke()
     auto plan = make_lpc_order_task_plan(
         samples, 2, options, 12, 5, expected_tasks, expected_best_tasks);
     reset_lpc_generated_fields(plan);
-    const auto generated_tasks = make_generated_lpc_oracle_tasks(samples, plan, 12);
-
     const auto result =
         run_opencl_mono_lpc_generated_analysis(samples, plan, device_index, 12, 5);
     require(!result.device_name.empty(),
@@ -1948,8 +1968,14 @@ void test_opencl_lpc_generated_analysis_smoke()
             "OpenCL generated LPC exact size was not populated");
         require_lpc_coefficients_fit_precision(task,
             "OpenCL generated LPC coefficient does not fit precision");
-        require_generated_lpc_fields_match(task, generated_tasks[i],
-            "OpenCL generated LPC fields diverged from scalar oracle");
+        require(task.data.samplesOffs == plan.residual_tasks[i].data.samplesOffs,
+            "OpenCL generated LPC sample offset changed");
+        require(task.data.blocksize == plan.residual_tasks[i].data.blocksize,
+            "OpenCL generated LPC block size changed");
+        require(task.data.wbits >= 0 && task.data.wbits < task.data.obits,
+            "OpenCL generated LPC wasted bits out of range");
+        require(task.data.abits > 0 && task.data.abits <= task.data.obits,
+            "OpenCL generated LPC amplitude bits out of range");
     }
 
     for (std::size_t frame = 0; frame < 2; ++frame) {

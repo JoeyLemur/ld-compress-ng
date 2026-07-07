@@ -236,6 +236,7 @@ constexpr std::size_t kOpenClAnalysisBitsPerSample = 16;
 constexpr unsigned kExactMaxRicePartitionOrder = 8;
 constexpr unsigned kExactMaxRiceParameter = 14;
 constexpr std::size_t kOpenClExactWorkgroupSize = 64;
+constexpr std::size_t kOpenClAutocorWorkgroupSize = 64;
 
 void validate_best_method_plan(const OpenClMonoAnalysisTaskPlan& plan)
 {
@@ -1016,6 +1017,7 @@ const char* mono_analysis_kernel_source()
 #define RICE_PARAM_BITS 4
 #endif
 #define EXACT_WORKGROUP_SIZE 64
+#define AUTOCOR_WORKGROUP_SIZE 64
 
 typedef enum
 {
@@ -1082,7 +1084,21 @@ void ldcompressFindWastedBits(
 
 long ldcompressShiftedSample(__global const int* data, int pos, int wbits);
 
-__kernel __attribute__((reqd_work_group_size(1, 1, 1)))
+float ldcompressReduceSumFloat(float value, __local float* scratch)
+{
+    const int lane = (int)get_local_id(0);
+    scratch[lane] = value;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int stride = AUTOCOR_WORKGROUP_SIZE >> 1; stride > 0; stride >>= 1)
+    {
+        if (lane < stride)
+            scratch[lane] += scratch[lane + stride];
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    return scratch[0];
+}
+
+__kernel __attribute__((reqd_work_group_size(AUTOCOR_WORKGROUP_SIZE, 1, 1)))
 void ldcompressComputeAutocor(
     __global float* output,
     __global const int* samples,
@@ -1090,27 +1106,33 @@ void ldcompressComputeAutocor(
     __global FLACCLSubframeTask* tasks,
     int tasksPerFrame)
 {
-    FLACCLSubframeData task = tasks[get_group_id(0) * tasksPerFrame].data;
+    __local float reduceScratch[AUTOCOR_WORKGROUP_SIZE];
+    const int frame = (int)get_group_id(0);
+    const int windowIndex = (int)get_group_id(1);
+    const int lag = (int)get_group_id(2);
+    FLACCLSubframeData task = tasks[frame * tasksPerFrame].data;
     const int blocksize = task.blocksize;
-    const int windowOffset = get_group_id(1) * blocksize;
-    __global float* out =
-        &output[(get_group_id(0) * get_num_groups(1) + get_group_id(1)) * (MAX_ORDER + 1)];
+    const int windowOffset = windowIndex * blocksize;
+    const int outputOffset =
+        ((frame * (int)get_num_groups(1) + windowIndex) * (MAX_ORDER + 1)) + lag;
 
-    for (int lag = 0; lag <= MAX_ORDER; lag++)
+    float sum = 0.0f;
+    for (int pos = lag + (int)get_local_id(0);
+         pos < blocksize;
+         pos += AUTOCOR_WORKGROUP_SIZE)
     {
-        float sum = 0.0f;
-        for (int pos = lag; pos < blocksize; pos++)
-        {
-            const float sample0 =
-                (float)ldcompressShiftedSample(samples, task.samplesOffs + pos, task.wbits) *
-                window[windowOffset + pos];
-            const float sample1 =
-                (float)ldcompressShiftedSample(samples, task.samplesOffs + pos - lag, task.wbits) *
-                window[windowOffset + pos - lag];
-            sum += sample0 * sample1;
-        }
-        out[lag] = sum;
+        const float sample0 =
+            (float)ldcompressShiftedSample(samples, task.samplesOffs + pos, task.wbits) *
+            window[windowOffset + pos];
+        const float sample1 =
+            (float)ldcompressShiftedSample(samples, task.samplesOffs + pos - lag, task.wbits) *
+            window[windowOffset + pos - lag];
+        sum += sample0 * sample1;
     }
+
+    const float total = ldcompressReduceSumFloat(sum, reduceScratch);
+    if (get_local_id(0) == 0)
+        output[outputOffset] = total;
 }
 
 __kernel __attribute__((reqd_work_group_size(1, 1, 1)))
@@ -2829,9 +2851,19 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
         generated_window_count,
     };
     const std::array<std::size_t, 2> generation_local { 1, 1 };
+    const std::array<std::size_t, 3> autocor_global {
+        frame_count * kOpenClAutocorWorkgroupSize,
+        generated_window_count,
+        kFlacClMaxOrder + 1U,
+    };
+    const std::array<std::size_t, 3> autocor_local {
+        kOpenClAutocorWorkgroupSize,
+        1,
+        1,
+    };
     const auto autocor_started = Clock::now();
-    require_cl(clEnqueueNDRangeKernel(runtime.queue.get(), runtime.autocor_kernel.get(), 2, nullptr,
-                   generation_global.data(), generation_local.data(), 0, nullptr, nullptr),
+    require_cl(clEnqueueNDRangeKernel(runtime.queue.get(), runtime.autocor_kernel.get(), 3, nullptr,
+                   autocor_global.data(), autocor_local.data(), 0, nullptr, nullptr),
         "clEnqueueNDRangeKernel(ldcompressComputeAutocor)");
     finish_timed(
         &OpenClGeneratedAnalysisTimings::generated_autocorrelation_ns,
