@@ -225,6 +225,7 @@ constexpr std::size_t kOpenClAnalysisMaxBlockSize = 8192;
 constexpr std::size_t kOpenClAnalysisBitsPerSample = 16;
 constexpr unsigned kExactMaxRicePartitionOrder = 8;
 constexpr unsigned kExactMaxRiceParameter = 14;
+constexpr std::size_t kOpenClExactWorkgroupSize = 64;
 
 void validate_best_method_plan(const OpenClMonoAnalysisTaskPlan& plan)
 {
@@ -1004,6 +1005,7 @@ const char* mono_analysis_kernel_source()
 #define MAX_RICE_PARAM 14
 #define RICE_PARAM_BITS 4
 #endif
+#define EXACT_WORKGROUP_SIZE 64
 
 typedef enum
 {
@@ -1456,38 +1458,142 @@ int ldcompressValidPartitionOrder(int blocksize, int predictorOrder, int partiti
     return (blocksize / partitionCount) > predictorOrder;
 }
 
-ulong ldcompressBestRiceBitsForPartition(
+ulong ldcompressReduceSumUlong(ulong value, __local ulong* scratch)
+{
+    const int lane = (int)get_local_id(0);
+    scratch[lane] = value;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int stride = EXACT_WORKGROUP_SIZE >> 1; stride > 0; stride >>= 1)
+    {
+        if (lane < stride)
+            scratch[lane] += scratch[lane + stride];
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    return scratch[0];
+}
+
+uint ldcompressReduceOrUint(uint value, __local uint* scratch)
+{
+    const int lane = (int)get_local_id(0);
+    scratch[lane] = value;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int stride = EXACT_WORKGROUP_SIZE >> 1; stride > 0; stride >>= 1)
+    {
+        if (lane < stride)
+            scratch[lane] |= scratch[lane + stride];
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    return scratch[0];
+}
+
+int ldcompressCooperativeAllFrameSamplesEqual(
+    __global const int* data,
+    int blocksize,
+    __local uint* reduceScratch)
+{
+    const int first = data[0];
+    uint mismatch = 0;
+    for (int pos = (int)get_local_id(0) + 1; pos < blocksize; pos += EXACT_WORKGROUP_SIZE)
+    {
+        if (data[pos] != first)
+            mismatch = 1;
+    }
+    return ldcompressReduceOrUint(mismatch, reduceScratch) == 0;
+}
+
+ulong ldcompressCooperativeBestRiceBitsForPartition(
     __global const int* data,
     int partitionStart,
     int residualCount,
-    FLACCLSubframeTask task)
+    FLACCLSubframeTask task,
+    __local ulong* reduceScratch)
 {
-    ulong bitCounts[MAX_RICE_PARAM + 1];
-    for (int parameter = 0; parameter <= MAX_RICE_PARAM; parameter++)
-        bitCounts[parameter] = (ulong)residualCount * (ulong)(1 + parameter);
+    ulong bits0 = 0UL;
+    ulong bits1 = 0UL;
+    ulong bits2 = 0UL;
+    ulong bits3 = 0UL;
+    ulong bits4 = 0UL;
+    ulong bits5 = 0UL;
+    ulong bits6 = 0UL;
+    ulong bits7 = 0UL;
+    ulong bits8 = 0UL;
+    ulong bits9 = 0UL;
+    ulong bits10 = 0UL;
+    ulong bits11 = 0UL;
+    ulong bits12 = 0UL;
+    ulong bits13 = 0UL;
+    ulong bits14 = 0UL;
 
-    for (int i = 0; i < residualCount; i++)
+    for (int i = (int)get_local_id(0); i < residualCount; i += EXACT_WORKGROUP_SIZE)
     {
         const long residual = ldcompressResidual(data, partitionStart + i, task);
         const ulong folded = ldcompressFoldResidual(residual);
-        for (int parameter = 0; parameter <= MAX_RICE_PARAM; parameter++)
-            bitCounts[parameter] += folded >> parameter;
+        bits0 += folded + 1UL;
+        bits1 += (folded >> 1) + 2UL;
+        bits2 += (folded >> 2) + 3UL;
+        bits3 += (folded >> 3) + 4UL;
+        bits4 += (folded >> 4) + 5UL;
+        bits5 += (folded >> 5) + 6UL;
+        bits6 += (folded >> 6) + 7UL;
+        bits7 += (folded >> 7) + 8UL;
+        bits8 += (folded >> 8) + 9UL;
+        bits9 += (folded >> 9) + 10UL;
+        bits10 += (folded >> 10) + 11UL;
+        bits11 += (folded >> 11) + 12UL;
+        bits12 += (folded >> 12) + 13UL;
+        bits13 += (folded >> 13) + 14UL;
+        bits14 += (folded >> 14) + 15UL;
     }
 
-    ulong bestBits = bitCounts[0];
-    for (int parameter = 1; parameter <= MAX_RICE_PARAM; parameter++)
-        if (bitCounts[parameter] < bestBits)
-            bestBits = bitCounts[parameter];
+    ulong bestBits = 0xffffffffffffffffUL;
+    for (int parameter = 0; parameter <= MAX_RICE_PARAM; parameter++)
+    {
+        ulong localBits = bits0;
+        if (parameter == 1)
+            localBits = bits1;
+        else if (parameter == 2)
+            localBits = bits2;
+        else if (parameter == 3)
+            localBits = bits3;
+        else if (parameter == 4)
+            localBits = bits4;
+        else if (parameter == 5)
+            localBits = bits5;
+        else if (parameter == 6)
+            localBits = bits6;
+        else if (parameter == 7)
+            localBits = bits7;
+        else if (parameter == 8)
+            localBits = bits8;
+        else if (parameter == 9)
+            localBits = bits9;
+        else if (parameter == 10)
+            localBits = bits10;
+        else if (parameter == 11)
+            localBits = bits11;
+        else if (parameter == 12)
+            localBits = bits12;
+        else if (parameter == 13)
+            localBits = bits13;
+        else if (parameter == 14)
+            localBits = bits14;
+
+        const ulong bits = ldcompressReduceSumUlong(localBits, reduceScratch);
+        if (bits < bestBits)
+            bestBits = bits;
+    }
     return bestBits;
 }
 
-__kernel __attribute__((reqd_work_group_size(1, 1, 1)))
+__kernel __attribute__((reqd_work_group_size(EXACT_WORKGROUP_SIZE, 1, 1)))
 void ldcompressAnalyzeSubframeExact(
     __global const int* samples,
     __global const int* selectedTasks,
     __global FLACCLSubframeTask* tasks,
     int maxRicePartitionOrder)
 {
+    __local ulong reduceScratchUlong[EXACT_WORKGROUP_SIZE];
+    __local uint reduceScratchUint[EXACT_WORKGROUP_SIZE];
     const int selectedTask = selectedTasks[get_group_id(0)];
     FLACCLSubframeTask task = tasks[selectedTask];
     const int ro = task.data.residualOrder;
@@ -1500,17 +1606,15 @@ void ldcompressAnalyzeSubframeExact(
 
     if (task.data.type == Constant)
     {
-        int equal = 1;
-        const int first = data[0];
-        for (int pos = 1; pos < bs; pos++)
-            if (data[pos] != first)
-                equal = 0;
+        const int equal =
+            ldcompressCooperativeAllFrameSamplesEqual(data, bs, reduceScratchUint);
 
         if (!equal)
             task.data.size = 0x7fffffff;
         else
             task.data.size = 8 + obits + (wbits == 0 ? 0 : wbits);
-        tasks[selectedTask] = task;
+        if (get_local_id(0) == 0)
+            tasks[selectedTask] = task;
         return;
     }
 
@@ -1522,7 +1626,8 @@ void ldcompressAnalyzeSubframeExact(
                                       task.data.cbits <= 0 || task.data.cbits > 15)))
     {
         task.data.size = 0x7fffffff;
-        tasks[selectedTask] = task;
+        if (get_local_id(0) == 0)
+            tasks[selectedTask] = task;
         return;
     }
 
@@ -1535,7 +1640,8 @@ void ldcompressAnalyzeSubframeExact(
         if (!coefficientsValid)
         {
             task.data.size = 0x7fffffff;
-            tasks[selectedTask] = task;
+            if (get_local_id(0) == 0)
+                tasks[selectedTask] = task;
             return;
         }
     }
@@ -1574,8 +1680,8 @@ void ldcompressAnalyzeSubframeExact(
                 ? ro
                 : partition * partitionSamples;
             bits += 4UL;
-            bits += ldcompressBestRiceBitsForPartition(
-                data, partitionStart, residualCount, task);
+            bits += ldcompressCooperativeBestRiceBitsForPartition(
+                data, partitionStart, residualCount, task, reduceScratchUlong);
         }
 
         if (bits < bestBits)
@@ -1587,7 +1693,8 @@ void ldcompressAnalyzeSubframeExact(
 
     task.data.porder = bestPartitionOrder;
     task.data.size = bestBits > 0x7fffffffUL ? 0x7fffffff : (int)bestBits;
-    tasks[selectedTask] = task;
+    if (get_local_id(0) == 0)
+        tasks[selectedTask] = task;
 }
 
 __kernel void ldcompressChooseBestMethod(
@@ -2383,9 +2490,11 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
                    &max_rice_partition_order_arg),
         "clSetKernelArg(exact.maxRicePartitionOrder)");
 
-    const std::size_t estimate_global_work_size = plan.selected_tasks.size();
+    const std::size_t exact_local_work_size = kOpenClExactWorkgroupSize;
+    const std::size_t estimate_global_work_size =
+        plan.selected_tasks.size() * exact_local_work_size;
     require_cl(clEnqueueNDRangeKernel(queue.get(), exact_kernel.get(), 1, nullptr,
-                   &estimate_global_work_size, &one, 0, nullptr, nullptr),
+                   &estimate_global_work_size, &exact_local_work_size, 0, nullptr, nullptr),
         "clEnqueueNDRangeKernel(ldcompressAnalyzeSubframeExact)");
 
     require_cl(clSetKernelArg(choose_kernel.get(), 0, sizeof(best_mem), &best_mem),
@@ -2528,9 +2637,11 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_analysis(
                    &max_rice_partition_order_arg),
         "clSetKernelArg(exact.maxRicePartitionOrder)");
 
-    const std::size_t estimate_global_work_size = plan.selected_tasks.size();
+    const std::size_t exact_local_work_size = kOpenClExactWorkgroupSize;
+    const std::size_t estimate_global_work_size =
+        plan.selected_tasks.size() * exact_local_work_size;
     require_cl(clEnqueueNDRangeKernel(queue.get(), exact_kernel.get(), 1, nullptr,
-                   &estimate_global_work_size, &one, 0, nullptr, nullptr),
+                   &estimate_global_work_size, &exact_local_work_size, 0, nullptr, nullptr),
         "clEnqueueNDRangeKernel(ldcompressAnalyzeSubframeExact)");
 
     require_cl(clSetKernelArg(choose_kernel.get(), 0, sizeof(best_mem), &best_mem),
@@ -2738,9 +2849,11 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
                    &max_rice_partition_order_arg),
         "clSetKernelArg(exact.maxRicePartitionOrder)");
 
-    const std::size_t estimate_global_work_size = plan.selected_tasks.size();
+    const std::size_t exact_local_work_size = kOpenClExactWorkgroupSize;
+    const std::size_t estimate_global_work_size =
+        plan.selected_tasks.size() * exact_local_work_size;
     require_cl(clEnqueueNDRangeKernel(runtime.queue.get(), runtime.exact_kernel.get(), 1, nullptr,
-                   &estimate_global_work_size, &one, 0, nullptr, nullptr),
+                   &estimate_global_work_size, &exact_local_work_size, 0, nullptr, nullptr),
         "clEnqueueNDRangeKernel(ldcompressAnalyzeSubframeExact)");
 
     require_cl(clSetKernelArg(runtime.choose_kernel.get(), 0, sizeof(best_mem), &best_mem),

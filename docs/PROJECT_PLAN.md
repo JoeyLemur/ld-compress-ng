@@ -467,6 +467,18 @@ Remaining Vulkan work:
   writer work, host allocation churn, or full-task readback; the next OpenCL
   performance step is a bounded parallel exact/Rice analysis kernel pass,
   modeled after the Vulkan workgroup reduction design.
+- The bounded OpenCL exact/Rice kernel pass now dispatches one `64`-lane
+  workgroup per selected task and scores all Rice parameters for each partition
+  in one residual pass, preserving the task ABI, selected-task handoff, and
+  compressed output. The focused `compress --backend opencl --stats` run on
+  `ntsc/issue176.lds` with NVIDIA OpenCL device `1` improved again to about
+  `1.86` wall seconds, `12` batches, and `0.701` analyzer/exact-analysis
+  seconds with unchanged `4,298,234` byte output. The matching bench row is now
+  `1.097` seconds, faster than scalar `native-fixed --threads 8` at `1.668`
+  seconds on that fixture, while Vulkan remains faster at `0.712` seconds.
+  Remaining OpenCL work should start with a timing split for generated-LPC
+  autocorrelation/LPC/quantization versus exact analysis before making another
+  kernel change.
 
 Immediate engineering focus:
 
