@@ -3,6 +3,7 @@
 #include "vulkan_analysis.h"
 #include "vulkan_devices.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -188,6 +189,186 @@ void require_rice_parameters_match(
     }
 }
 
+std::int32_t shifted_sample(
+    const std::vector<std::int32_t>& samples,
+    const ldcompress::opencl_detail::FlacClSubframeTask& task,
+    std::size_t index)
+{
+    const auto sample = samples.at(static_cast<std::size_t>(task.data.samplesOffs) + index);
+    if (task.data.wbits == 0) {
+        return sample;
+    }
+    const auto divisor = std::int64_t {1} << static_cast<unsigned>(task.data.wbits);
+    return static_cast<std::int32_t>(static_cast<std::int64_t>(sample) / divisor);
+}
+
+std::int64_t arithmetic_shift_right(std::int64_t value, unsigned shift)
+{
+    if (shift == 0) {
+        return value;
+    }
+    if (value >= 0) {
+        return value >> shift;
+    }
+    const auto divisor = std::int64_t {1} << shift;
+    return -(((-value) + divisor - 1) >> shift);
+}
+
+std::int64_t task_residual(
+    const std::vector<std::int32_t>& samples,
+    const ldcompress::opencl_detail::FlacClSubframeTask& task,
+    std::size_t index)
+{
+    using namespace ldcompress::opencl_detail;
+
+    switch (task.data.type) {
+    case kFlacClSubframeFixed:
+        switch (task.data.residualOrder) {
+        case 0:
+            return shifted_sample(samples, task, index);
+        case 1:
+            return static_cast<std::int64_t>(shifted_sample(samples, task, index)) -
+                shifted_sample(samples, task, index - 1U);
+        case 2:
+            return static_cast<std::int64_t>(shifted_sample(samples, task, index)) -
+                (2LL * shifted_sample(samples, task, index - 1U)) +
+                shifted_sample(samples, task, index - 2U);
+        case 3:
+            return static_cast<std::int64_t>(shifted_sample(samples, task, index)) -
+                (3LL * shifted_sample(samples, task, index - 1U)) +
+                (3LL * shifted_sample(samples, task, index - 2U)) -
+                shifted_sample(samples, task, index - 3U);
+        case 4:
+            return static_cast<std::int64_t>(shifted_sample(samples, task, index)) -
+                (4LL * shifted_sample(samples, task, index - 1U)) +
+                (6LL * shifted_sample(samples, task, index - 2U)) -
+                (4LL * shifted_sample(samples, task, index - 3U)) +
+                shifted_sample(samples, task, index - 4U);
+        default:
+            throw std::runtime_error("invalid fixed predictor order in Vulkan sidecar test");
+        }
+    case kFlacClSubframeLpc: {
+        const auto order = static_cast<std::size_t>(task.data.residualOrder);
+        std::int64_t sum = 0;
+        for (std::size_t i = 0; i < order; ++i) {
+            sum += static_cast<std::int64_t>(task.coefs.at(i)) *
+                shifted_sample(samples, task, index - order + i);
+        }
+        const auto predicted =
+            arithmetic_shift_right(sum, static_cast<unsigned>(task.data.shift));
+        return static_cast<std::int64_t>(shifted_sample(samples, task, index)) - predicted;
+    }
+    default:
+        throw std::runtime_error("unsupported task type in Vulkan sidecar test");
+    }
+}
+
+std::uint64_t fold_signed_residual(std::int64_t residual)
+{
+    if (residual >= 0) {
+        return static_cast<std::uint64_t>(residual) << 1U;
+    }
+    return (static_cast<std::uint64_t>(-(residual + 1)) << 1U) + 1U;
+}
+
+std::size_t partition_residual_count(
+    std::size_t block_size,
+    std::size_t predictor_order,
+    unsigned partition_order,
+    std::size_t partition)
+{
+    const auto partition_samples = block_size >> partition_order;
+    return partition == 0 ? partition_samples - predictor_order : partition_samples;
+}
+
+unsigned choose_task_rice_parameter(
+    const std::vector<std::int32_t>& samples,
+    const ldcompress::opencl_detail::FlacClSubframeTask& task,
+    std::size_t residual_offset,
+    std::size_t count)
+{
+    constexpr unsigned kMaxRiceParameter = 14;
+    std::array<std::uint64_t, kMaxRiceParameter + 1U> bit_counts {};
+    for (unsigned parameter = 0; parameter <= kMaxRiceParameter; ++parameter) {
+        bit_counts[parameter] = static_cast<std::uint64_t>(count) * (1U + parameter);
+    }
+
+    const auto order = static_cast<std::size_t>(task.data.residualOrder);
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto folded =
+            fold_signed_residual(task_residual(samples, task, order + residual_offset + i));
+        for (unsigned parameter = 0; parameter <= kMaxRiceParameter; ++parameter) {
+            bit_counts[parameter] += folded >> parameter;
+        }
+    }
+
+    unsigned best_parameter = 0;
+    auto best_bits = bit_counts[0];
+    for (unsigned parameter = 1; parameter <= kMaxRiceParameter; ++parameter) {
+        if (bit_counts[parameter] < best_bits) {
+            best_bits = bit_counts[parameter];
+            best_parameter = parameter;
+        }
+    }
+    return best_parameter;
+}
+
+ldcompress::opencl_detail::FlacClRiceParameterSet scalar_rice_parameters_for_task(
+    const std::vector<std::int32_t>& samples,
+    const ldcompress::opencl_detail::FlacClSubframeTask& task)
+{
+    using namespace ldcompress::opencl_detail;
+
+    FlacClRiceParameterSet expected;
+    if (task.data.type != kFlacClSubframeFixed &&
+        task.data.type != kFlacClSubframeLpc) {
+        return expected;
+    }
+    require(task.data.porder >= 0, "Vulkan sidecar task has negative partition order");
+    require(static_cast<std::size_t>(task.data.porder) <= kFlacClMaxRicePartitionOrder,
+        "Vulkan sidecar task partition order exceeds max");
+
+    const auto partition_order = static_cast<unsigned>(task.data.porder);
+    const auto partition_count = std::size_t {1} << partition_order;
+    const auto block_size = static_cast<std::size_t>(task.data.blocksize);
+    const auto order = static_cast<std::size_t>(task.data.residualOrder);
+    std::size_t residual_offset = 0;
+    for (std::size_t partition = 0; partition < partition_count; ++partition) {
+        const auto residual_count =
+            partition_residual_count(block_size, order, partition_order, partition);
+        expected.parameters[partition] =
+            choose_task_rice_parameter(samples, task, residual_offset, residual_count);
+        residual_offset += residual_count;
+    }
+    require(residual_offset == block_size - order,
+        "Vulkan sidecar residual partition accounting mismatch");
+    return expected;
+}
+
+void require_rice_parameters_match_scalar(
+    const std::vector<std::int32_t>& samples,
+    const std::vector<ldcompress::opencl_detail::FlacClSubframeTask>& tasks,
+    const std::vector<ldcompress::opencl_detail::FlacClRiceParameterSet>& parameters,
+    const char* label)
+{
+    require_rice_parameters_valid(tasks, parameters, label);
+    for (std::size_t frame = 0; frame < tasks.size(); ++frame) {
+        const auto& task = tasks[frame];
+        if (task.data.type != ldcompress::opencl_detail::kFlacClSubframeFixed &&
+            task.data.type != ldcompress::opencl_detail::kFlacClSubframeLpc) {
+            continue;
+        }
+        const auto expected = scalar_rice_parameters_for_task(samples, task);
+        const auto partition_count =
+            std::size_t {1} << static_cast<unsigned>(task.data.porder);
+        for (std::size_t partition = 0; partition < partition_count; ++partition) {
+            require(parameters[frame].parameters[partition] ==
+                    expected.parameters[partition],
+                label);
+        }
+    }
+}
+
 std::vector<std::int32_t> make_lpc_friendly_samples()
 {
     std::vector<std::int32_t> samples;
@@ -357,6 +538,8 @@ void test_vulkan_fixed_constant_analysis(const Options& options)
         best_only.best_rice_parameters,
         result.best_rice_parameters,
         "Vulkan fixed/constant Rice parameter sidecar mismatch");
+    require_rice_parameters_match_scalar(samples, result.best_tasks, result.best_rice_parameters,
+        "Vulkan fixed/constant Rice parameter sidecar diverged from scalar recompute");
 
     require(result.best_tasks[0].data.type == kFlacClSubframeConstant,
         "constant frame did not select constant task");
@@ -379,6 +562,9 @@ void test_vulkan_fixed_constant_analysis(const Options& options)
             samples, plan, device_index, 0);
     require_analysis_matches(result_unpartitioned, expected_unpartitioned,
         "Vulkan exact fixed/constant analysis did not honor max partition order 0");
+    require_rice_parameters_match_scalar(
+        samples, result_unpartitioned.best_tasks, result_unpartitioned.best_rice_parameters,
+        "Vulkan unpartitioned fixed/constant Rice sidecar diverged from scalar recompute");
     require(result_unpartitioned.best_tasks[2].data.porder == 0,
         "partitioned frame did not honor max partition order 0");
     require(result_unpartitioned.best_tasks[2].data.size > result.best_tasks[2].data.size,
@@ -439,6 +625,9 @@ void test_vulkan_lpc_analysis(const Options& options)
         "Vulkan exact LPC analyzed task diverged from scalar oracle");
     require_lpc_task_matches(single_result.best_tasks[0], *expected_task,
         "Vulkan exact LPC best task diverged from scalar oracle");
+    require_rice_parameters_match_scalar(
+        samples, single_result.best_tasks, single_result.best_rice_parameters,
+        "Vulkan exact LPC Rice parameter sidecar diverged from scalar recompute");
 
     const auto expected_unpartitioned = analyze_mono_lpc_exact_task(
         samples, 0, task_options, best_lpc->order, 12, 0);
@@ -448,6 +637,9 @@ void test_vulkan_lpc_analysis(const Options& options)
         samples, single_plan, device_index, 0);
     require_lpc_task_matches(unpartitioned_result.best_tasks[0], *expected_unpartitioned,
         "Vulkan exact LPC task did not honor max partition order 0");
+    require_rice_parameters_match_scalar(
+        samples, unpartitioned_result.best_tasks, unpartitioned_result.best_rice_parameters,
+        "Vulkan unpartitioned LPC Rice sidecar diverged from scalar recompute");
 
     auto two_frame_samples = samples;
     const auto alternate = make_lpc_friendly_alternate_samples();
@@ -472,6 +664,9 @@ void test_vulkan_lpc_analysis(const Options& options)
         require_lpc_task_matches(multi_result.best_tasks[i], expected_best_tasks[i],
             "Vulkan exact LPC multi-order best task diverged from scalar oracle");
     }
+    require_rice_parameters_match_scalar(
+        two_frame_samples, multi_result.best_tasks, multi_result.best_rice_parameters,
+        "Vulkan exact LPC multi-order Rice sidecar diverged from scalar recompute");
 }
 
 void test_vulkan_generated_lpc_analysis(const Options& options)
@@ -523,6 +718,8 @@ void test_vulkan_generated_lpc_analysis(const Options& options)
         best_only.best_rice_parameters,
         result.best_rice_parameters,
         "Vulkan generated LPC Rice parameter sidecar mismatch");
+    require_rice_parameters_match_scalar(samples, result.best_tasks, result.best_rice_parameters,
+        "Vulkan generated LPC Rice parameter sidecar diverged from scalar recompute");
 
     for (std::size_t frame = 0; frame < 3; ++frame) {
         const auto task_base = frame * plan.residual_tasks_per_frame;
@@ -570,6 +767,9 @@ void test_vulkan_generated_lpc_analysis(const Options& options)
         require_lpc_task_matches(exact_result.best_tasks[i], result.best_tasks[i],
             "Vulkan generated LPC exact re-analysis changed a best task");
     }
+    require_rice_parameters_match_scalar(
+        samples, exact_result.best_tasks, exact_result.best_rice_parameters,
+        "Vulkan generated LPC exact re-analysis Rice sidecar diverged from scalar recompute");
 
     const auto unpartitioned = ldcompress::vulkan_detail::run_vulkan_mono_generated_analysis(
         samples, plan, device_index, 12, 0);
