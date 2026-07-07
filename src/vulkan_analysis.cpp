@@ -47,10 +47,11 @@ constexpr std::uint32_t kTimestampAfterPrepare = 2;
 constexpr std::uint32_t kTimestampAfterGeneratedAutocorrelation = 3;
 constexpr std::uint32_t kTimestampAfterGeneratedLpc = 4;
 constexpr std::uint32_t kTimestampAfterGeneratedQuantize = 5;
-constexpr std::uint32_t kTimestampAfterExactAnalysis = 6;
-constexpr std::uint32_t kTimestampAfterChooseBest = 7;
-constexpr std::uint32_t kTimestampAfterReadback = 8;
-constexpr std::uint32_t kTimestampQueryCount = 9;
+constexpr std::uint32_t kTimestampAfterFixedOrderGuess = 6;
+constexpr std::uint32_t kTimestampAfterExactAnalysis = 7;
+constexpr std::uint32_t kTimestampAfterChooseBest = 8;
+constexpr std::uint32_t kTimestampAfterReadback = 9;
+constexpr std::uint32_t kTimestampQueryCount = 10;
 
 struct GeneratedLpcConfig {
     std::size_t lpc_tasks_per_window = 0;
@@ -1586,6 +1587,12 @@ public:
                 kTimestampAfterGeneratedQuantize, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
         }
 
+        if (plan.fixed_order_guess_on_gpu) {
+            dispatch_mode(7, base_push.frame_count);
+            shader_write_to_read_barrier();
+        }
+        write_timestamp(kTimestampAfterFixedOrderGuess, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+
         dispatch_mode(0, base_push.task_count);
         shader_write_to_read_barrier();
         write_timestamp(kTimestampAfterExactAnalysis, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
@@ -1693,8 +1700,10 @@ public:
                     kTimestampAfterGeneratedLpc,
                     kTimestampAfterGeneratedQuantize);
             }
+            gpu_timings->fixed_order_guess_ns += delta_ns(
+                kTimestampAfterGeneratedQuantize, kTimestampAfterFixedOrderGuess);
             gpu_timings->exact_analysis_ns += delta_ns(
-                kTimestampAfterGeneratedQuantize, kTimestampAfterExactAnalysis);
+                kTimestampAfterFixedOrderGuess, kTimestampAfterExactAnalysis);
             gpu_timings->choose_best_ns += delta_ns(
                 kTimestampAfterExactAnalysis, kTimestampAfterChooseBest);
             gpu_timings->readback_ns +=

@@ -18,6 +18,7 @@ struct VulkanGpuTimingStats {
     std::uint64_t generated_autocorrelation_ns = 0;
     std::uint64_t generated_lpc_ns = 0;
     std::uint64_t generated_quantize_ns = 0;
+    std::uint64_t fixed_order_guess_ns = 0;
     std::uint64_t exact_analysis_ns = 0;
     std::uint64_t choose_best_ns = 0;
     std::uint64_t readback_ns = 0;

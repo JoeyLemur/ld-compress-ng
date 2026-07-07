@@ -56,6 +56,7 @@ TIMING_COLUMNS = [
     "vk_gpu_ac_s",
     "vk_gpu_lpc_s",
     "vk_gpu_quant_s",
+    "vk_gpu_fguess_s",
     "vk_gpu_exact_s",
     "vk_gpu_choose_s",
     "vk_gpu_read_s",

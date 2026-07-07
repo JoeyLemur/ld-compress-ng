@@ -28,6 +28,7 @@ const uint kModeComputeAutocorrelation = 3u;
 const uint kModeComputeLpc = 4u;
 const uint kModeQuantizeLpc = 5u;
 const uint kModeWriteBestRiceParameters = 6u;
+const uint kModePruneFixedOrderGuess = 7u;
 const uint kAnalysisProfileExact = 0u;
 const uint kAnalysisProfileOrderGuessExactRice = 1u;
 const uint kAnalysisProfileOrderGuessMeanRice = 2u;
@@ -1481,6 +1482,73 @@ void quantize_generated_lpc(uint frame, uint window)
     }
 }
 
+void prune_fixed_order_guess(uint frame)
+{
+    const uint lane = gl_LocalInvocationID.x;
+    const uint selected_base = frame * pc.selected_tasks_per_frame;
+
+    int fixed_task_no[5];
+    for (int order = 0; order <= 4; ++order) {
+        fixed_task_no[order] = -1;
+    }
+
+    for (uint i = 0u; i < pc.selected_tasks_per_frame; ++i) {
+        const int task_index = selected_tasks[selected_base + i];
+        const FlacClSubframeTask task = tasks[task_index];
+        const int order = task.data.residualOrder;
+        if (task.data.type == kSubframeFixed && order >= 0 && order <= 4) {
+            fixed_task_no[order] = task_index;
+        }
+    }
+
+    const FlacClSubframeTask first_task = tasks[selected_tasks[selected_base]];
+    const int block_size = first_task.data.blocksize;
+    const int wasted_bits = first_task.data.wbits;
+
+    uint64_t local_sums[5];
+    for (int order = 0; order <= 4; ++order) {
+        local_sums[order] = uint64_t(0u);
+    }
+
+    for (uint pos = lane; pos < uint(block_size); pos += kWorkgroupSize) {
+        for (int order = 0; order <= 4; ++order) {
+            if (fixed_task_no[order] >= 0 && pos >= uint(order)) {
+                local_sums[order] += absolute_i64(
+                    fixed_residual(tasks[fixed_task_no[order]], int(pos), wasted_bits));
+            }
+        }
+    }
+
+    uint64_t sums[5];
+    for (int order = 0; order <= 4; ++order) {
+        sums[order] = reduce_sum_u64(local_sums[order]);
+    }
+
+    if (lane != 0u) {
+        return;
+    }
+
+    int best_order = -1;
+    uint64_t best_sum = ~uint64_t(0);
+    for (int order = 0; order <= 4; ++order) {
+        if (fixed_task_no[order] >= 0 && sums[order] < best_sum) {
+            best_order = order;
+            best_sum = sums[order];
+        }
+    }
+    if (best_order < 0) {
+        return;
+    }
+
+    for (int order = 0; order <= 4; ++order) {
+        if (fixed_task_no[order] >= 0 && order != best_order) {
+            FlacClSubframeTask task = tasks[fixed_task_no[order]];
+            task.data.size = kIntMax;
+            tasks[fixed_task_no[order]] = task;
+        }
+    }
+}
+
 void choose_best(uint frame)
 {
     const uint selected_base = frame * pc.selected_tasks_per_frame;
@@ -1559,6 +1627,11 @@ void main()
         const uint window = gl_WorkGroupID.y;
         if (frame < pc.frame_count && window < pc.generated_window_count) {
             quantize_generated_lpc(frame, window);
+        }
+    } else if (pc.mode == kModePruneFixedOrderGuess) {
+        const uint frame = gl_WorkGroupID.x;
+        if (frame < pc.frame_count) {
+            prune_fixed_order_guess(frame);
         }
     }
 }

@@ -829,6 +829,21 @@ void test_vulkan_order_guess_mean_rice_profile_smoke(const Options& options)
         samples, plan, device_index, 12, 5);
     require(result.best_tasks.size() == 4,
         "Vulkan mean Rice smoke best task count mismatch");
+    require(result.analyzed_tasks.size() == plan.residual_tasks.size(),
+        "Vulkan mean Rice smoke did not return analyzed tasks");
+    for (std::size_t frame = 0; frame < result.best_tasks.size(); ++frame) {
+        std::size_t live_fixed_tasks = 0;
+        const auto task_base = frame * plan.residual_tasks_per_frame;
+        for (std::size_t i = 0; i < plan.residual_tasks_per_frame; ++i) {
+            const auto& task = result.analyzed_tasks[task_base + i];
+            if (task.data.type == kFlacClSubframeFixed &&
+                task.data.size != std::numeric_limits<std::int32_t>::max()) {
+                ++live_fixed_tasks;
+            }
+        }
+        require(live_fixed_tasks == 1,
+            "Vulkan mean Rice smoke did not prune fixed tasks to one order");
+    }
     require_rice_parameters_valid(result.best_tasks, result.best_rice_parameters,
         "Vulkan mean Rice smoke sidecar was invalid");
 

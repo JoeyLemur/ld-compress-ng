@@ -45,6 +45,7 @@ void add_vulkan_gpu_timings(
         gpu_timings.generated_autocorrelation_ns;
     stats.vulkan_gpu_generated_lpc_ns += gpu_timings.generated_lpc_ns;
     stats.vulkan_gpu_generated_quantize_ns += gpu_timings.generated_quantize_ns;
+    stats.vulkan_gpu_fixed_order_guess_ns += gpu_timings.fixed_order_guess_ns;
     stats.vulkan_gpu_exact_analysis_ns += gpu_timings.exact_analysis_ns;
     stats.vulkan_gpu_choose_best_ns += gpu_timings.choose_best_ns;
     stats.vulkan_gpu_readback_ns += gpu_timings.readback_ns;
@@ -89,6 +90,7 @@ opencl_detail::OpenClMonoAnalysisTaskPlan build_vulkan_fixed_constant_task_plan(
     task_options.min_fixed_order = 0;
     task_options.max_fixed_order = 4;
     task_options.analysis_profile = analysis_profile;
+    task_options.use_gpu_fixed_order_guess = true;
 
     return opencl_detail::build_mono_analysis_task_plan_for_samples(
         samples, frame_count, task_options);
@@ -114,6 +116,7 @@ opencl_detail::OpenClMonoAnalysisTaskPlan build_vulkan_mixed_lpc_task_plan(
     task_options.min_fixed_order = 0;
     task_options.max_fixed_order = 4;
     task_options.analysis_profile = analysis_profile;
+    task_options.use_gpu_fixed_order_guess = true;
 
     return opencl_detail::build_mono_analysis_task_plan_for_samples(
         samples, frame_count, task_options);

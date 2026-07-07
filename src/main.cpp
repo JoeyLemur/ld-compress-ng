@@ -1433,6 +1433,7 @@ void print_bench_result(const BenchResult& result)
     print_seconds_field(result.native_stats.vulkan_gpu_generated_autocorrelation_ns);
     print_seconds_field(result.native_stats.vulkan_gpu_generated_lpc_ns);
     print_seconds_field(result.native_stats.vulkan_gpu_generated_quantize_ns);
+    print_seconds_field(result.native_stats.vulkan_gpu_fixed_order_guess_ns);
     print_seconds_field(result.native_stats.vulkan_gpu_exact_analysis_ns);
     print_seconds_field(result.native_stats.vulkan_gpu_choose_best_ns);
     print_seconds_field(result.native_stats.vulkan_gpu_readback_ns);
@@ -1657,6 +1658,7 @@ int run_bench(const Options& options)
               << std::setw(18) << "vk_gpu_ac_s"
               << std::setw(18) << "vk_gpu_lpc_s"
               << std::setw(18) << "vk_gpu_quant_s"
+              << std::setw(18) << "vk_gpu_fguess_s"
               << std::setw(18) << "vk_gpu_exact_s"
               << std::setw(18) << "vk_gpu_choose_s"
               << std::setw(18) << "vk_gpu_read_s"
