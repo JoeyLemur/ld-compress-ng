@@ -540,6 +540,15 @@ Remaining Vulkan work:
   loader compatibility, OpenCL real-fixture loader compatibility on OpenCL
   device `1`, and Vulkan real-fixture loader compatibility on Vulkan device
   `1`.
+- Full accelerator real-fixture roundtrip coverage is now repeatable through
+  `tools/roundtrip_real_fixtures.py`. The latest GPU-visible run wrote
+  `build/real-fixture-roundtrips/real-fixture-roundtrip-20260707-001349/`
+  and passed all six local fixtures on OpenCL device `1` and Vulkan device `1`.
+  Each row compressed, verified with `verify --source`, decompressed, and
+  compared decoded size plus MD5 against the source `.lds`. Aggregate input was
+  `149,954,560` bytes; OpenCL output was `79,892,119` bytes with `9.067`
+  compress seconds, and Vulkan output was `79,892,217` bytes with `9.155`
+  compress seconds.
 
 Immediate engineering focus:
 

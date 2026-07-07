@@ -72,6 +72,17 @@ python3 tools/check_local_matrix.py \
     --strict-optional
 ```
 
+Then run the full accelerator round-trip check across every local real fixture.
+This compresses, verifies against the source `.lds`, decompresses, and compares
+the decoded bytes for each requested backend:
+
+```sh
+python3 tools/roundtrip_real_fixtures.py \
+    --backends opencl,vulkan \
+    --opencl-device 1 \
+    --vulkan-device 1
+```
+
 ## Tag And Publish
 
 After the required gate passes, tag and push the chosen release version. For

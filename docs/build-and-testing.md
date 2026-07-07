@@ -384,6 +384,23 @@ Use `ctest --test-dir build-real-fixtures -L real-fixtures -LE "opencl|vulkan"`
 when you want the scalar real-fixture suite without accelerator runtime checks.
 The fixture tree remains ignored by Git.
 
+For exhaustive accelerator round-trip coverage across every local `.lds`
+fixture, use the standalone helper:
+
+```sh
+python3 tools/roundtrip_real_fixtures.py \
+    --backends opencl,vulkan \
+    --opencl-device 1 \
+    --vulkan-device 1
+```
+
+The helper writes ignored CSV/Markdown reports and temporary compressed/decoded
+outputs under `build/real-fixture-roundtrips/`. It runs `compress`,
+`verify --source`, and `decompress`, then performs an MD5/size compare for each
+fixture/backend pair. It defaults to OpenCL plus Vulkan, and can also include
+`cpu` or `native-fixed` with `--backends` when a single manual round-trip sweep
+is useful.
+
 ## Opt-In FLAC Decoder Testbench
 
 The local `reference/flac-test-files/` tree can be used for targeted FLAC
