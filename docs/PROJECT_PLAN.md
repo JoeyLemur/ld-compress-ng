@@ -476,9 +476,13 @@ Remaining Vulkan work:
   seconds with unchanged `4,298,234` byte output. The matching bench row is now
   `1.097` seconds, faster than scalar `native-fixed --threads 8` at `1.668`
   seconds on that fixture, while Vulkan remains faster at `0.712` seconds.
-  Remaining OpenCL work should start with a timing split for generated-LPC
-  autocorrelation/LPC/quantization versus exact analysis before making another
-  kernel change.
+- OpenCL `--stats` now reports generated-analysis stage timings. On the same
+  fixture/device, the split measured `0.0029` seconds upload, `0.0007` wasted
+  bits, `0.5875` generated autocorrelation, `0.0004` LPC solve, `0.0002`
+  quantization, `0.1092` exact/Rice analysis, `0.0002` choose-best, and
+  `0.0001` readback. The matching no-stats bench row stayed at `1.089`
+  seconds. The remaining OpenCL analyzer bottleneck is generated
+  autocorrelation, not exact/Rice, readback, choose-best, or LPC quantization.
 
 Immediate engineering focus:
 

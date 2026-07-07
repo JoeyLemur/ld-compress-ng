@@ -34,6 +34,21 @@ void add_elapsed_ns(std::uint64_t& counter, Clock::time_point start)
         std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count());
 }
 
+void add_opencl_timings(
+    NativeCompressionStats& stats,
+    const opencl_detail::OpenClGeneratedAnalysisTimings& timings)
+{
+    stats.opencl_timed_batches += timings.batches;
+    stats.opencl_upload_ns += timings.upload_ns;
+    stats.opencl_wasted_bits_ns += timings.wasted_bits_ns;
+    stats.opencl_generated_autocorrelation_ns += timings.generated_autocorrelation_ns;
+    stats.opencl_generated_lpc_ns += timings.generated_lpc_ns;
+    stats.opencl_generated_quantize_ns += timings.generated_quantize_ns;
+    stats.opencl_exact_analysis_ns += timings.exact_analysis_ns;
+    stats.opencl_choose_best_ns += timings.choose_best_ns;
+    stats.opencl_readback_ns += timings.readback_ns;
+}
+
 AcceleratedSelectedFrameAnalysis analyze_opencl_selected_frames(
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& frame_info,
@@ -71,13 +86,16 @@ AcceleratedSelectedFrameAnalysis analyze_opencl_selected_frames(
             add_elapsed_ns(stats->accelerated_task_plan_ns, plan_started);
         }
         const auto analysis_started = Clock::now();
+        opencl_detail::OpenClGeneratedAnalysisTimings opencl_timings;
         auto result = generated_session->run_generated_best_analysis(
             samples,
             plan,
             frame_info.lpc_coefficient_precision,
-            frame_info.max_rice_partition_order);
+            frame_info.max_rice_partition_order,
+            stats == nullptr ? nullptr : &opencl_timings);
         if (stats != nullptr) {
             add_elapsed_ns(stats->accelerated_exact_analysis_ns, analysis_started);
+            add_opencl_timings(*stats, opencl_timings);
         }
 
         AcceleratedSelectedFrameAnalysis selected;

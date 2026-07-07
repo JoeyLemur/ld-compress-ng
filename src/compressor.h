@@ -45,6 +45,15 @@ struct NativeCompressionStats {
     std::uint64_t accelerated_selected_frame_output_ns = 0;
     std::uint64_t accelerated_task_plan_ns = 0;
     std::uint64_t accelerated_exact_analysis_ns = 0;
+    std::uint64_t opencl_timed_batches = 0;
+    std::uint64_t opencl_upload_ns = 0;
+    std::uint64_t opencl_wasted_bits_ns = 0;
+    std::uint64_t opencl_generated_autocorrelation_ns = 0;
+    std::uint64_t opencl_generated_lpc_ns = 0;
+    std::uint64_t opencl_generated_quantize_ns = 0;
+    std::uint64_t opencl_exact_analysis_ns = 0;
+    std::uint64_t opencl_choose_best_ns = 0;
+    std::uint64_t opencl_readback_ns = 0;
     std::uint64_t vulkan_gpu_timed_batches = 0;
     std::uint64_t vulkan_gpu_total_ns = 0;
     std::uint64_t vulkan_gpu_upload_ns = 0;

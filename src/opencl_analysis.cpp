@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -39,12 +40,21 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr std::size_t kGeneratedLpcBaseWindowCount = 2;
 constexpr std::size_t kGeneratedWelchCandidateTargetCount = 2;
 constexpr double kGeneratedTukeyTaperFraction = 0.5;
+using Clock = std::chrono::steady_clock;
 
 struct GeneratedLpcPrefixShape {
     std::size_t lpc_tasks_per_window = 0;
     std::size_t window_count = 0;
     std::size_t total_lpc_tasks = 0;
 };
+
+LDCOMPRESS_OPENCL_ONLY_USED void add_elapsed_ns(
+    std::uint64_t& counter,
+    Clock::time_point start)
+{
+    counter += static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count());
+}
 
 std::int32_t checked_i32(std::uint64_t value, const char* name)
 {
@@ -2692,7 +2702,8 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
     std::size_t total_lpc_tasks,
     std::size_t generated_window_count,
     OpenClGeneratedAnalysisRuntime& runtime,
-    bool read_analyzed_tasks)
+    bool read_analyzed_tasks,
+    OpenClGeneratedAnalysisTimings* timings)
 {
     if (lpc_tasks_per_window == 0 || lpc_tasks_per_window > kFlacClMaxOrder ||
         generated_window_count == 0 ||
@@ -2705,6 +2716,20 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
         throw std::runtime_error("OpenCL generated analysis max Rice partition order must be 0..8");
     }
 
+    if (timings != nullptr) {
+        ++timings->batches;
+    }
+    auto finish_timed = [&](
+                            std::uint64_t OpenClGeneratedAnalysisTimings::*counter,
+                            Clock::time_point started,
+                            const char* label) {
+        if (timings != nullptr) {
+            require_cl(clFinish(runtime.queue.get()), label);
+            add_elapsed_ns(timings->*counter, started);
+        }
+    };
+
+    const auto upload_started = Clock::now();
     const auto samples_bytes = samples.size() * sizeof(std::int32_t);
     ensure_opencl_buffer(runtime.context, runtime.samples_buffer,
         runtime.samples_buffer_bytes, CL_MEM_READ_ONLY, samples_bytes, "samples");
@@ -2732,6 +2757,9 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
         runtime.window_buffer_bytes, CL_MEM_READ_ONLY, window_bytes, "window");
     write_opencl_buffer(
         runtime.queue, runtime.window_buffer, window.data(), window_bytes, "window");
+    if (timings != nullptr) {
+        add_elapsed_ns(timings->upload_ns, upload_started);
+    }
 
     const auto autocor_count = frame_count * generated_window_count * (kFlacClMaxOrder + 1U);
     const auto autocor_bytes = autocor_count * sizeof(float);
@@ -2775,9 +2803,14 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
 
     const std::size_t one = 1;
     const std::size_t frame_global_work_size = frame_count;
+    const auto wasted_started = Clock::now();
     require_cl(clEnqueueNDRangeKernel(runtime.queue.get(), runtime.wasted_kernel.get(), 1, nullptr,
                    &frame_global_work_size, &one, 0, nullptr, nullptr),
         "clEnqueueNDRangeKernel(ldcompressFindWastedBits)");
+    finish_timed(
+        &OpenClGeneratedAnalysisTimings::wasted_bits_ns,
+        wasted_started,
+        "clFinish(ldcompressFindWastedBits)");
 
     require_cl(clSetKernelArg(runtime.autocor_kernel.get(), 0, sizeof(autocor_mem), &autocor_mem),
         "clSetKernelArg(autocor.output)");
@@ -2796,9 +2829,14 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
         generated_window_count,
     };
     const std::array<std::size_t, 2> generation_local { 1, 1 };
+    const auto autocor_started = Clock::now();
     require_cl(clEnqueueNDRangeKernel(runtime.queue.get(), runtime.autocor_kernel.get(), 2, nullptr,
                    generation_global.data(), generation_local.data(), 0, nullptr, nullptr),
         "clEnqueueNDRangeKernel(ldcompressComputeAutocor)");
+    finish_timed(
+        &OpenClGeneratedAnalysisTimings::generated_autocorrelation_ns,
+        autocor_started,
+        "clFinish(ldcompressComputeAutocor)");
 
     const auto window_count_arg = static_cast<std::int32_t>(generated_window_count);
     require_cl(clSetKernelArg(runtime.lpc_kernel.get(), 0, sizeof(autocor_mem), &autocor_mem),
@@ -2807,9 +2845,14 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
         "clSetKernelArg(lpc.lpcs)");
     require_cl(clSetKernelArg(runtime.lpc_kernel.get(), 2, sizeof(window_count_arg), &window_count_arg),
         "clSetKernelArg(lpc.windowCount)");
+    const auto lpc_started = Clock::now();
     require_cl(clEnqueueNDRangeKernel(runtime.queue.get(), runtime.lpc_kernel.get(), 2, nullptr,
                    generation_global.data(), generation_local.data(), 0, nullptr, nullptr),
         "clEnqueueNDRangeKernel(ldcompressComputeLpc)");
+    finish_timed(
+        &OpenClGeneratedAnalysisTimings::generated_lpc_ns,
+        lpc_started,
+        "clFinish(ldcompressComputeLpc)");
 
     const auto lpc_tasks_per_window_arg =
         static_cast<std::int32_t>(lpc_tasks_per_window);
@@ -2833,9 +2876,14 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
     require_cl(clSetKernelArg(runtime.quantize_kernel.get(), 5, sizeof(lpc_coefficient_precision_arg),
                    &lpc_coefficient_precision_arg),
         "clSetKernelArg(quantize.coefficientPrecision)");
+    const auto quantize_started = Clock::now();
     require_cl(clEnqueueNDRangeKernel(runtime.queue.get(), runtime.quantize_kernel.get(), 2, nullptr,
                    generation_global.data(), generation_local.data(), 0, nullptr, nullptr),
         "clEnqueueNDRangeKernel(ldcompressQuantizeLpcOrders)");
+    finish_timed(
+        &OpenClGeneratedAnalysisTimings::generated_quantize_ns,
+        quantize_started,
+        "clFinish(ldcompressQuantizeLpcOrders)");
 
     const auto max_rice_partition_order_arg =
         static_cast<std::int32_t>(max_rice_partition_order);
@@ -2852,9 +2900,14 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
     const std::size_t exact_local_work_size = kOpenClExactWorkgroupSize;
     const std::size_t estimate_global_work_size =
         plan.selected_tasks.size() * exact_local_work_size;
+    const auto exact_started = Clock::now();
     require_cl(clEnqueueNDRangeKernel(runtime.queue.get(), runtime.exact_kernel.get(), 1, nullptr,
                    &estimate_global_work_size, &exact_local_work_size, 0, nullptr, nullptr),
         "clEnqueueNDRangeKernel(ldcompressAnalyzeSubframeExact)");
+    finish_timed(
+        &OpenClGeneratedAnalysisTimings::exact_analysis_ns,
+        exact_started,
+        "clFinish(ldcompressAnalyzeSubframeExact)");
 
     require_cl(clSetKernelArg(runtime.choose_kernel.get(), 0, sizeof(best_mem), &best_mem),
         "clSetKernelArg(choose.tasks_out)");
@@ -2866,10 +2919,16 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
                    &estimate_tasks_per_frame),
         "clSetKernelArg(choose.taskCount)");
 
+    const auto choose_started = Clock::now();
     require_cl(clEnqueueNDRangeKernel(runtime.queue.get(), runtime.choose_kernel.get(), 1, nullptr,
                    &frame_global_work_size, nullptr, 0, nullptr, nullptr),
         "clEnqueueNDRangeKernel(ldcompressChooseBestMethod)");
+    finish_timed(
+        &OpenClGeneratedAnalysisTimings::choose_best_ns,
+        choose_started,
+        "clFinish(ldcompressChooseBestMethod)");
 
+    const auto readback_started = Clock::now();
     if (read_analyzed_tasks) {
         require_cl(clEnqueueReadBuffer(runtime.queue.get(), runtime.tasks_buffer.get(), CL_TRUE, 0,
                        analyzed_tasks.size() * sizeof(FlacClSubframeTask), analyzed_tasks.data(),
@@ -2881,6 +2940,9 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
                    0, nullptr, nullptr),
         "clEnqueueReadBuffer(tasks_out)");
     require_cl(clFinish(runtime.queue.get()), "clFinish");
+    if (timings != nullptr) {
+        add_elapsed_ns(timings->readback_ns, readback_started);
+    }
 
     return OpenClMonoFixedConstantAnalysisResult {
         .analyzed_tasks = std::move(analyzed_tasks),
@@ -2910,7 +2972,8 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_impl(
         total_lpc_tasks,
         generated_window_count,
         runtime,
-        true);
+        true,
+        nullptr);
 }
 #endif
 
@@ -2928,7 +2991,8 @@ public:
         unsigned lpc_coefficient_precision,
         unsigned max_rice_partition_order,
         const GeneratedLpcPrefixShape& lpc_shape,
-        bool read_analyzed_tasks)
+        bool read_analyzed_tasks,
+        OpenClGeneratedAnalysisTimings* timings)
     {
         return run_opencl_mono_generated_analysis_validated(
             samples,
@@ -2939,7 +3003,8 @@ public:
             lpc_shape.total_lpc_tasks,
             lpc_shape.window_count,
             runtime_,
-            read_analyzed_tasks);
+            read_analyzed_tasks,
+            timings);
     }
 
 private:
@@ -2964,18 +3029,26 @@ OpenClMonoFixedConstantAnalysisResult OpenClMonoAnalysisSession::run_generated_a
     const std::vector<std::int32_t>& samples,
     const OpenClMonoAnalysisTaskPlan& plan,
     unsigned lpc_coefficient_precision,
-    unsigned max_rice_partition_order)
+    unsigned max_rice_partition_order,
+    OpenClGeneratedAnalysisTimings* timings)
 {
 #if LDCOMPRESS_HAVE_OPENCL
     const auto lpc_shape =
         validate_generated_analysis_inputs(samples, plan, lpc_coefficient_precision);
     return impl_->run_generated_analysis(
-        samples, plan, lpc_coefficient_precision, max_rice_partition_order, lpc_shape, true);
+        samples,
+        plan,
+        lpc_coefficient_precision,
+        max_rice_partition_order,
+        lpc_shape,
+        true,
+        timings);
 #else
     (void)samples;
     (void)plan;
     (void)lpc_coefficient_precision;
     (void)max_rice_partition_order;
+    (void)timings;
     throw std::runtime_error("OpenCL support was not built");
 #endif
 }
@@ -2984,13 +3057,20 @@ OpenClMonoBestMethodResult OpenClMonoAnalysisSession::run_generated_best_analysi
     const std::vector<std::int32_t>& samples,
     const OpenClMonoAnalysisTaskPlan& plan,
     unsigned lpc_coefficient_precision,
-    unsigned max_rice_partition_order)
+    unsigned max_rice_partition_order,
+    OpenClGeneratedAnalysisTimings* timings)
 {
 #if LDCOMPRESS_HAVE_OPENCL
     const auto lpc_shape =
         validate_generated_analysis_inputs(samples, plan, lpc_coefficient_precision);
     auto analysis = impl_->run_generated_analysis(
-        samples, plan, lpc_coefficient_precision, max_rice_partition_order, lpc_shape, false);
+        samples,
+        plan,
+        lpc_coefficient_precision,
+        max_rice_partition_order,
+        lpc_shape,
+        false,
+        timings);
     return OpenClMonoBestMethodResult {
         .best_tasks = std::move(analysis.best_tasks),
         .best_rice_parameters = std::move(analysis.best_rice_parameters),
@@ -3001,6 +3081,7 @@ OpenClMonoBestMethodResult OpenClMonoAnalysisSession::run_generated_best_analysi
     (void)plan;
     (void)lpc_coefficient_precision;
     (void)max_rice_partition_order;
+    (void)timings;
     throw std::runtime_error("OpenCL support was not built");
 #endif
 }
@@ -3067,11 +3148,12 @@ OpenClMonoBestMethodResult run_opencl_mono_generated_best_analysis(
     const OpenClMonoAnalysisTaskPlan& plan,
     std::optional<std::size_t> requested_device_index,
     unsigned lpc_coefficient_precision,
-    unsigned max_rice_partition_order)
+    unsigned max_rice_partition_order,
+    OpenClGeneratedAnalysisTimings* timings)
 {
     OpenClMonoAnalysisSession session(requested_device_index);
     return session.run_generated_best_analysis(
-        samples, plan, lpc_coefficient_precision, max_rice_partition_order);
+        samples, plan, lpc_coefficient_precision, max_rice_partition_order, timings);
 }
 
 OpenClMonoGeneratedFrameAnalysisResult analyze_opencl_mono_generated_frames(

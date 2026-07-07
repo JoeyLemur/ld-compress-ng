@@ -87,6 +87,18 @@ struct OpenClMonoFixedConstantAnalysisResult {
     std::string device_name;
 };
 
+struct OpenClGeneratedAnalysisTimings {
+    std::uint64_t batches = 0;
+    std::uint64_t upload_ns = 0;
+    std::uint64_t wasted_bits_ns = 0;
+    std::uint64_t generated_autocorrelation_ns = 0;
+    std::uint64_t generated_lpc_ns = 0;
+    std::uint64_t generated_quantize_ns = 0;
+    std::uint64_t exact_analysis_ns = 0;
+    std::uint64_t choose_best_ns = 0;
+    std::uint64_t readback_ns = 0;
+};
+
 struct OpenClMonoGeneratedFrameAnalysisResult {
     std::vector<FlacClSubframeTask> analyzed_tasks;
     std::vector<FlacClSubframeTask> best_tasks;
@@ -137,7 +149,8 @@ OpenClMonoBestMethodResult run_opencl_mono_generated_best_analysis(
     const OpenClMonoAnalysisTaskPlan& plan,
     std::optional<std::size_t> requested_device_index = std::nullopt,
     unsigned lpc_coefficient_precision = 12,
-    unsigned max_rice_partition_order = 5);
+    unsigned max_rice_partition_order = 5,
+    OpenClGeneratedAnalysisTimings* timings = nullptr);
 
 class OpenClMonoAnalysisSession final {
 public:
@@ -152,13 +165,15 @@ public:
         const std::vector<std::int32_t>& samples,
         const OpenClMonoAnalysisTaskPlan& plan,
         unsigned lpc_coefficient_precision = 12,
-        unsigned max_rice_partition_order = 5);
+        unsigned max_rice_partition_order = 5,
+        OpenClGeneratedAnalysisTimings* timings = nullptr);
 
     OpenClMonoBestMethodResult run_generated_best_analysis(
         const std::vector<std::int32_t>& samples,
         const OpenClMonoAnalysisTaskPlan& plan,
         unsigned lpc_coefficient_precision = 12,
-        unsigned max_rice_partition_order = 5);
+        unsigned max_rice_partition_order = 5,
+        OpenClGeneratedAnalysisTimings* timings = nullptr);
 
 private:
     class Impl;

@@ -936,6 +936,35 @@ void print_native_stats(const ldcompress::NativeCompressionStats& stats)
                       << " analyzer-other=" << seconds_from_ns(analyzer_other_ns) << "s"
                       << '\n';
         }
+        if (stats.opencl_timed_batches != 0) {
+            const auto opencl_detail_ns =
+                stats.opencl_upload_ns +
+                stats.opencl_wasted_bits_ns +
+                stats.opencl_generated_autocorrelation_ns +
+                stats.opencl_generated_lpc_ns +
+                stats.opencl_generated_quantize_ns +
+                stats.opencl_exact_analysis_ns +
+                stats.opencl_choose_best_ns +
+                stats.opencl_readback_ns;
+            const auto opencl_other_ns =
+                stats.accelerated_exact_analysis_ns > opencl_detail_ns
+                ? stats.accelerated_exact_analysis_ns - opencl_detail_ns
+                : 0;
+            std::cerr << "opencl timings: batches=" << stats.opencl_timed_batches
+                      << " upload=" << seconds_from_ns(stats.opencl_upload_ns) << "s"
+                      << " wasted=" << seconds_from_ns(stats.opencl_wasted_bits_ns) << "s"
+                      << " autocor="
+                      << seconds_from_ns(stats.opencl_generated_autocorrelation_ns) << "s"
+                      << " lpc=" << seconds_from_ns(stats.opencl_generated_lpc_ns) << "s"
+                      << " quantize="
+                      << seconds_from_ns(stats.opencl_generated_quantize_ns) << "s"
+                      << " exact=" << seconds_from_ns(stats.opencl_exact_analysis_ns)
+                      << "s"
+                      << " choose=" << seconds_from_ns(stats.opencl_choose_best_ns) << "s"
+                      << " readback=" << seconds_from_ns(stats.opencl_readback_ns) << "s"
+                      << " other=" << seconds_from_ns(opencl_other_ns) << "s"
+                      << '\n';
+        }
         const auto selected_detail_ns =
             stats.accelerated_selected_validation_ns +
             stats.accelerated_selected_shift_ns +
