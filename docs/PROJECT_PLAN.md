@@ -496,6 +496,16 @@ Remaining Vulkan work:
   (`4,292,100` bytes in `0.715` seconds). The largest remaining OpenCL time is
   now outside generated analysis, primarily selected-frame writer work and
   backend/host overhead.
+- The follow-up six-fixture sweep after cooperative OpenCL autocorrelation wrote
+  `build/real-fixture-sweeps/real-fixture-sweep-20260706-231838.{csv,md}`.
+  Aggregate CPU/libFLAC output was `80,086,984` bytes. Best scalar native-fixed
+  stayed `79,867,690` bytes in `29.960` seconds with `threads=8`,
+  `frame=4608`, `lpc=12`, `prec=12`, and `rice=5`. Best OpenCL is now
+  `79,892,119` bytes in `7.909` seconds with the same frame/LPC/Rice settings,
+  `-0.24%` vs CPU/libFLAC and only `24,429` bytes larger than native-fixed.
+  This confirms the OpenCL autocorrelation speedup holds across the local real
+  fixtures; OpenCL is now near native-fixed size and materially faster than
+  scalar native-fixed on this validation set.
 
 Immediate engineering focus:
 
