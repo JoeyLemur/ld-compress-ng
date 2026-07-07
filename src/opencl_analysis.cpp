@@ -61,6 +61,21 @@ bool generated_profile_uses_subdivide_tukey3(NativeAnalysisProfile profile)
     return profile == NativeAnalysisProfile::SubdivideTukey3MeanRice;
 }
 
+std::int32_t opencl_analysis_profile_arg(NativeAnalysisProfile profile)
+{
+    switch (profile) {
+    case NativeAnalysisProfile::Exact:
+        return 0;
+    case NativeAnalysisProfile::OrderGuessExactRice:
+        return 1;
+    case NativeAnalysisProfile::OrderGuessMeanRice:
+        return 2;
+    case NativeAnalysisProfile::SubdivideTukey3MeanRice:
+        return 3;
+    }
+    return 0;
+}
+
 std::uint64_t elapsed_ns_since(Clock::time_point start)
 {
     return static_cast<std::uint64_t>(
@@ -1322,6 +1337,8 @@ const char* mono_analysis_kernel_source()
 #define AUTOCOR_WORKGROUP_SIZE 64
 #define MAX_RICE_PARTITION_COUNT 256
 #define ANALYSIS_PROFILE_EXACT 0
+#define ANALYSIS_PROFILE_ORDER_GUESS_MEAN_RICE 2
+#define ANALYSIS_PROFILE_SUBDIVIDE_TUKEY3_MEAN_RICE 3
 
 typedef enum
 {
@@ -1443,7 +1460,8 @@ __kernel __attribute__((reqd_work_group_size(1, 1, 1)))
 void ldcompressComputeLpc(
     __global const float* autocor,
     __global float* lpcs,
-    int windowCount)
+    int windowCount,
+    int maxLpcOrder)
 {
     const int frame = get_group_id(0);
     const int window = get_group_id(1);
@@ -1457,8 +1475,9 @@ void ldcompressComputeLpc(
     float gen0[32];
     float gen1[32];
     float err[32];
+    const int orderLimit = clamp(maxLpcOrder, 1, MAX_ORDER);
 
-    for (int i = 0; i < MAX_ORDER; i++)
+    for (int i = 0; i < orderLimit; i++)
     {
         gen0[i] = autoc[i + 1];
         gen1[i] = autoc[i + 1];
@@ -1467,7 +1486,7 @@ void ldcompressComputeLpc(
     }
 
     float error = autoc[0];
-    for (int order = 0; order < MAX_ORDER; order++)
+    for (int order = 0; order < orderLimit; order++)
     {
         float reflection = 0.0f;
         if (error > 0.0f)
@@ -1479,7 +1498,7 @@ void ldcompressComputeLpc(
         if (!isfinite(error) || error < 0.0f)
             error = 0.0f;
 
-        for (int j = 0; j < MAX_ORDER - 1 - order; j++)
+        for (int j = 0; j < orderLimit - 1 - order; j++)
         {
             const float nextGen1 = gen1[j + 1] + (reflection * gen0[j]);
             gen0[j] = gen1[j + 1] * reflection + gen0[j];
@@ -1502,7 +1521,7 @@ void ldcompressComputeLpc(
             lpcs[lpcOffset + order * 32 + j] = -ldr[order - j];
     }
 
-    for (int j = 0; j < MAX_ORDER; j++)
+    for (int j = 0; j < orderLimit; j++)
         lpcs[lpcOffset + MAX_ORDER * 32 + j] = err[j];
 }
 
@@ -1987,6 +2006,52 @@ typedef struct
     uint parameter;
 } RiceChoice;
 
+typedef struct
+{
+    ulong exactBits;
+    ulong estimatedBits;
+    uint parameter;
+} MeanRiceChoice;
+
+int ldcompressProfileUsesMeanRice(int analysisProfile)
+{
+    return analysisProfile == ANALYSIS_PROFILE_ORDER_GUESS_MEAN_RICE ||
+        analysisProfile == ANALYSIS_PROFILE_SUBDIVIDE_TUKEY3_MEAN_RICE;
+}
+
+uint ldcompressIlog2Ulong(ulong value)
+{
+    uint result = 0U;
+    while (value > 1UL)
+    {
+        value >>= 1U;
+        result++;
+    }
+    return result;
+}
+
+uint ldcompressMeanRiceParameter(ulong absSum, int sampleCount)
+{
+    if (sampleCount <= 0)
+        return 0U;
+    const ulong divisor = 0x40000UL / (ulong)sampleCount;
+    const ulong scaledMean =
+        absSum < 2UL || divisor == 0UL ? 0UL : (((absSum - 1UL) * divisor) >> 18U);
+    if (scaledMean == 0UL)
+        return 0U;
+    return min((uint)MAX_RICE_PARAM, ldcompressIlog2Ulong(scaledMean) + 1U);
+}
+
+ulong ldcompressMeanRicePartitionBits(uint riceParameter, int sampleCount, ulong absSum)
+{
+    ulong bits = 4UL + ((ulong)(1U + riceParameter) * (ulong)sampleCount);
+    bits += riceParameter == 0U
+        ? (absSum << 1U)
+        : (absSum >> (riceParameter - 1U));
+    const ulong correction = (ulong)(sampleCount >> 1);
+    return bits > correction ? bits - correction : 0UL;
+}
+
 RiceChoice ldcompressCooperativeBestRiceForPartition(
     __global const int* data,
     int partitionStart,
@@ -2076,6 +2141,45 @@ RiceChoice ldcompressCooperativeBestRiceForPartition(
     return best;
 }
 
+MeanRiceChoice ldcompressCooperativeMeanRiceForPartition(
+    __global const int* data,
+    int partitionStart,
+    int residualCount,
+    FLACCLSubframeTask task,
+    __local ulong* reduceScratch,
+    int includeExactBits)
+{
+    ulong localAbsSum = 0UL;
+    for (int i = (int)get_local_id(0); i < residualCount; i += EXACT_WORKGROUP_SIZE)
+    {
+        const long residual = ldcompressResidual(data, partitionStart + i, task);
+        localAbsSum += ldcompressAbsLong(residual);
+    }
+
+    const ulong absSum = ldcompressReduceSumUlong(localAbsSum, reduceScratch);
+    const uint parameter = ldcompressMeanRiceParameter(absSum, residualCount);
+
+    ulong localExactBits = 0UL;
+    if (includeExactBits)
+    {
+        for (int i = (int)get_local_id(0); i < residualCount; i += EXACT_WORKGROUP_SIZE)
+        {
+            const long residual = ldcompressResidual(data, partitionStart + i, task);
+            const ulong folded = ldcompressFoldResidual(residual);
+            localExactBits += (folded >> parameter) + 1UL + (ulong)parameter;
+        }
+    }
+
+    MeanRiceChoice choice;
+    choice.exactBits = includeExactBits
+        ? ldcompressReduceSumUlong(localExactBits, reduceScratch)
+        : 0UL;
+    choice.estimatedBits =
+        ldcompressMeanRicePartitionBits(parameter, residualCount, absSum);
+    choice.parameter = parameter;
+    return choice;
+}
+
 ulong ldcompressCooperativeBestRiceBitsForPartition(
     __global const int* data,
     int partitionStart,
@@ -2093,7 +2197,8 @@ void ldcompressAnalyzeSubframeExact(
     __global const int* samples,
     __global const int* selectedTasks,
     __global FLACCLSubframeTask* tasks,
-    int maxRicePartitionOrder)
+    int maxRicePartitionOrder,
+    int analysisProfile)
 {
     __local ulong reduceScratchUlong[EXACT_WORKGROUP_SIZE];
     __local uint reduceScratchUint[EXACT_WORKGROUP_SIZE];
@@ -2157,30 +2262,35 @@ void ldcompressAnalyzeSubframeExact(
     }
 
     ulong bestBits = 0xffffffffffffffffUL;
+    ulong bestEstimatedBits = 0xffffffffffffffffUL;
     int bestPartitionOrder = 0;
     const int maxPartitionOrder = min(maxRicePartitionOrder, 8);
-    for (int partitionOrder = 0; partitionOrder <= maxPartitionOrder; partitionOrder++)
+    const int useMeanRice = ldcompressProfileUsesMeanRice(analysisProfile);
+    const ulong baseBits = task.data.type == LPC
+        ? 8UL +
+            (wbits == 0 ? 0UL : (ulong)wbits) +
+            ((ulong)ro * (ulong)obits) +
+            4UL +
+            5UL +
+            ((ulong)ro * (ulong)task.data.cbits) +
+            2UL +
+            4UL
+        : 8UL +
+            ((ulong)ro * (ulong)obits) +
+            2UL +
+            4UL +
+            (wbits == 0 ? 0UL : (ulong)wbits);
+    for (int partitionOrder = useMeanRice ? maxPartitionOrder : 0;
+         useMeanRice ? partitionOrder >= 0 : partitionOrder <= maxPartitionOrder;
+         partitionOrder += useMeanRice ? -1 : 1)
     {
         if (!ldcompressValidPartitionOrder(bs, ro, partitionOrder))
             continue;
 
         const int partitionCount = 1 << partitionOrder;
         const int partitionSamples = bs >> partitionOrder;
-        ulong bits = task.data.type == LPC
-            ? 8UL +
-                (wbits == 0 ? 0UL : (ulong)wbits) +
-                ((ulong)ro * (ulong)obits) +
-                4UL +
-                5UL +
-                ((ulong)ro * (ulong)task.data.cbits) +
-                2UL +
-                4UL
-            : 8UL +
-                ((ulong)ro * (ulong)obits) +
-                2UL +
-                4UL +
-                (wbits == 0 ? 0UL : (ulong)wbits);
-
+        ulong bits = baseBits;
+        ulong estimatedBits = 2UL + 4UL;
         for (int partition = 0; partition < partitionCount; partition++)
         {
             const int residualCount = partition == 0
@@ -2189,15 +2299,45 @@ void ldcompressAnalyzeSubframeExact(
             const int partitionStart = partition == 0
                 ? ro
                 : partition * partitionSamples;
-            bits += 4UL;
-            bits += ldcompressCooperativeBestRiceBitsForPartition(
-                data, partitionStart, residualCount, task, reduceScratchUlong);
+            if (useMeanRice)
+            {
+                const MeanRiceChoice choice = ldcompressCooperativeMeanRiceForPartition(
+                    data, partitionStart, residualCount, task, reduceScratchUlong, 0);
+                estimatedBits += choice.estimatedBits;
+            }
+            else
+            {
+                bits += 4UL;
+                bits += ldcompressCooperativeBestRiceBitsForPartition(
+                    data, partitionStart, residualCount, task, reduceScratchUlong);
+            }
         }
 
-        if (bits < bestBits)
+        if ((useMeanRice && estimatedBits < bestEstimatedBits) ||
+            (!useMeanRice && bits < bestBits))
         {
+            bestEstimatedBits = estimatedBits;
             bestBits = bits;
             bestPartitionOrder = partitionOrder;
+        }
+    }
+
+    if (useMeanRice)
+    {
+        bestBits = baseBits;
+        const int partitionCount = 1 << bestPartitionOrder;
+        const int partitionSamples = bs >> bestPartitionOrder;
+        for (int partition = 0; partition < partitionCount; partition++)
+        {
+            const int residualCount = partition == 0
+                ? partitionSamples - ro
+                : partitionSamples;
+            const int partitionStart = partition == 0
+                ? ro
+                : partition * partitionSamples;
+            const MeanRiceChoice choice = ldcompressCooperativeMeanRiceForPartition(
+                data, partitionStart, residualCount, task, reduceScratchUlong, 1);
+            bestBits += 4UL + choice.exactBits;
         }
     }
 
@@ -2235,7 +2375,8 @@ __kernel __attribute__((reqd_work_group_size(EXACT_WORKGROUP_SIZE, 1, 1)))
 void ldcompressWriteBestRiceParameters(
     __global const int* samples,
     __global const FLACCLSubframeTask* bestTasks,
-    __global uint* bestRiceParameters)
+    __global uint* bestRiceParameters,
+    int analysisProfile)
 {
     __local ulong reduceScratchUlong[EXACT_WORKGROUP_SIZE];
     const int lane = (int)get_local_id(0);
@@ -2263,6 +2404,7 @@ void ldcompressWriteBestRiceParameters(
     __global const int* data = &samples[task.data.samplesOffs];
     const int partitionCount = 1 << partitionOrder;
     const int partitionSamples = bs >> partitionOrder;
+    const int useMeanRice = ldcompressProfileUsesMeanRice(analysisProfile);
     for (int partition = 0; partition < partitionCount; partition++)
     {
         const int residualCount = partition == 0
@@ -2271,10 +2413,21 @@ void ldcompressWriteBestRiceParameters(
         const int partitionStart = partition == 0
             ? ro
             : partition * partitionSamples;
-        const RiceChoice choice = ldcompressCooperativeBestRiceForPartition(
-            data, partitionStart, residualCount, task, reduceScratchUlong);
+        uint parameter = 0U;
+        if (useMeanRice)
+        {
+            const MeanRiceChoice choice = ldcompressCooperativeMeanRiceForPartition(
+                data, partitionStart, residualCount, task, reduceScratchUlong, 0);
+            parameter = choice.parameter;
+        }
+        else
+        {
+            const RiceChoice choice = ldcompressCooperativeBestRiceForPartition(
+                data, partitionStart, residualCount, task, reduceScratchUlong);
+            parameter = choice.parameter;
+        }
         if (lane == 0)
-            bestRiceParameters[outputBase + partition] = choice.parameter;
+            bestRiceParameters[outputBase + partition] = parameter;
     }
 }
 )CLC";
@@ -2664,11 +2817,13 @@ void enqueue_opencl_best_rice_parameters(
     const ClMem& samples_buffer,
     const ClMem& best_buffer,
     const ClMem& best_rice_parameters_buffer,
-    std::size_t frame_count)
+    std::size_t frame_count,
+    NativeAnalysisProfile analysis_profile)
 {
     cl_mem samples_mem = samples_buffer.get();
     cl_mem best_mem = best_buffer.get();
     cl_mem best_rice_mem = best_rice_parameters_buffer.get();
+    const auto analysis_profile_arg = opencl_analysis_profile_arg(analysis_profile);
 
     require_cl(clSetKernelArg(kernel.get(), 0, sizeof(samples_mem), &samples_mem),
         "clSetKernelArg(rice.samples)");
@@ -2676,6 +2831,9 @@ void enqueue_opencl_best_rice_parameters(
         "clSetKernelArg(rice.bestTasks)");
     require_cl(clSetKernelArg(kernel.get(), 2, sizeof(best_rice_mem), &best_rice_mem),
         "clSetKernelArg(rice.bestRiceParameters)");
+    require_cl(clSetKernelArg(kernel.get(), 3, sizeof(analysis_profile_arg),
+                   &analysis_profile_arg),
+        "clSetKernelArg(rice.analysisProfile)");
 
     const std::size_t local_work_size = kOpenClExactWorkgroupSize;
     const std::size_t global_work_size = frame_count * local_work_size;
@@ -3339,6 +3497,8 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
 
     const auto max_rice_partition_order_arg =
         static_cast<std::int32_t>(max_rice_partition_order);
+    const auto exact_analysis_profile_arg =
+        opencl_analysis_profile_arg(NativeAnalysisProfile::Exact);
     require_cl(clSetKernelArg(exact_kernel.get(), 0, sizeof(samples_mem), &samples_mem),
         "clSetKernelArg(exact.samples)");
     require_cl(clSetKernelArg(exact_kernel.get(), 1, sizeof(selected_mem), &selected_mem),
@@ -3348,6 +3508,9 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
     require_cl(clSetKernelArg(exact_kernel.get(), 3, sizeof(max_rice_partition_order_arg),
                    &max_rice_partition_order_arg),
         "clSetKernelArg(exact.maxRicePartitionOrder)");
+    require_cl(clSetKernelArg(exact_kernel.get(), 4, sizeof(exact_analysis_profile_arg),
+                   &exact_analysis_profile_arg),
+        "clSetKernelArg(exact.analysisProfile)");
 
     const std::size_t exact_local_work_size = kOpenClExactWorkgroupSize;
     const std::size_t estimate_global_work_size =
@@ -3375,7 +3538,8 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
         samples_buffer,
         best_buffer,
         best_rice_parameters_buffer,
-        frame_count);
+        frame_count,
+        NativeAnalysisProfile::Exact);
 
     require_cl(clEnqueueReadBuffer(queue.get(), tasks_buffer.get(), CL_TRUE, 0,
                    analyzed_tasks.size() * sizeof(FlacClSubframeTask), analyzed_tasks.data(),
@@ -3508,6 +3672,8 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_analysis(
 
     const auto max_rice_partition_order_arg =
         static_cast<std::int32_t>(max_rice_partition_order);
+    const auto exact_analysis_profile_arg =
+        opencl_analysis_profile_arg(NativeAnalysisProfile::Exact);
     require_cl(clSetKernelArg(exact_kernel.get(), 0, sizeof(samples_mem), &samples_mem),
         "clSetKernelArg(exact.samples)");
     require_cl(clSetKernelArg(exact_kernel.get(), 1, sizeof(selected_mem), &selected_mem),
@@ -3517,6 +3683,9 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_analysis(
     require_cl(clSetKernelArg(exact_kernel.get(), 3, sizeof(max_rice_partition_order_arg),
                    &max_rice_partition_order_arg),
         "clSetKernelArg(exact.maxRicePartitionOrder)");
+    require_cl(clSetKernelArg(exact_kernel.get(), 4, sizeof(exact_analysis_profile_arg),
+                   &exact_analysis_profile_arg),
+        "clSetKernelArg(exact.analysisProfile)");
 
     const std::size_t exact_local_work_size = kOpenClExactWorkgroupSize;
     const std::size_t estimate_global_work_size =
@@ -3544,7 +3713,8 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_analysis(
         samples_buffer,
         best_buffer,
         best_rice_parameters_buffer,
-        frame_count);
+        frame_count,
+        NativeAnalysisProfile::Exact);
 
     require_cl(clEnqueueReadBuffer(queue.get(), tasks_buffer.get(), CL_TRUE, 0,
                    analyzed_tasks.size() * sizeof(FlacClSubframeTask), analyzed_tasks.data(),
@@ -3733,10 +3903,12 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
         generated_window_count,
     };
     const std::array<std::size_t, 2> generation_local { 1, 1 };
+    const auto lpc_order_limit =
+        std::min<std::size_t>(kFlacClMaxOrder, std::max<unsigned>(1U, plan.max_lpc_order));
     const std::array<std::size_t, 3> autocor_global {
         frame_count * kOpenClAutocorWorkgroupSize,
         generated_window_count,
-        kFlacClMaxOrder + 1U,
+        lpc_order_limit + 1U,
     };
     const std::array<std::size_t, 3> autocor_local {
         kOpenClAutocorWorkgroupSize,
@@ -3753,12 +3925,16 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
         "clFinish(ldcompressComputeAutocor)");
 
     const auto window_count_arg = static_cast<std::int32_t>(generated_window_count);
+    const auto lpc_order_limit_arg = static_cast<std::int32_t>(lpc_order_limit);
     require_cl(clSetKernelArg(runtime.lpc_kernel.get(), 0, sizeof(autocor_mem), &autocor_mem),
         "clSetKernelArg(lpc.autocor)");
     require_cl(clSetKernelArg(runtime.lpc_kernel.get(), 1, sizeof(lpc_mem), &lpc_mem),
         "clSetKernelArg(lpc.lpcs)");
     require_cl(clSetKernelArg(runtime.lpc_kernel.get(), 2, sizeof(window_count_arg), &window_count_arg),
         "clSetKernelArg(lpc.windowCount)");
+    require_cl(clSetKernelArg(runtime.lpc_kernel.get(), 3, sizeof(lpc_order_limit_arg),
+                   &lpc_order_limit_arg),
+        "clSetKernelArg(lpc.maxLpcOrder)");
     const auto lpc_started = Clock::now();
     require_cl(clEnqueueNDRangeKernel(runtime.queue.get(), runtime.lpc_kernel.get(), 2, nullptr,
                    generation_global.data(), generation_local.data(), 0, nullptr, nullptr),
@@ -3777,7 +3953,7 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
     const auto max_lpc_order_arg =
         static_cast<std::int32_t>(plan.max_lpc_order);
     const auto analysis_profile_arg =
-        static_cast<std::int32_t>(plan.analysis_profile);
+        opencl_analysis_profile_arg(plan.analysis_profile);
     require_cl(clSetKernelArg(runtime.quantize_kernel.get(), 0, sizeof(tasks_mem), &tasks_mem),
         "clSetKernelArg(quantize.tasks)");
     require_cl(clSetKernelArg(runtime.quantize_kernel.get(), 1, sizeof(lpc_mem), &lpc_mem),
@@ -3849,6 +4025,9 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
     require_cl(clSetKernelArg(runtime.exact_kernel.get(), 3, sizeof(max_rice_partition_order_arg),
                    &max_rice_partition_order_arg),
         "clSetKernelArg(exact.maxRicePartitionOrder)");
+    require_cl(clSetKernelArg(runtime.exact_kernel.get(), 4, sizeof(analysis_profile_arg),
+                   &analysis_profile_arg),
+        "clSetKernelArg(exact.analysisProfile)");
 
     const std::size_t exact_local_work_size = kOpenClExactWorkgroupSize;
     const std::size_t estimate_global_work_size =
@@ -3888,7 +4067,8 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_validat
         runtime.samples_buffer,
         runtime.best_buffer,
         runtime.best_rice_parameters_buffer,
-        frame_count);
+        frame_count,
+        plan.analysis_profile);
     finish_timed(
         &OpenClGeneratedAnalysisTimings::choose_best_ns,
         rice_started,

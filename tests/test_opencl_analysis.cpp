@@ -2007,6 +2007,67 @@ void test_opencl_mixed_generated_analysis_smoke()
         "OpenCL mixed generated LPC frame did not choose LPC");
 }
 
+void test_opencl_order_guess_mean_rice_profile_smoke()
+{
+    using namespace ldcompress::opencl_detail;
+
+    if (!ldcompress::opencl_support_built()) {
+        std::cout << "OpenCL order-guess mean Rice profile skipped: OpenCL support was not built\n";
+        return;
+    }
+
+    const auto device_index = first_available_opencl_device_index();
+    if (!device_index.has_value()) {
+        std::cout << "OpenCL order-guess mean Rice profile skipped: no available OpenCL device\n";
+        return;
+    }
+
+    auto samples = make_mixed_opencl_smoke_samples();
+    const auto alternate = make_lpc_friendly_alternate_samples();
+    samples.insert(samples.end(), alternate.begin(), alternate.end());
+
+    OpenClMonoAnalysisTaskOptions options;
+    options.frame_samples = 512;
+    options.max_lpc_order = 12;
+    options.include_constant = true;
+    options.min_fixed_order = 0;
+    options.max_fixed_order = 4;
+    options.use_gpu_fixed_order_guess = true;
+    options.analysis_profile = ldcompress::NativeAnalysisProfile::OrderGuessMeanRice;
+    const auto mean_plan =
+        build_mono_analysis_task_plan_for_samples(samples, 4, options);
+
+    require(mean_plan.fixed_order_guess_on_gpu,
+        "OpenCL mean Rice smoke did not retain GPU fixed-order pruning");
+    require(mean_plan.analysis_profile == ldcompress::NativeAnalysisProfile::OrderGuessMeanRice,
+        "OpenCL mean Rice smoke did not retain analysis profile");
+    require(mean_plan.residual_tasks_per_frame == 9,
+        "OpenCL mean Rice smoke task shape mismatch");
+    require(mean_plan.selected_tasks.size() == mean_plan.residual_tasks.size(),
+        "OpenCL mean Rice smoke selected task count mismatch");
+
+    OpenClMonoAnalysisSession session(device_index);
+    const auto mean =
+        session.run_generated_best_analysis(samples, mean_plan, 12, 5);
+
+    require(mean.best_tasks.size() == 4,
+        "OpenCL mean Rice smoke best task count mismatch");
+    require_rice_parameters_valid(mean.best_tasks, mean.best_rice_parameters,
+        "OpenCL mean Rice smoke sidecar was invalid");
+
+    for (std::size_t i = 0; i < mean.best_tasks.size(); ++i) {
+        require(mean.best_tasks[i].data.size > 0,
+            "OpenCL mean Rice smoke did not populate selected task size");
+        require(mean.best_tasks[i].data.porder >= 0 && mean.best_tasks[i].data.porder <= 5,
+            "OpenCL mean Rice smoke partition order out of range");
+        if (mean.best_tasks[i].data.type == kFlacClSubframeFixed ||
+            mean.best_tasks[i].data.type == kFlacClSubframeLpc) {
+            (void)flaccl_task_to_selected_rice_parameters(
+                mean.best_tasks[i], mean.best_rice_parameters[i]);
+        }
+    }
+}
+
 void test_opencl_generated_frame_analysis_wrapper_smoke()
 {
     using namespace ldcompress::opencl_detail;
@@ -2411,6 +2472,7 @@ int main()
         test_opencl_best_method_smoke();
         test_opencl_fixed_constant_analysis_smoke();
         test_opencl_mixed_generated_analysis_smoke();
+        test_opencl_order_guess_mean_rice_profile_smoke();
         test_opencl_generated_frame_analysis_wrapper_smoke();
         test_opencl_generated_selected_writer_round_trip_smoke();
         test_opencl_lpc_analysis_smoke();
