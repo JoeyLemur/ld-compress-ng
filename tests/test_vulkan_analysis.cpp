@@ -140,6 +140,54 @@ void require_analysis_matches(
     }
 }
 
+void require_rice_parameters_valid(
+    const std::vector<ldcompress::opencl_detail::FlacClSubframeTask>& tasks,
+    const std::vector<ldcompress::opencl_detail::FlacClRiceParameterSet>& parameters,
+    const char* label)
+{
+    require(parameters.size() == tasks.size(), label);
+    for (std::size_t frame = 0; frame < tasks.size(); ++frame) {
+        const auto& task = tasks[frame];
+        if (task.data.type != ldcompress::opencl_detail::kFlacClSubframeFixed &&
+            task.data.type != ldcompress::opencl_detail::kFlacClSubframeLpc) {
+            continue;
+        }
+        require(task.data.porder >= 0, label);
+        require(static_cast<std::size_t>(task.data.porder) <=
+                ldcompress::opencl_detail::kFlacClMaxRicePartitionOrder,
+            label);
+        const auto partition_count =
+            std::size_t {1} << static_cast<unsigned>(task.data.porder);
+        for (std::size_t partition = 0; partition < partition_count; ++partition) {
+            require(parameters[frame].parameters[partition] <= 14U, label);
+        }
+    }
+}
+
+void require_rice_parameters_match(
+    const std::vector<ldcompress::opencl_detail::FlacClSubframeTask>& tasks,
+    const std::vector<ldcompress::opencl_detail::FlacClRiceParameterSet>& actual,
+    const std::vector<ldcompress::opencl_detail::FlacClRiceParameterSet>& expected,
+    const char* label)
+{
+    require_rice_parameters_valid(tasks, actual, label);
+    require_rice_parameters_valid(tasks, expected, label);
+    for (std::size_t frame = 0; frame < tasks.size(); ++frame) {
+        const auto& task = tasks[frame];
+        if (task.data.type != ldcompress::opencl_detail::kFlacClSubframeFixed &&
+            task.data.type != ldcompress::opencl_detail::kFlacClSubframeLpc) {
+            continue;
+        }
+        const auto partition_count =
+            std::size_t {1} << static_cast<unsigned>(task.data.porder);
+        for (std::size_t partition = 0; partition < partition_count; ++partition) {
+            require(actual[frame].parameters[partition] ==
+                    expected[frame].parameters[partition],
+                label);
+        }
+    }
+}
+
 std::vector<std::int32_t> make_lpc_friendly_samples()
 {
     std::vector<std::int32_t> samples;
@@ -304,6 +352,11 @@ void test_vulkan_fixed_constant_analysis(const Options& options)
         require_task_matches_task(best_only.best_tasks[i], result.best_tasks[i],
             "Vulkan fixed/constant best-only task diverged from full result");
     }
+    require_rice_parameters_match(
+        result.best_tasks,
+        best_only.best_rice_parameters,
+        result.best_rice_parameters,
+        "Vulkan fixed/constant Rice parameter sidecar mismatch");
 
     require(result.best_tasks[0].data.type == kFlacClSubframeConstant,
         "constant frame did not select constant task");
@@ -465,6 +518,11 @@ void test_vulkan_generated_lpc_analysis(const Options& options)
         require_lpc_task_matches(best_only.best_tasks[i], result.best_tasks[i],
             "Vulkan generated LPC best-only task diverged from full result");
     }
+    require_rice_parameters_match(
+        result.best_tasks,
+        best_only.best_rice_parameters,
+        result.best_rice_parameters,
+        "Vulkan generated LPC Rice parameter sidecar mismatch");
 
     for (std::size_t frame = 0; frame < 3; ++frame) {
         const auto task_base = frame * plan.residual_tasks_per_frame;

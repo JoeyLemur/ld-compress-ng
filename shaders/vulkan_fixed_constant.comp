@@ -11,6 +11,7 @@ const uint kModePrepareFrames = 2u;
 const uint kModeComputeAutocorrelation = 3u;
 const uint kModeComputeLpc = 4u;
 const uint kModeQuantizeLpc = 5u;
+const uint kModeWriteBestRiceParameters = 6u;
 const int kSubframeConstant = 0;
 const int kSubframeVerbatim = 1;
 const int kSubframeFixed = 8;
@@ -18,6 +19,7 @@ const int kSubframeLpc = 32;
 const int kIntMax = 2147483647;
 const uint kMaxRiceParameter = 14u;
 const uint kRiceParameterCount = kMaxRiceParameter + 1u;
+const uint kMaxRicePartitionCount = 256u;
 
 struct FlacClSubframeData {
     int residualOrder;
@@ -59,7 +61,7 @@ layout(std430, set = 0, binding = 2) readonly buffer SelectedTasks {
     int selected_tasks[];
 };
 
-layout(std430, set = 0, binding = 3) writeonly buffer BestTasks {
+layout(std430, set = 0, binding = 3) buffer BestTasks {
     FlacClSubframeTask best_tasks[];
 };
 
@@ -73,6 +75,10 @@ layout(std430, set = 0, binding = 5) buffer Autocorrelations {
 
 layout(std430, set = 0, binding = 6) buffer Lpcs {
     float lpcs[];
+};
+
+layout(std430, set = 0, binding = 7) writeonly buffer BestRiceParameters {
+    uint best_rice_parameters[];
 };
 
 layout(push_constant) uniform PushConstants {
@@ -954,6 +960,42 @@ void choose_best(uint frame)
     best_tasks[frame] = tasks[best_index];
 }
 
+void write_best_rice_parameters(uint frame)
+{
+    FlacClSubframeTask task = best_tasks[frame];
+    if (task.data.type != kSubframeFixed &&
+        task.data.type != kSubframeLpc) {
+        return;
+    }
+    if (task.data.size == kIntMax ||
+        task.data.porder < 0 ||
+        task.data.porder > 8) {
+        return;
+    }
+
+    const uint partition_order = uint(task.data.porder);
+    const uint partition_count = 1u << partition_order;
+    const uint output_base = frame * kMaxRicePartitionCount;
+    uint residual_offset = 0u;
+    for (uint part = 0u; part < partition_count; ++part) {
+        const uint residual_count =
+            partition_residual_count(
+                uint(task.data.blocksize),
+                uint(task.data.residualOrder),
+                partition_order,
+                part);
+        const uint parameter = cooperative_choose_rice_parameter(
+            task,
+            residual_offset,
+            residual_count,
+            task.data.wbits);
+        if (gl_LocalInvocationID.x == 0u) {
+            best_rice_parameters[output_base + part] = parameter;
+        }
+        residual_offset += residual_count;
+    }
+}
+
 void main()
 {
     const uint id = gl_GlobalInvocationID.x;
@@ -964,6 +1006,11 @@ void main()
         }
     } else if (pc.mode == kModeChooseBest && id < pc.frame_count) {
         choose_best(id);
+    } else if (pc.mode == kModeWriteBestRiceParameters) {
+        const uint frame = gl_WorkGroupID.x;
+        if (frame < pc.frame_count) {
+            write_best_rice_parameters(frame);
+        }
     } else if (pc.mode == kModePrepareFrames) {
         const uint frame = gl_WorkGroupID.x;
         if (frame < pc.frame_count) {

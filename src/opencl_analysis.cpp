@@ -2017,6 +2017,7 @@ OpenClMonoFixedConstantAnalysisResult analyze_mono_fixed_constant_exact(
     return OpenClMonoFixedConstantAnalysisResult {
         .analyzed_tasks = std::move(analyzed_tasks),
         .best_tasks = std::move(best_tasks),
+        .best_rice_parameters = {},
         .device_name = "scalar-exact",
     };
 }
@@ -2159,6 +2160,7 @@ OpenClMonoBestMethodResult run_opencl_mono_best_method(
 
     return OpenClMonoBestMethodResult {
         .best_tasks = std::move(best_tasks),
+        .best_rice_parameters = {},
         .device_name = selected_device.name,
     };
 #else
@@ -2301,6 +2303,7 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_fixed_constant_analysis(
     return OpenClMonoFixedConstantAnalysisResult {
         .analyzed_tasks = std::move(analyzed_tasks),
         .best_tasks = std::move(best_tasks),
+        .best_rice_parameters = {},
         .device_name = selected_device.name,
     };
 #else
@@ -2445,6 +2448,7 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_lpc_analysis(
     return OpenClMonoFixedConstantAnalysisResult {
         .analyzed_tasks = std::move(analyzed_tasks),
         .best_tasks = std::move(best_tasks),
+        .best_rice_parameters = {},
         .device_name = selected_device.name,
     };
 #else
@@ -2698,6 +2702,7 @@ OpenClMonoFixedConstantAnalysisResult run_opencl_mono_generated_analysis_impl(
     return OpenClMonoFixedConstantAnalysisResult {
         .analyzed_tasks = std::move(analyzed_tasks),
         .best_tasks = std::move(best_tasks),
+        .best_rice_parameters = {},
         .device_name = selected_device.name,
     };
 }
@@ -2805,6 +2810,7 @@ OpenClMonoGeneratedFrameAnalysisResult analyze_opencl_mono_generated_frames(
     return OpenClMonoGeneratedFrameAnalysisResult {
         .analyzed_tasks = std::move(analysis.analyzed_tasks),
         .best_tasks = std::move(analysis.best_tasks),
+        .best_rice_parameters = std::move(analysis.best_rice_parameters),
         .decisions = std::move(decisions),
         .selected_subframes = std::move(selected_subframes),
         .device_name = std::move(analysis.device_name),

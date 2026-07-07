@@ -78,6 +78,7 @@ struct FlacSelectedSubframe {
     unsigned coefficient_precision = 0;
     int quantization_shift = 0;
     std::vector<std::int32_t> coefficients;
+    std::vector<unsigned> rice_parameters;
 };
 
 void write_native_flac_streaminfo(std::ostream& output, const FlacStreamInfo& info);

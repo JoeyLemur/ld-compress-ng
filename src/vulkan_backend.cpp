@@ -50,6 +50,30 @@ void add_vulkan_gpu_timings(
     stats.vulkan_gpu_readback_ns += gpu_timings.readback_ns;
 }
 
+std::vector<unsigned> selected_rice_parameters_from_result(
+    const opencl_detail::FlacClSubframeTask& task,
+    const opencl_detail::FlacClRiceParameterSet& rice_parameters)
+{
+    if (task.data.type != opencl_detail::kFlacClSubframeFixed &&
+        task.data.type != opencl_detail::kFlacClSubframeLpc) {
+        return {};
+    }
+    if (task.data.porder < 0 ||
+        task.data.porder >
+            static_cast<std::int32_t>(opencl_detail::kFlacClMaxRicePartitionOrder)) {
+        throw std::runtime_error("Vulkan selected task has invalid Rice partition order");
+    }
+
+    const auto partition_count =
+        std::size_t {1} << static_cast<unsigned>(task.data.porder);
+    std::vector<unsigned> selected;
+    selected.reserve(partition_count);
+    for (std::size_t i = 0; i < partition_count; ++i) {
+        selected.push_back(static_cast<unsigned>(rice_parameters.parameters.at(i)));
+    }
+    return selected;
+}
+
 opencl_detail::OpenClMonoAnalysisTaskPlan build_vulkan_fixed_constant_task_plan(
     std::size_t frame_count,
     const FlacFrameInfo& frame_info,
@@ -123,11 +147,21 @@ AcceleratedSelectedFrameAnalysis analyze_vulkan_selected_frames(
     }
 
     AcceleratedSelectedFrameAnalysis selected;
+    if (!result.best_rice_parameters.empty() &&
+        result.best_rice_parameters.size() != result.best_tasks.size()) {
+        throw std::runtime_error("Vulkan Rice parameter result count did not match best task count");
+    }
     selected.decisions.reserve(result.best_tasks.size());
     selected.selected_subframes.reserve(result.best_tasks.size());
-    for (const auto& task : result.best_tasks) {
+    for (std::size_t i = 0; i < result.best_tasks.size(); ++i) {
+        const auto& task = result.best_tasks[i];
         selected.decisions.push_back(opencl_detail::flaccl_task_to_subframe_decision(task));
-        selected.selected_subframes.push_back(opencl_detail::flaccl_task_to_selected_subframe(task));
+        auto selected_subframe = opencl_detail::flaccl_task_to_selected_subframe(task);
+        if (!result.best_rice_parameters.empty()) {
+            selected_subframe.rice_parameters =
+                selected_rice_parameters_from_result(task, result.best_rice_parameters[i]);
+        }
+        selected.selected_subframes.push_back(std::move(selected_subframe));
     }
     return selected;
 }

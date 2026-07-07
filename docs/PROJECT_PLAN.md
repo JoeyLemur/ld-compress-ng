@@ -385,10 +385,10 @@ Remaining Vulkan work:
   `ntsc/issue176.lds` after the Vulkan best-task-only readback, 128-frame
   batching, device-local buffer placement, shared writer-copy cleanup, GPU
   queue timestamp instrumentation, one-pass Rice-parameter costing, prepared
-  frame-level `wbits`/`abits` reuse, and trusted selected-frame decision
-  writing show CPU/libFLAC at about `0.138` seconds, scalar native-fixed at
-  `1.657` seconds with `8` threads, OpenCL at `10.132` seconds, and Vulkan at
-  `0.722` seconds.
+  frame-level `wbits`/`abits` reuse, trusted selected-frame decision writing,
+  and a Vulkan selected Rice-parameter sidecar show CPU/libFLAC at about
+  `0.138` seconds, scalar native-fixed at `1.659` seconds with `8` threads,
+  OpenCL at `10.132` seconds, and Vulkan at `0.722` seconds.
   Vulkan output on that fixture is `4,292,100` bytes: `1,508` bytes larger than
   scalar native-fixed's `4,290,592` bytes, `22,033` bytes smaller than
   CPU/libFLAC's `4,314,133` bytes, and `6,134` bytes smaller than OpenCL's
@@ -405,11 +405,15 @@ Remaining Vulkan work:
   trusting the analyzer's selected-frame decision for stats and skipping the
   writer-side subframe bit recost, the focused stats run measured `0.742`
   total backend seconds, `0.119` analyzer seconds, `0.289` selected-frame write
-  seconds, and `0.0951` GPU seconds in exact residual/Rice analysis. On the
-  NVIDIA fixture path, PCIe transfer/readback is not the primary bottleneck;
-  the remaining time is mostly host-side residual generation, Rice-parameter
-  selection needed for final bitstream writing, bit emission, and ordinary
-  I/O/writer overhead.
+  seconds, and `0.0951` GPU seconds in exact residual/Rice analysis. After
+  adding a Vulkan sidecar for selected per-partition Rice parameters, the
+  focused bench result stayed at about `0.722` seconds while the stats split
+  shifted to about `0.144` analyzer seconds and `0.257` selected-frame write
+  seconds; a serial first attempt put this work in `choose_best` and regressed
+  badly, so the kept version uses a cooperative one-workgroup-per-frame
+  sidecar pass. On the NVIDIA fixture path, PCIe transfer/readback is not the
+  primary bottleneck; the remaining time is mostly host-side residual
+  generation, bit emission, and ordinary I/O/writer overhead.
 - The latest six-fixture sweep at frame size `4608`, LPC order `12`,
   coefficient precision `12`, Rice partition order `5`, native-fixed `8`
   threads, OpenCL device `1`, and Vulkan device `1` produced aggregate sizes:
@@ -419,14 +423,14 @@ Remaining Vulkan work:
   scalar native-fixed, `59,870` bytes smaller than OpenCL, and much faster than
   OpenCL on the NVIDIA validation device.
 - Continue Vulkan throughput architecture before shader-level micro-tuning:
-  next decide whether to extend the accelerator-to-writer ABI with selected
-  per-partition Rice parameters, because the writer still recomputes those on
-  the CPU before emitting the final FLAC frame. Only after that should we
-  consider queue overlap, batch-size tuning, or deeper shader changes. The
-  readback and trusted-decision splits are also useful for OpenCL: normal OpenCL
-  compression discards full analyzed tasks too, so a future OpenCL best-only
-  analyzer path and writer handoff could skip avoidable readback/recost work
-  while keeping the current full-result APIs for parity diagnostics.
+  next profile whether host-side residual generation or bit emission dominates
+  the selected-frame writer now that Vulkan supplies selected Rice parameters.
+  Only after that should we consider queue overlap, batch-size tuning, or
+  deeper shader changes. The readback, trusted-decision, and sidecar patterns
+  are also useful for OpenCL: normal OpenCL compression discards full analyzed
+  tasks too, so a future OpenCL best-only analyzer path and writer handoff
+  could skip avoidable readback/recost work while keeping the current
+  full-result APIs for parity diagnostics.
 
 Immediate engineering focus:
 

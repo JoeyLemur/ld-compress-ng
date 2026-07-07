@@ -704,6 +704,15 @@ void test_native_selected_subframe_writer()
     require(first_frame_subframe_type(temp_dir / "fixed.flac") == 10,
         "selected fixed writer wrote the wrong subframe type");
 
+    auto fixed_with_rice_parameters = fixed;
+    fixed_with_rice_parameters.rice_parameters = {0};
+    const auto fixed_params_decision = write_selected_file(
+        temp_dir / "fixed-params.flac", fixed_samples, fixed_with_rice_parameters);
+    require_same_decision(fixed_params_decision, fixed_decision,
+        "selected fixed writer with supplied Rice parameters");
+    require(read_file(temp_dir / "fixed-params.flac") == read_file(temp_dir / "fixed.flac"),
+        "selected fixed writer changed bytes with supplied Rice parameters");
+
     const auto lpc_samples = make_lpc_friendly_samples();
     const auto frame_info = make_frame_info(12, 12, 5);
     const auto lpc = ldcompress::analyze_mono_lpc_frame(lpc_samples, frame_info);
@@ -738,6 +747,7 @@ void test_native_selected_subframe_writer()
     for (const auto& item : {
              std::pair { temp_dir / "constant.flac", constant_samples },
              std::pair { temp_dir / "fixed.flac", fixed_samples },
+             std::pair { temp_dir / "fixed-params.flac", fixed_samples },
              std::pair { temp_dir / "lpc.flac", lpc_samples },
              std::pair { temp_dir / "lpc-trusted.flac", lpc_samples },
          }) {
@@ -759,6 +769,17 @@ void test_native_selected_subframe_writer()
         threw = true;
     }
     require(threw, "selected writer accepted a mismatched wasted-bits count");
+
+    auto bad_rice_parameters = fixed_with_rice_parameters;
+    bad_rice_parameters.rice_parameters = {0, 0};
+    threw = false;
+    try {
+        (void)write_selected_file(
+            temp_dir / "bad-rice-params.flac", fixed_samples, bad_rice_parameters);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    require(threw, "selected writer accepted a mismatched Rice parameter count");
 
     auto bad_quantization_shift = lpc_selected;
     bad_quantization_shift.quantization_shift = -1;

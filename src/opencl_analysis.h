@@ -17,6 +17,8 @@ constexpr std::int32_t kFlacClSubframeVerbatim = 1;
 constexpr std::int32_t kFlacClSubframeFixed = 8;
 constexpr std::int32_t kFlacClSubframeLpc = 32;
 constexpr std::size_t kFlacClMaxOrder = 32;
+constexpr std::size_t kFlacClMaxRicePartitionOrder = 8;
+constexpr std::size_t kFlacClMaxRicePartitionCount = 1U << kFlacClMaxRicePartitionOrder;
 
 // ABI mirror of FlaLDF/CUETools.Codecs.FLACCL/flac.cl. Field names intentionally
 // match FLACCL so host/device buffer dumps can be compared directly.
@@ -44,10 +46,16 @@ struct FlacClSubframeTask {
     std::array<std::int32_t, kFlacClMaxOrder> coefs {};
 };
 
+struct FlacClRiceParameterSet {
+    std::array<std::uint32_t, kFlacClMaxRicePartitionCount> parameters {};
+};
+
 static_assert(std::is_standard_layout_v<FlacClSubframeData>);
 static_assert(std::is_standard_layout_v<FlacClSubframeTask>);
+static_assert(std::is_standard_layout_v<FlacClRiceParameterSet>);
 static_assert(sizeof(FlacClSubframeData) == 64);
 static_assert(sizeof(FlacClSubframeTask) == 192);
+static_assert(sizeof(FlacClRiceParameterSet) == 1024);
 
 struct OpenClMonoAnalysisTaskOptions {
     unsigned frame_samples = 4608;
@@ -67,18 +75,21 @@ struct OpenClMonoAnalysisTaskPlan {
 
 struct OpenClMonoBestMethodResult {
     std::vector<FlacClSubframeTask> best_tasks;
+    std::vector<FlacClRiceParameterSet> best_rice_parameters;
     std::string device_name;
 };
 
 struct OpenClMonoFixedConstantAnalysisResult {
     std::vector<FlacClSubframeTask> analyzed_tasks;
     std::vector<FlacClSubframeTask> best_tasks;
+    std::vector<FlacClRiceParameterSet> best_rice_parameters;
     std::string device_name;
 };
 
 struct OpenClMonoGeneratedFrameAnalysisResult {
     std::vector<FlacClSubframeTask> analyzed_tasks;
     std::vector<FlacClSubframeTask> best_tasks;
+    std::vector<FlacClRiceParameterSet> best_rice_parameters;
     std::vector<ldcompress::FlacSubframeDecision> decisions;
     std::vector<ldcompress::FlacSelectedSubframe> selected_subframes;
     std::string device_name;

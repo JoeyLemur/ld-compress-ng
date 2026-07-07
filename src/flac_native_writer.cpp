@@ -534,6 +534,34 @@ std::vector<unsigned> rice_parameters_for_partition_order(
     return rice_parameters;
 }
 
+std::vector<unsigned> selected_or_computed_rice_parameters(
+    const std::vector<unsigned>& selected_rice_parameters,
+    const std::vector<std::int64_t>& residuals,
+    std::size_t block_size,
+    unsigned predictor_order,
+    unsigned partition_order)
+{
+    if (selected_rice_parameters.empty()) {
+        return rice_parameters_for_partition_order(
+            residuals, block_size, predictor_order, partition_order);
+    }
+
+    if (!valid_partition_order(block_size, predictor_order, partition_order)) {
+        throw std::runtime_error("selected FLAC subframe has invalid Rice partition order");
+    }
+
+    const auto partition_count = std::size_t {1} << partition_order;
+    if (selected_rice_parameters.size() != partition_count) {
+        throw std::runtime_error("selected FLAC subframe Rice parameter count mismatch");
+    }
+    for (const auto parameter : selected_rice_parameters) {
+        if (parameter > kMaxRiceParameter) {
+            throw std::runtime_error("selected FLAC subframe Rice parameter is out of range");
+        }
+    }
+    return selected_rice_parameters;
+}
+
 std::uint64_t fixed_rice_subframe_bits(
     unsigned order,
     unsigned partition_order,
@@ -1237,7 +1265,8 @@ FixedRiceSubframe make_selected_fixed_rice_subframe(
     auto shifted_samples = shift_samples(samples, wasted_bits);
     const auto effective_bits_per_sample = info.bits_per_sample - wasted_bits;
     auto residuals = fixed_residuals(shifted_samples, selected.fixed_order);
-    auto rice_parameters = rice_parameters_for_partition_order(
+    auto rice_parameters = selected_or_computed_rice_parameters(
+        selected.rice_parameters,
         residuals,
         shifted_samples.size(),
         selected.fixed_order,
@@ -1303,7 +1332,8 @@ LpcRiceSubframe make_selected_lpc_rice_subframe(
         selected.coefficients,
         selected.lpc_order,
         selected.quantization_shift);
-    auto rice_parameters = rice_parameters_for_partition_order(
+    auto rice_parameters = selected_or_computed_rice_parameters(
+        selected.rice_parameters,
         residuals,
         shifted_samples.size(),
         selected.lpc_order,

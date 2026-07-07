@@ -948,7 +948,7 @@ public:
                 vkCreateShaderModule(device_, &shader_module_info, nullptr, &shader_module_),
                 "vkCreateShaderModule");
 
-            std::array<VkDescriptorSetLayoutBinding, 7> layout_bindings {};
+            std::array<VkDescriptorSetLayoutBinding, 8> layout_bindings {};
             for (std::uint32_t i = 0; i < layout_bindings.size(); ++i) {
                 layout_bindings[i] = VkDescriptorSetLayoutBinding {
                     .binding = i,
@@ -1127,6 +1127,7 @@ public:
         };
 
         std::vector<FlacClSubframeTask> best_tasks(frame_count);
+        std::vector<opencl_detail::FlacClRiceParameterSet> best_rice_parameters(frame_count);
         std::vector<float> dummy_floats(1, 0.0F);
         std::vector<float> generated_windows;
         const auto* window_values = &dummy_floats;
@@ -1154,6 +1155,10 @@ public:
             checked_buffer_bytes(plan.selected_tasks.size(), sizeof(std::int32_t), "selected tasks");
         const auto best_bytes =
             checked_buffer_bytes(best_tasks.size(), sizeof(FlacClSubframeTask), "best tasks");
+        const auto best_rice_parameter_bytes = checked_buffer_bytes(
+            best_rice_parameters.size(),
+            sizeof(opencl_detail::FlacClRiceParameterSet),
+            "best Rice parameters");
         const auto window_bytes =
             checked_buffer_bytes(window_values->size(), sizeof(float), "generated windows");
         const auto autocor_bytes =
@@ -1179,6 +1184,10 @@ public:
             best_buffer_,
             best_bytes,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        DeviceBuffer& best_rice_parameter_buffer = ensure_device_buffer(
+            best_rice_parameter_buffer_,
+            best_rice_parameter_bytes,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         DeviceBuffer& window_buffer = ensure_device_buffer(
             window_buffer_,
             window_bytes,
@@ -1202,6 +1211,10 @@ public:
             window_upload_buffer_, window_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         HostBuffer& best_readback_buffer = ensure_host_buffer(
             best_readback_buffer_, best_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        HostBuffer& best_rice_parameter_readback_buffer = ensure_host_buffer(
+            best_rice_parameter_readback_buffer_,
+            best_rice_parameter_bytes,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT);
         HostBuffer* tasks_readback_buffer = nullptr;
         if (read_analyzed_tasks) {
             tasks_readback_buffer = &ensure_host_buffer(
@@ -1219,7 +1232,7 @@ public:
         selected_upload_buffer.flush();
         window_upload_buffer.flush();
 
-        const std::array<VkDescriptorBufferInfo, 7> descriptor_buffers {{
+        const std::array<VkDescriptorBufferInfo, 8> descriptor_buffers {{
             VkDescriptorBufferInfo {
                 .buffer = samples_buffer.get(),
                 .offset = 0,
@@ -1255,8 +1268,13 @@ public:
                 .offset = 0,
                 .range = lpc_buffer.size(),
             },
+            VkDescriptorBufferInfo {
+                .buffer = best_rice_parameter_buffer.get(),
+                .offset = 0,
+                .range = best_rice_parameter_buffer.size(),
+            },
         }};
-        std::array<VkWriteDescriptorSet, 7> descriptor_writes {};
+        std::array<VkWriteDescriptorSet, 8> descriptor_writes {};
         for (std::uint32_t i = 0; i < descriptor_writes.size(); ++i) {
             descriptor_writes[i] = VkWriteDescriptorSet {
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -1413,6 +1431,8 @@ public:
         shader_write_to_read_barrier();
         write_timestamp(kTimestampAfterExactAnalysis, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
         dispatch_mode(1, dispatch_groups(base_push.frame_count));
+        shader_write_to_read_barrier();
+        dispatch_mode(6, base_push.frame_count);
 
         const VkMemoryBarrier shader_to_transfer_barrier {
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
@@ -1434,6 +1454,10 @@ public:
         write_timestamp(kTimestampAfterChooseBest, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
         copy_buffer(best_buffer.get(), best_readback_buffer.get(), best_bytes);
+        copy_buffer(
+            best_rice_parameter_buffer.get(),
+            best_rice_parameter_readback_buffer.get(),
+            best_rice_parameter_bytes);
         if (tasks_readback_buffer != nullptr) {
             copy_buffer(tasks_buffer.get(), tasks_readback_buffer->get(), tasks_bytes);
         }
@@ -1520,6 +1544,8 @@ public:
 
         best_readback_buffer.invalidate();
         best_readback_buffer.copy_to(best_tasks);
+        best_rice_parameter_readback_buffer.invalidate();
+        best_rice_parameter_readback_buffer.copy_to(best_rice_parameters);
         std::vector<FlacClSubframeTask> analyzed_tasks;
         if (tasks_readback_buffer != nullptr) {
             analyzed_tasks.resize(plan.residual_tasks.size());
@@ -1530,6 +1556,7 @@ public:
         return OpenClMonoFixedConstantAnalysisResult {
             .analyzed_tasks = std::move(analyzed_tasks),
             .best_tasks = std::move(best_tasks),
+            .best_rice_parameters = std::move(best_rice_parameters),
             .device_name = selected_.name,
         };
     }
@@ -1566,6 +1593,7 @@ private:
             tasks_buffer_.reset();
             selected_buffer_.reset();
             best_buffer_.reset();
+            best_rice_parameter_buffer_.reset();
             window_buffer_.reset();
             autocor_buffer_.reset();
             lpc_buffer_.reset();
@@ -1574,6 +1602,7 @@ private:
             selected_upload_buffer_.reset();
             window_upload_buffer_.reset();
             best_readback_buffer_.reset();
+            best_rice_parameter_readback_buffer_.reset();
             tasks_readback_buffer_.reset();
             if (fence_ != VK_NULL_HANDLE) {
                 vkDestroyFence(device_, fence_, nullptr);
@@ -1635,6 +1664,7 @@ private:
     std::unique_ptr<DeviceBuffer> tasks_buffer_;
     std::unique_ptr<DeviceBuffer> selected_buffer_;
     std::unique_ptr<DeviceBuffer> best_buffer_;
+    std::unique_ptr<DeviceBuffer> best_rice_parameter_buffer_;
     std::unique_ptr<DeviceBuffer> window_buffer_;
     std::unique_ptr<DeviceBuffer> autocor_buffer_;
     std::unique_ptr<DeviceBuffer> lpc_buffer_;
@@ -1643,6 +1673,7 @@ private:
     std::unique_ptr<HostBuffer> selected_upload_buffer_;
     std::unique_ptr<HostBuffer> window_upload_buffer_;
     std::unique_ptr<HostBuffer> best_readback_buffer_;
+    std::unique_ptr<HostBuffer> best_rice_parameter_readback_buffer_;
     std::unique_ptr<HostBuffer> tasks_readback_buffer_;
 };
 
@@ -1696,6 +1727,7 @@ OpenClMonoBestMethodResult VulkanMonoExactAnalysisSession::run_fixed_constant_be
         gpu_timings);
     return OpenClMonoBestMethodResult {
         .best_tasks = std::move(result.best_tasks),
+        .best_rice_parameters = std::move(result.best_rice_parameters),
         .device_name = std::move(result.device_name),
     };
 #else
@@ -1753,6 +1785,7 @@ OpenClMonoBestMethodResult VulkanMonoExactAnalysisSession::run_generated_best_an
         gpu_timings);
     return OpenClMonoBestMethodResult {
         .best_tasks = std::move(result.best_tasks),
+        .best_rice_parameters = std::move(result.best_rice_parameters),
         .device_name = std::move(result.device_name),
     };
 #else
