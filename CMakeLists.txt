@@ -14,6 +14,7 @@ include(GNUInstallDirs)
 
 option(LDCOMPRESS_ENABLE_OPENCL "Enable OpenCL device enumeration support" ON)
 option(LDCOMPRESS_ENABLE_VULKAN "Enable Vulkan compute device enumeration support" ON)
+option(LDCOMPRESS_BUILD_DIAGNOSTICS "Build manual diagnostic tools" OFF)
 option(LDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS "Enable opt-in tests against external real LDS fixtures" OFF)
 option(LDCOMPRESS_ENABLE_FLAC_TEST_FILE_TESTS "Enable opt-in tests against external FLAC decoder testbench files" OFF)
 set(LDCOMPRESS_REAL_FIXTURE_DIR "" CACHE PATH "Directory containing external .lds fixtures for opt-in real-fixture tests")
@@ -76,7 +77,6 @@ add_library(ldcompress_core
     src/vulkan_analysis.cpp
     src/vulkan_backend.cpp
     src/vulkan_devices.cpp
-    src/vulkan_smoke.cpp
 )
 
 target_include_directories(ldcompress_core
@@ -153,21 +153,6 @@ if(LDCOMPRESS_HAVE_VULKAN)
             "${LDCOMPRESS_VULKAN_FIXED_CONSTANT_SHADER_CPP}"
     )
 
-    set(LDCOMPRESS_VULKAN_SMOKE_SHADER
-        "${CMAKE_CURRENT_BINARY_DIR}/shaders/vulkan_smoke.comp.spv")
-    add_custom_command(
-        OUTPUT "${LDCOMPRESS_VULKAN_SMOKE_SHADER}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            "${CMAKE_CURRENT_BINARY_DIR}/shaders"
-        COMMAND "${LDCOMPRESS_GLSLANG_VALIDATOR}" -V
-            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan_smoke.comp"
-            -o "${LDCOMPRESS_VULKAN_SMOKE_SHADER}"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan_smoke.comp"
-        VERBATIM
-    )
-    add_custom_target(vulkan_smoke_shader
-        DEPENDS "${LDCOMPRESS_VULKAN_SMOKE_SHADER}"
-    )
 endif()
 
 add_executable(ld-compress-ng
@@ -209,6 +194,61 @@ install(FILES
 )
 
 if(BUILD_TESTING)
+    add_library(ldcompress_test_support
+        tests/support/vulkan_smoke.cpp
+    )
+
+    target_include_directories(ldcompress_test_support
+        PUBLIC
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/support
+    )
+
+    target_compile_options(ldcompress_test_support
+        PRIVATE
+            $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-Wall -Wextra -Wpedantic>
+    )
+
+    target_compile_definitions(ldcompress_test_support
+        PRIVATE
+            LDCOMPRESS_HAVE_OPENCL=${LDCOMPRESS_HAVE_OPENCL}
+            LDCOMPRESS_HAVE_VULKAN=${LDCOMPRESS_HAVE_VULKAN}
+    )
+
+    target_link_libraries(ldcompress_test_support
+        PUBLIC
+            ldcompress_core
+    )
+
+    if(LDCOMPRESS_HAVE_OPENCL)
+        target_link_libraries(ldcompress_test_support
+            PRIVATE
+                OpenCL::OpenCL
+        )
+    endif()
+
+    if(LDCOMPRESS_HAVE_VULKAN)
+        target_link_libraries(ldcompress_test_support
+            PRIVATE
+                Vulkan::Vulkan
+        )
+
+        set(LDCOMPRESS_VULKAN_SMOKE_SHADER
+            "${CMAKE_CURRENT_BINARY_DIR}/shaders/vulkan_smoke.comp.spv")
+        add_custom_command(
+            OUTPUT "${LDCOMPRESS_VULKAN_SMOKE_SHADER}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "${CMAKE_CURRENT_BINARY_DIR}/shaders"
+            COMMAND "${LDCOMPRESS_GLSLANG_VALIDATOR}" -V
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/vulkan_smoke.comp"
+                -o "${LDCOMPRESS_VULKAN_SMOKE_SHADER}"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/vulkan_smoke.comp"
+            VERBATIM
+        )
+        add_custom_target(vulkan_smoke_shader
+            DEPENDS "${LDCOMPRESS_VULKAN_SMOKE_SHADER}"
+        )
+    endif()
+
     add_executable(test_lds_codec
         tests/test_lds_codec.cpp
     )
@@ -259,7 +299,7 @@ if(BUILD_TESTING)
 
     target_link_libraries(test_opencl_analysis
         PRIVATE
-            ldcompress_core
+            ldcompress_test_support
     )
 
     add_test(NAME opencl_analysis COMMAND test_opencl_analysis)
@@ -295,7 +335,7 @@ if(BUILD_TESTING)
 
     target_link_libraries(test_vulkan_smoke
         PRIVATE
-            ldcompress_core
+            ldcompress_test_support
     )
 
     set(vulkan_smoke_command test_vulkan_smoke)
@@ -318,7 +358,7 @@ if(BUILD_TESTING)
 
     target_link_libraries(test_vulkan_analysis
         PRIVATE
-            ldcompress_core
+            ldcompress_test_support
     )
 
     set(vulkan_analysis_command test_vulkan_analysis)
@@ -331,14 +371,16 @@ if(BUILD_TESTING)
     add_test(NAME vulkan_analysis COMMAND ${vulkan_analysis_command})
     set_tests_properties(vulkan_analysis PROPERTIES LABELS vulkan)
 
-    add_executable(compare_opencl_scalar_frames
-        tests/compare_opencl_scalar_frames.cpp
-    )
+    if(LDCOMPRESS_BUILD_DIAGNOSTICS)
+        add_executable(compare_opencl_scalar_frames
+            tests/compare_opencl_scalar_frames.cpp
+        )
 
-    target_link_libraries(compare_opencl_scalar_frames
-        PRIVATE
-            ldcompress_core
-    )
+        target_link_libraries(compare_opencl_scalar_frames
+            PRIVATE
+                ldcompress_test_support
+        )
+    endif()
 
     add_executable(test_reference_ogg
         tests/test_reference_ogg.cpp

@@ -24,6 +24,12 @@
 #include <vulkan/vulkan.h>
 #endif
 
+#if LDCOMPRESS_HAVE_VULKAN
+#define LDCOMPRESS_VULKAN_ONLY_USED
+#else
+#define LDCOMPRESS_VULKAN_ONLY_USED [[maybe_unused]]
+#endif
+
 namespace ldcompress::vulkan_detail {
 namespace {
 
@@ -189,7 +195,8 @@ bool generated_profile_uses_subdivide_tukey3(NativeAnalysisProfile profile)
         profile == NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice;
 }
 
-std::uint32_t vulkan_analysis_profile_arg(NativeAnalysisProfile profile)
+LDCOMPRESS_VULKAN_ONLY_USED std::uint32_t vulkan_analysis_profile_arg(
+    NativeAnalysisProfile profile)
 {
     switch (profile) {
     case NativeAnalysisProfile::Exact:

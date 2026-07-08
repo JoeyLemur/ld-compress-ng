@@ -119,10 +119,11 @@ both Vulkan development files and `glslangValidator` are found. Without them,
 `ld-compress-ng devices` reports `Vulkan support: not built`.
 
 When Vulkan is enabled, CMake compiles the checked-in GLSL shaders to SPIR-V
-with `glslangValidator`. The smoke shader is passed to `vulkan_smoke`; the
-fixed/constant/LPC exact-analysis shader is embedded into the binary for
-`--backend vulkan`. Set `LDCOMPRESS_VULKAN_TEST_DEVICE` at configure time to
-force a specific backend-local Vulkan device index for the Vulkan CTests.
+with `glslangValidator`. The test-only smoke shader is passed to
+`vulkan_smoke`; the fixed/constant/LPC exact-analysis shader is embedded into
+the binary for `--backend vulkan`. Set `LDCOMPRESS_VULKAN_TEST_DEVICE` at
+configure time to force a specific backend-local Vulkan device index for the
+Vulkan CTests.
 
 ### Linux OpenCL Validation Record
 
@@ -226,6 +227,16 @@ OpenCL compression backend writes native FLAC and requires an available OpenCL
 device at runtime. Vulkan indexes are backend-local and used by
 `compress --backend vulkan --device INDEX`; Vulkan compression requires a
 compute-capable device with `shaderInt64`.
+
+Manual diagnostics are not built by default. Configure with
+`-DLDCOMPRESS_BUILD_DIAGNOSTICS=ON` to build tools such as
+`compare_opencl_scalar_frames`:
+
+```sh
+cmake -S . -B build-diagnostics -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DLDCOMPRESS_BUILD_DIAGNOSTICS=ON
+cmake --build build-diagnostics --target compare_opencl_scalar_frames
+```
 
 ## Install Layout
 

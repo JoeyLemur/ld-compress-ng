@@ -182,7 +182,7 @@ Implemented:
   as PCM. The CTest path is bounded to one fixture for both scalar native and
   OpenCL backends; the helper mode can run the full fixture tree and optionally
   include CPU Ogg `.ldf`/`.raw.oga` suffixes.
-- A build-only OpenCL/scalar frame decision diagnostic,
+- An opt-in build OpenCL/scalar frame decision diagnostic,
   `compare_opencl_scalar_frames`, that unpacks real `.lds` fixtures, analyzes
   identical full-frame sample windows through scalar native and OpenCL
   generated-LPC paths, and reports the first per-frame decision/bit-count,

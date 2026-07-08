@@ -3,6 +3,7 @@
 #include "hash.h"
 #include "lds_codec.h"
 #include "opencl_analysis.h"
+#include "opencl_analysis_test_support.h"
 #include "opencl_devices.h"
 
 #include <algorithm>

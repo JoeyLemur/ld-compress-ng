@@ -1,6 +1,8 @@
 #include "opencl_analysis.h"
+#include "opencl_analysis_test_support.h"
 #include "flac_native_writer.h"
 #include "vulkan_analysis.h"
+#include "vulkan_analysis_test_support.h"
 #include "vulkan_devices.h"
 
 #include <array>

@@ -64,7 +64,7 @@ bool generated_profile_uses_subdivide_tukey3(NativeAnalysisProfile profile)
         profile == NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice;
 }
 
-bool analysis_profile_uses_mean_rice(NativeAnalysisProfile profile)
+LDCOMPRESS_OPENCL_ONLY_USED bool analysis_profile_uses_mean_rice(NativeAnalysisProfile profile)
 {
     return profile == NativeAnalysisProfile::OrderGuessMeanRice ||
         profile == NativeAnalysisProfile::OrderGuessMeanEstimateRice ||
@@ -72,13 +72,15 @@ bool analysis_profile_uses_mean_rice(NativeAnalysisProfile profile)
         profile == NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice;
 }
 
-bool analysis_profile_uses_mean_estimated_size(NativeAnalysisProfile profile)
+LDCOMPRESS_OPENCL_ONLY_USED bool analysis_profile_uses_mean_estimated_size(
+    NativeAnalysisProfile profile)
 {
     return profile == NativeAnalysisProfile::OrderGuessMeanEstimateRice ||
         profile == NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice;
 }
 
-std::int32_t opencl_analysis_profile_arg(NativeAnalysisProfile profile)
+LDCOMPRESS_OPENCL_ONLY_USED std::int32_t opencl_analysis_profile_arg(
+    NativeAnalysisProfile profile)
 {
     switch (profile) {
     case NativeAnalysisProfile::Exact:
@@ -3078,6 +3080,15 @@ void enqueue_opencl_best_rice_parameters(
 #endif
 
 }  // namespace
+
+struct OpenClMonoGeneratedFrameAnalysisResult {
+    std::vector<FlacClSubframeTask> analyzed_tasks;
+    std::vector<FlacClSubframeTask> best_tasks;
+    std::vector<FlacClRiceParameterSet> best_rice_parameters;
+    std::vector<ldcompress::FlacSubframeDecision> decisions;
+    std::vector<ldcompress::FlacSelectedSubframe> selected_subframes;
+    std::string device_name;
+};
 
 std::size_t mono_analysis_tasks_per_frame(const OpenClMonoAnalysisTaskOptions& options)
 {
