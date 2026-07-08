@@ -1,7 +1,7 @@
 # Handoff Notes
 
-Last updated: 2026-07-08, after the post-1.1 accelerator performance pass and
-documentation review.
+Last updated: 2026-07-08, during the 1.1.1 release-readiness review after the
+post-1.1 accelerator performance pass.
 
 This file is for maintainer/agent continuity. It is intentionally not installed
 by CMake; release-facing installed docs are listed explicitly in
@@ -13,17 +13,16 @@ by CMake; release-facing installed docs are listed explicitly in
 - `origin/main` still points to the published `v1.1.0` release commit
   `25f71cd842d4e4aa12e911a320484a5f98049975`
   (`Finalize 1.1 release readiness docs`).
-- Local `main` has post-release work on top of `v1.1.0`. The performance
-  wrap-up commit before this documentation review was `v1.1.0-29-g4212ebc`
-  (`Document performance pass wrap-up`); this review adds one follow-up docs
-  commit on top.
+- Local `main` has 1.1.1 release-prep work on top of `v1.1.0`, including the
+  performance pass, documentation refresh, and release corrections.
 - Local branch `codex/vulkan-1.1` still exists as release-branch history
   context. It can be kept or deleted later.
 - Annotated tag `v1.1.0` has been pushed to origin.
+- Annotated tag `v1.1.1` has not been created yet in this checkout.
 - GitHub release was created as source-only, with no binary assets:
   `https://github.com/JoeyLemur/ld-compress-ng/releases/tag/v1.1.0`
-- Project version is `1.1.0` in `CMakeLists.txt`; `ld-compress-ng --version`
-  prints `ld-compress-ng 1.1.0`.
+- Project version is `1.1.1` in `CMakeLists.txt`; `ld-compress-ng --version`
+  prints `ld-compress-ng 1.1.1`.
 
 ## Post-1.1 Mainline Work
 

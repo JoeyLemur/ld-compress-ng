@@ -2,16 +2,16 @@
 
 ## 1.1.1 - 2026-07-08
 
-- Improved accelerated native-FLAC throughput with reusable OpenCL analysis
-  sessions, OpenCL selected Rice-parameter handoff, larger OpenCL compression
-  batches, pipelined accelerator ingest/analyze/write flow, and faster selected
-  writer bitstream paths.
-- Added benchmark/sweep support for native analysis profiles, including
-  order-guess and mean-Rice speed profiles, plus OpenCL/Vulkan session reuse for
-  multi-row accelerator sweeps.
-- Documented the current 2026-07-08 real-fixture speed sweep and refreshed
-  maintainer-facing notes so post-1.1 work is not hidden behind the release
-  handoff.
+- Made OpenCL and Vulkan compression substantially faster in the current
+  real-capture benchmark sweep while preserving verified round trips back to
+  the original `.lds` data.
+- Kept the compatibility story unchanged: CPU compression still defaults to
+  Ogg FLAC `.ldf`, while OpenCL and Vulkan continue to write native FLAC
+  `.flac.ldf` files.
+- Added repeatable benchmark controls for comparing faster analysis profiles
+  and reusing GPU setup during multi-row OpenCL/Vulkan sweeps.
+- Refreshed the 2026-07-08 performance notes and maintainer documentation so
+  the release summary focuses on what users can expect, not encoder internals.
 
 ## 1.1.0 - 2026-07-07
 
