@@ -560,15 +560,17 @@ used `threads=8`, `frame=4608`, `lpc=12`, `prec=12`, Rice orders `5,6`, and
 `analysis-profile=order-guess-mean-estimate-rice` with OpenCL/Vulkan session
 reuse enabled. Treat older timing notes above as historical checkpoint data.
 
-Current aggregate results across the six local real fixtures:
+Current aggregate speed-profile results across the six local real fixtures:
 
-- CPU/libFLAC: `80,086,984` bytes in `2.440` seconds.
-- Native-fixed, Rice order `5`: `79,930,556` bytes in `1.649` seconds.
-- Native-fixed, Rice order `6`: `79,926,901` bytes in `1.689` seconds.
-- OpenCL, Rice order `5`: `79,950,606` bytes in `0.829` seconds.
-- OpenCL, Rice order `6`: `79,946,987` bytes in `0.814` seconds.
-- Vulkan, Rice order `5`: `79,950,496` bytes in `0.834` seconds.
-- Vulkan, Rice order `6`: `79,946,934` bytes in `0.813` seconds.
+| Backend | Rice order | Output bytes | Elapsed time |
+| --- | ---: | ---: | ---: |
+| CPU/libFLAC | - | `80,086,984` | `2.440s` |
+| Native-fixed | `5` | `79,930,556` | `1.649s` |
+| Native-fixed | `6` | `79,926,901` | `1.689s` |
+| OpenCL | `5` | `79,950,606` | `0.829s` |
+| OpenCL | `6` | `79,946,987` | `0.814s` |
+| Vulkan | `5` | `79,950,496` | `0.834s` |
+| Vulkan | `6` | `79,946,934` | `0.813s` |
 
 The pass accepted broad throughput changes that kept compressed bytes unchanged
 for OpenCL/Vulkan on the speed sweep:
@@ -633,9 +635,12 @@ Validation status for the wrap-up checkpoint:
 - Full accelerator real-fixture roundtrip coverage passed for all six local
   fixtures on OpenCL device `1` and Vulkan device `1`, writing
   `build/real-fixture-roundtrips/real-fixture-roundtrip-20260708-145623/`.
-  Normal `compress` output totals were OpenCL `79,892,119` bytes in
-  `4.452` aggregate compress seconds and Vulkan `79,892,217` bytes in
-  `3.938` aggregate compress seconds.
+
+  | Backend | Input bytes | Output bytes | Compress time | Validation |
+  | --- | ---: | ---: | ---: | --- |
+  | OpenCL | `149,954,560` | `79,892,119` | `4.452s` | Verified, decompressed, and MD5-matched source `.lds` data. |
+  | Vulkan | `149,954,560` | `79,892,217` | `3.938s` | Verified, decompressed, and MD5-matched source `.lds` data. |
+
 - The final focused speed sweep wrote
   `build/real-fixture-sweeps/real-fixture-sweep-20260708-145656.{csv,md}`.
 

@@ -44,11 +44,15 @@ Current accepted speed-focused reference:
 - Sweep shape: `threads=8`, `frame=4608`, `lpc=12`, `prec=12`, Rice orders
   `5,6`, `analysis-profile=order-guess-mean-estimate-rice`, OpenCL/Vulkan
   session reuse enabled.
-- Six-fixture aggregate rows:
-  CPU/libFLAC `80,086,984` bytes in `2.440` seconds; native-fixed Rice order
-  `6` `79,926,901` bytes in `1.689` seconds; OpenCL Rice order `6`
-  `79,946,987` bytes in `0.814` seconds; Vulkan Rice order `6`
-  `79,946,934` bytes in `0.813` seconds.
+- Six-fixture aggregate speed-profile rows:
+
+  | Backend | Rice order | Output bytes | Elapsed time |
+  | --- | ---: | ---: | ---: |
+  | CPU/libFLAC | - | `80,086,984` | `2.440s` |
+  | Native-fixed | `6` | `79,926,901` | `1.689s` |
+  | OpenCL | `6` | `79,946,987` | `0.814s` |
+  | Vulkan | `6` | `79,946,934` | `0.813s` |
+
 - Validation for the wrap-up checkpoint: `cmake --build build` passed, full
   GPU-visible `ctest --test-dir build --output-on-failure` passed with `21/21`
   tests, focused OpenCL/Vulkan/real-fixture CTest rerun passed with `9/9`
@@ -133,8 +137,11 @@ Final report:
 - Each row ran `compress`, `verify --source`, `decompress`, and decoded
   size/MD5 comparison against the source `.lds`.
 - Aggregate input: `149,954,560` bytes.
-- OpenCL output: `79,892,119` bytes; aggregate compress time `4.452` seconds.
-- Vulkan output: `79,892,217` bytes; aggregate compress time `3.938` seconds.
+
+| Backend | Output bytes | Aggregate compress time |
+| --- | ---: | ---: |
+| OpenCL | `79,892,119` | `4.452s` |
+| Vulkan | `79,892,217` | `3.938s` |
 
 ## Device Assumptions
 

@@ -491,13 +491,23 @@ The current speed-focused sweep is
 `threads=8`, `frame=4608`, `lpc=12`, `prec=12`, Rice orders `5,6`,
 `analysis-profile=order-guess-mean-estimate-rice`, and OpenCL/Vulkan session
 reuse. Across the six local real fixtures, the best speed-profile rows were:
-CPU/libFLAC at `80,086,984` bytes in `2.440` seconds, native-fixed Rice order
-`6` at `79,926,901` bytes in `1.689` seconds, OpenCL Rice order `6` at
-`79,946,987` bytes in `0.814` seconds, and Vulkan Rice order `6` at
-`79,946,934` bytes in `0.813` seconds. The normal exact-analysis OpenCL/Vulkan
-`compress` roundtrip helper produced smaller aggregate output,
-`79,892,119` bytes for OpenCL and `79,892,217` bytes for Vulkan, while verifying
-and decompressing back to the original LDS bytes across all six fixtures.
+
+| Backend | Rice order | Output bytes | Elapsed time |
+| --- | ---: | ---: | ---: |
+| CPU/libFLAC | - | `80,086,984` | `2.440s` |
+| Native-fixed | `6` | `79,926,901` | `1.689s` |
+| OpenCL | `6` | `79,946,987` | `0.814s` |
+| Vulkan | `6` | `79,946,934` | `0.813s` |
+
+The normal exact-analysis OpenCL/Vulkan `compress` roundtrip helper produced
+smaller aggregate output while verifying and decompressing back to the original
+LDS bytes across all six fixtures:
+
+| Backend | Input bytes | Output bytes | Compress time |
+| --- | ---: | ---: | ---: |
+| OpenCL | `149,954,560` | `79,892,119` | `4.452s` |
+| Vulkan | `149,954,560` | `79,892,217` | `3.938s` |
+
 Scalar native-fixed is useful as a size and decision oracle, but CPU/libFLAC
 remains the recommended CPU-only encoder.
 
