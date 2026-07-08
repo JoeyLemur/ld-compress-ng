@@ -72,6 +72,12 @@ bool analysis_profile_uses_mean_rice(NativeAnalysisProfile profile)
         profile == NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice;
 }
 
+bool analysis_profile_uses_mean_estimated_size(NativeAnalysisProfile profile)
+{
+    return profile == NativeAnalysisProfile::OrderGuessMeanEstimateRice ||
+        profile == NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice;
+}
+
 std::int32_t opencl_analysis_profile_arg(NativeAnalysisProfile profile)
 {
     switch (profile) {
@@ -2310,6 +2316,11 @@ void ldcompressAnalyzeSubframeExact(
         !useMeanRice &&
         maxPartitionOrder <= EXACT_LEAF_MAX_RICE_PARTITION_ORDER &&
         ldcompressValidPartitionOrder(bs, ro, maxPartitionOrder);
+    const int useLeafMeanEstimatedRice =
+        useMeanRice &&
+        useMeanEstimatedSize &&
+        maxPartitionOrder <= EXACT_LEAF_MAX_RICE_PARTITION_ORDER &&
+        ldcompressValidPartitionOrder(bs, ro, maxPartitionOrder);
     const ulong baseBits = task.data.type == LPC
         ? 8UL +
             (wbits == 0 ? 0UL : (ulong)wbits) +
@@ -2397,6 +2408,78 @@ void ldcompressAnalyzeSubframeExact(
                 {
                     bestBits = bits;
                     bestPartitionOrder = partitionOrder;
+                    for (int partition = 0; partition < partitionCount; partition++)
+                        taskRiceParameters[riceOutputBase + partition] =
+                            candidateRiceParameters[partition];
+                }
+            }
+
+            task.data.porder = bestPartitionOrder;
+            task.data.size = bestBits > 0x7fffffffUL ? 0x7fffffff : (int)bestBits;
+            tasks[selectedTask] = task;
+        }
+        return;
+    }
+
+    if (useLeafMeanEstimatedRice)
+    {
+        const int leafPartitionOrder = maxPartitionOrder;
+        const int leafCount = 1 << leafPartitionOrder;
+        const int leafSamples = bs >> leafPartitionOrder;
+        for (int leaf = lane; leaf < leafCount; leaf += EXACT_WORKGROUP_SIZE)
+        {
+            ulong absSum = 0UL;
+            const int start = leaf == 0 ? ro : leaf * leafSamples;
+            const int end = (leaf + 1) * leafSamples;
+            for (int pos = start; pos < end; pos++)
+            {
+                const long residual = ldcompressResidual(data, pos, task);
+                absSum += ldcompressAbsLong(residual);
+            }
+            exactRiceLeafSums[leaf] = absSum;
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+
+        if (lane == 0)
+        {
+            for (int partitionOrderPlusOne = leafPartitionOrder + 1;
+                 partitionOrderPlusOne > 0;
+                 partitionOrderPlusOne--)
+            {
+                const int partitionOrder = partitionOrderPlusOne - 1;
+                if (!ldcompressValidPartitionOrder(bs, ro, partitionOrder))
+                    continue;
+
+                const int partitionCount = 1 << partitionOrder;
+                const int partitionSamples = bs >> partitionOrder;
+                const int leafGroupSize = 1 << (leafPartitionOrder - partitionOrder);
+                ulong estimatedBits = 2UL + 4UL;
+                for (int partition = 0; partition < partitionCount; partition++)
+                {
+                    const int residualCount = partition == 0
+                        ? partitionSamples - ro
+                        : partitionSamples;
+                    const int leafStart = partition * leafGroupSize;
+                    ulong absSum = 0UL;
+                    for (int leaf = 0; leaf < leafGroupSize; leaf++)
+                        absSum += exactRiceLeafSums[leafStart + leaf];
+
+                    const uint parameter =
+                        ldcompressMeanRiceParameter(absSum, residualCount);
+                    estimatedBits +=
+                        ldcompressMeanRicePartitionBits(parameter, residualCount, absSum);
+                    candidateRiceParameters[partition] = parameter;
+                }
+
+                if (estimatedBits < bestEstimatedBits)
+                {
+                    bestEstimatedBits = estimatedBits;
+                    bestPartitionOrder = partitionOrder;
+                    const ulong riceHeaderBits = 2UL + 4UL;
+                    const ulong estimateBaseBits = baseBits - riceHeaderBits;
+                    bestBits = bestEstimatedBits >= 0xffffffffffffffffUL - estimateBaseBits
+                        ? 0xffffffffffffffffUL
+                        : estimateBaseBits + bestEstimatedBits;
                     for (int partition = 0; partition < partitionCount; partition++)
                         taskRiceParameters[riceOutputBase + partition] =
                             candidateRiceParameters[partition];
@@ -2942,9 +3025,15 @@ std::size_t exact_leaf_rice_local_bytes(
     NativeAnalysisProfile analysis_profile,
     unsigned max_rice_partition_order)
 {
-    if (analysis_profile_uses_mean_rice(analysis_profile) ||
-        max_rice_partition_order > kOpenClExactLeafMaxRicePartitionOrder ||
+    if (max_rice_partition_order > kOpenClExactLeafMaxRicePartitionOrder ||
         plan.residual_tasks.empty()) {
+        return sizeof(std::uint64_t);
+    }
+    if (analysis_profile_uses_mean_estimated_size(analysis_profile)) {
+        return (std::size_t {1} << max_rice_partition_order) *
+            sizeof(std::uint64_t);
+    }
+    if (analysis_profile_uses_mean_rice(analysis_profile)) {
         return sizeof(std::uint64_t);
     }
     return (std::size_t {1} << max_rice_partition_order) *
