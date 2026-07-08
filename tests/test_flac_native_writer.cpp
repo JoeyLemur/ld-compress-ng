@@ -750,6 +750,18 @@ void test_native_selected_subframe_writer()
     require(read_file(temp_dir / "fixed-params.flac") == read_file(temp_dir / "fixed.flac"),
         "selected fixed writer changed bytes with supplied Rice parameters");
 
+    auto trusted_fixed_decision = fixed_params_decision;
+    trusted_fixed_decision.estimated_bits += 13;
+    const auto trusted_fixed_written = write_selected_file_with_decision(
+        temp_dir / "fixed-trusted.flac",
+        fixed_samples,
+        fixed_with_rice_parameters,
+        trusted_fixed_decision);
+    require(trusted_fixed_written.estimated_bits == trusted_fixed_decision.estimated_bits,
+        "trusted selected fixed writer did not return the supplied bit estimate");
+    require(read_file(temp_dir / "fixed-trusted.flac") == read_file(temp_dir / "fixed-params.flac"),
+        "trusted selected fixed writer changed emitted FLAC bytes");
+
     const std::vector<std::int32_t> zero_samples(16, 0);
     auto zero_fixed = fixed;
     zero_fixed.wasted_bits = 15;
@@ -789,13 +801,40 @@ void test_native_selected_subframe_writer()
     require(read_file(temp_dir / "lpc-trusted.flac") == read_file(temp_dir / "lpc.flac"),
         "trusted selected writer changed emitted FLAC bytes");
 
+    const ldcompress::FlacSelectedSubframe lpc_with_rice_parameters {
+        .kind = ldcompress::FlacSubframeKind::LpcRice,
+        .lpc_order = 1,
+        .rice_partition_order = 0,
+        .wasted_bits = 6,
+        .coefficient_precision = 2,
+        .quantization_shift = 0,
+        .coefficients = {1},
+        .rice_parameters = {0},
+    };
+    const auto lpc_params_decision = write_selected_file(
+        temp_dir / "lpc-params.flac", fixed_samples, lpc_with_rice_parameters);
+    auto trusted_lpc_params_decision = lpc_params_decision;
+    trusted_lpc_params_decision.estimated_bits += 19;
+    const auto trusted_lpc_params_written = write_selected_file_with_decision(
+        temp_dir / "lpc-params-trusted.flac",
+        fixed_samples,
+        lpc_with_rice_parameters,
+        trusted_lpc_params_decision);
+    require(trusted_lpc_params_written.estimated_bits == trusted_lpc_params_decision.estimated_bits,
+        "trusted selected LPC writer with supplied Rice parameters did not return the supplied bit estimate");
+    require(read_file(temp_dir / "lpc-params-trusted.flac") == read_file(temp_dir / "lpc-params.flac"),
+        "trusted selected LPC writer changed bytes with supplied Rice parameters");
+
     for (const auto& item : {
              std::pair { temp_dir / "constant.flac", constant_samples },
              std::pair { temp_dir / "fixed.flac", fixed_samples },
              std::pair { temp_dir / "fixed-params.flac", fixed_samples },
+             std::pair { temp_dir / "fixed-trusted.flac", fixed_samples },
              std::pair { temp_dir / "fixed-zero.flac", zero_samples },
              std::pair { temp_dir / "lpc.flac", lpc_samples },
              std::pair { temp_dir / "lpc-trusted.flac", lpc_samples },
+             std::pair { temp_dir / "lpc-params.flac", fixed_samples },
+             std::pair { temp_dir / "lpc-params-trusted.flac", fixed_samples },
          }) {
         std::ostringstream decoded;
         const auto stats = ldcompress::decompress_flac_to_lds(item.first.string(), decoded);
@@ -817,15 +856,39 @@ void test_native_selected_subframe_writer()
             }
             require(threw, message);
         };
+    const auto expect_trusted_selected_write_throws =
+        [&](const char* path, const std::vector<std::int32_t>& samples,
+            const ldcompress::FlacSelectedSubframe& selected, const char* message) {
+            ldcompress::FlacSubframeDecision decision {
+                .kind = selected.kind,
+                .fixed_order = selected.fixed_order,
+                .lpc_order = selected.lpc_order,
+                .rice_partition_order = selected.rice_partition_order,
+                .wasted_bits = selected.wasted_bits,
+                .estimated_bits = 1,
+            };
+            bool threw = false;
+            try {
+                (void)write_selected_file_with_decision(
+                    temp_dir / path, samples, selected, decision);
+            } catch (const std::runtime_error&) {
+                threw = true;
+            }
+            require(threw, message);
+        };
 
     auto bad_wasted_bits = fixed;
     bad_wasted_bits.wasted_bits = 0;
     expect_selected_write_throws("bad-wbits.flac", fixed_samples, bad_wasted_bits,
         "selected writer accepted a too-low wasted-bits count");
+    expect_trusted_selected_write_throws("bad-trusted-wbits.flac", fixed_samples,
+        bad_wasted_bits, "trusted selected writer accepted a too-low wasted-bits count");
 
     bad_wasted_bits.wasted_bits = 7;
     expect_selected_write_throws("bad-high-wbits.flac", fixed_samples, bad_wasted_bits,
         "selected writer accepted a too-high wasted-bits count");
+    expect_trusted_selected_write_throws("bad-trusted-high-wbits.flac", fixed_samples,
+        bad_wasted_bits, "trusted selected writer accepted a too-high wasted-bits count");
 
     bad_wasted_bits = zero_fixed;
     bad_wasted_bits.wasted_bits = 16;
@@ -840,6 +903,9 @@ void test_native_selected_subframe_writer()
     invalid_late_samples[1] = 40000;
     expect_selected_write_throws("bad-late-sample.flac", invalid_late_samples,
         invalid_late_sample, "selected writer stopped validating samples after zero wasted bits");
+    expect_trusted_selected_write_throws("bad-trusted-late-sample.flac",
+        invalid_late_samples, invalid_late_sample,
+        "trusted selected writer stopped validating samples after zero wasted bits");
 
     auto bad_rice_parameters = fixed_with_rice_parameters;
     bad_rice_parameters.rice_parameters = {0, 0};
