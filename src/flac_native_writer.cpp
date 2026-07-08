@@ -282,10 +282,12 @@ unsigned choose_rice_parameter(
 enum class RiceSelectionMode {
     Exact,
     MeanEstimate,
+    MeanEstimateOnly,
 };
 
 bool valid_partition_order(std::size_t block_size, unsigned predictor_order, unsigned partition_order);
 unsigned checked_max_rice_partition_order(unsigned max_rice_partition_order);
+std::uint64_t subframe_wasted_bits_overhead(unsigned wasted_bits);
 std::size_t partition_residual_count(
     std::size_t block_size,
     unsigned predictor_order,
@@ -402,6 +404,42 @@ RicePartitionChoice choose_mean_rice_partition_order(
         throw std::runtime_error("internal FLAC mean Rice partition search found no valid partition order");
     }
     return best;
+}
+
+std::uint64_t fixed_rice_subframe_mean_estimated_bits(
+    unsigned order,
+    unsigned wasted_bits,
+    std::size_t block_size,
+    unsigned bits_per_sample,
+    const RicePartitionChoice& rice_choice)
+{
+    (void)block_size;
+    constexpr unsigned kSubframeHeaderBits = 8;
+    return kSubframeHeaderBits +
+        (static_cast<std::uint64_t>(order) * bits_per_sample) +
+        subframe_wasted_bits_overhead(wasted_bits) +
+        rice_choice.estimated_bits;
+}
+
+std::uint64_t lpc_rice_subframe_mean_estimated_bits(
+    unsigned order,
+    unsigned wasted_bits,
+    unsigned coefficient_precision,
+    std::size_t block_size,
+    unsigned bits_per_sample,
+    const RicePartitionChoice& rice_choice)
+{
+    (void)block_size;
+    constexpr unsigned kSubframeHeaderBits = 8;
+    constexpr unsigned kCoefficientPrecisionBits = 4;
+    constexpr unsigned kQuantizationShiftBits = 5;
+    return kSubframeHeaderBits +
+        subframe_wasted_bits_overhead(wasted_bits) +
+        (static_cast<std::uint64_t>(order) * bits_per_sample) +
+        kCoefficientPrecisionBits +
+        kQuantizationShiftBits +
+        (static_cast<std::uint64_t>(order) * coefficient_precision) +
+        rice_choice.estimated_bits;
 }
 
 struct FixedRiceSubframe {
@@ -1406,7 +1444,8 @@ FixedRiceSubframe analyze_fixed_rice_order(
 
     FixedRiceSubframe best;
     best.bits = std::numeric_limits<std::uint64_t>::max();
-    if (rice_mode == RiceSelectionMode::MeanEstimate) {
+    if (rice_mode == RiceSelectionMode::MeanEstimate ||
+        rice_mode == RiceSelectionMode::MeanEstimateOnly) {
         const auto rice_choice = choose_mean_rice_partition_order(
             residuals, shifted_samples.size(), order, max_rice_partition_order);
         best.order = order;
@@ -1416,9 +1455,13 @@ FixedRiceSubframe analyze_fixed_rice_order(
         best.shifted_samples = shifted_samples;
         best.rice_parameters = rice_choice.parameters;
         best.residuals = std::move(residuals);
-        best.bits = fixed_rice_subframe_bits(
-            order, best.partition_order, wasted_bits, best.rice_parameters,
-            best.residuals, shifted_samples.size(), effective_bits_per_sample);
+        best.bits = rice_mode == RiceSelectionMode::MeanEstimateOnly
+            ? fixed_rice_subframe_mean_estimated_bits(
+                order, wasted_bits, shifted_samples.size(), effective_bits_per_sample,
+                rice_choice)
+            : fixed_rice_subframe_bits(
+                order, best.partition_order, wasted_bits, best.rice_parameters,
+                best.residuals, shifted_samples.size(), effective_bits_per_sample);
         return best;
     }
 
@@ -1485,7 +1528,8 @@ std::optional<LpcRiceSubframe> analyze_lpc_rice_candidate(
 
     LpcRiceSubframe best;
     best.bits = std::numeric_limits<std::uint64_t>::max();
-    if (rice_mode == RiceSelectionMode::MeanEstimate) {
+    if (rice_mode == RiceSelectionMode::MeanEstimate ||
+        rice_mode == RiceSelectionMode::MeanEstimateOnly) {
         const auto rice_choice = choose_mean_rice_partition_order(
             residuals, shifted_samples.size(), order, max_rice_partition_order);
         best.order = order;
@@ -1500,10 +1544,14 @@ std::optional<LpcRiceSubframe> analyze_lpc_rice_candidate(
         best.coefficients = quantized.coefficients;
         best.rice_parameters = rice_choice.parameters;
         best.residuals = std::move(residuals);
-        best.bits = lpc_rice_subframe_bits(
-            order, best.partition_order, wasted_bits, lpc_coefficient_precision,
-            best.rice_parameters, best.residuals, shifted_samples.size(),
-            effective_bits_per_sample);
+        best.bits = rice_mode == RiceSelectionMode::MeanEstimateOnly
+            ? lpc_rice_subframe_mean_estimated_bits(
+                order, wasted_bits, lpc_coefficient_precision, shifted_samples.size(),
+                effective_bits_per_sample, rice_choice)
+            : lpc_rice_subframe_bits(
+                order, best.partition_order, wasted_bits, lpc_coefficient_precision,
+                best.rice_parameters, best.residuals, shifted_samples.size(),
+                effective_bits_per_sample);
         return best;
     }
 
@@ -2618,6 +2666,15 @@ FlacSubframeDecision write_mono_best_frame(
             info.lpc_coefficient_precision, info.max_rice_partition_order,
             RiceSelectionMode::MeanEstimate, false);
         break;
+    case NativeAnalysisProfile::OrderGuessMeanEstimateRice:
+        fixed = choose_fixed_rice_subframe_order_guess(
+            samples, info.bits_per_sample, info.max_rice_partition_order,
+            RiceSelectionMode::MeanEstimateOnly);
+        lpc = choose_lpc_rice_subframe_order_guess(
+            samples, info.bits_per_sample, info.max_lpc_order,
+            info.lpc_coefficient_precision, info.max_rice_partition_order,
+            RiceSelectionMode::MeanEstimateOnly, false);
+        break;
     case NativeAnalysisProfile::SubdivideTukey3MeanRice:
         fixed = choose_fixed_rice_subframe_order_guess(
             samples, info.bits_per_sample, info.max_rice_partition_order,
@@ -2626,6 +2683,15 @@ FlacSubframeDecision write_mono_best_frame(
             samples, info.bits_per_sample, info.max_lpc_order,
             info.lpc_coefficient_precision, info.max_rice_partition_order,
             RiceSelectionMode::MeanEstimate, true);
+        break;
+    case NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice:
+        fixed = choose_fixed_rice_subframe_order_guess(
+            samples, info.bits_per_sample, info.max_rice_partition_order,
+            RiceSelectionMode::MeanEstimateOnly);
+        lpc = choose_lpc_rice_subframe_order_guess(
+            samples, info.bits_per_sample, info.max_lpc_order,
+            info.lpc_coefficient_precision, info.max_rice_partition_order,
+            RiceSelectionMode::MeanEstimateOnly, true);
         break;
     }
     const auto verbatim_bits = verbatim_subframe_bits(

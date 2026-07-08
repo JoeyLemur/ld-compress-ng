@@ -165,6 +165,37 @@ void require_rice_parameters_valid(
     }
 }
 
+void require_mean_estimate_sizes_diverge(
+    const std::vector<ldcompress::opencl_detail::FlacClSubframeTask>& recosted_tasks,
+    const std::vector<ldcompress::opencl_detail::FlacClSubframeTask>& estimated_tasks,
+    const char* label)
+{
+    using namespace ldcompress::opencl_detail;
+
+    require(recosted_tasks.size() == estimated_tasks.size(), label);
+    bool saw_estimated_predictive_size = false;
+    for (std::size_t i = 0; i < recosted_tasks.size(); ++i) {
+        const auto& recosted = recosted_tasks[i];
+        const auto& estimated = estimated_tasks[i];
+        require(estimated.data.type == recosted.data.type, label);
+        require(estimated.data.residualOrder == recosted.data.residualOrder, label);
+        require(estimated.data.samplesOffs == recosted.data.samplesOffs, label);
+        require(estimated.data.porder == recosted.data.porder, label);
+        if ((estimated.data.type == kFlacClSubframeFixed ||
+                estimated.data.type == kFlacClSubframeLpc) &&
+            recosted.data.size != std::numeric_limits<std::int32_t>::max()) {
+            require(estimated.data.size > 0, label);
+            require(estimated.data.size < std::numeric_limits<std::int32_t>::max(), label);
+            if (estimated.data.size != recosted.data.size) {
+                saw_estimated_predictive_size = true;
+            }
+        } else {
+            require(estimated.data.size == recosted.data.size, label);
+        }
+    }
+    require(saw_estimated_predictive_size, label);
+}
+
 void require_rice_parameters_match(
     const std::vector<ldcompress::opencl_detail::FlacClSubframeTask>& tasks,
     const std::vector<ldcompress::opencl_detail::FlacClRiceParameterSet>& actual,
@@ -825,6 +856,23 @@ void test_vulkan_order_guess_mean_rice_profile_smoke(const Options& options)
     require(plan.selected_tasks.size() == plan.residual_tasks.size(),
         "Vulkan mean Rice smoke selected task count mismatch");
 
+    auto estimate_options = task_options;
+    estimate_options.analysis_profile =
+        ldcompress::NativeAnalysisProfile::OrderGuessMeanEstimateRice;
+    const auto estimate_plan =
+        build_mono_analysis_task_plan_for_samples(samples, 4, estimate_options);
+    require(estimate_plan.fixed_order_guess_on_gpu,
+        "Vulkan mean-estimate Rice smoke did not retain GPU fixed-order pruning");
+    require(estimate_plan.analysis_profile ==
+            ldcompress::NativeAnalysisProfile::OrderGuessMeanEstimateRice,
+        "Vulkan mean-estimate Rice smoke did not retain analysis profile");
+    require(estimate_plan.residual_tasks_per_frame == plan.residual_tasks_per_frame,
+        "Vulkan mean-estimate Rice smoke task shape mismatch");
+    require(estimate_plan.residual_tasks.size() == plan.residual_tasks.size(),
+        "Vulkan mean-estimate Rice smoke residual task count mismatch");
+    require(estimate_plan.selected_tasks.size() == plan.selected_tasks.size(),
+        "Vulkan mean-estimate Rice smoke selected task count mismatch");
+
     const auto result = ldcompress::vulkan_detail::run_vulkan_mono_generated_analysis(
         samples, plan, device_index, 12, 5);
     require(result.best_tasks.size() == 4,
@@ -870,6 +918,67 @@ void test_vulkan_order_guess_mean_rice_profile_smoke(const Options& options)
                 result.best_tasks[i], result.best_rice_parameters[i]);
         }
     }
+
+    const auto estimate_result =
+        ldcompress::vulkan_detail::run_vulkan_mono_generated_analysis(
+            samples, estimate_plan, device_index, 12, 5);
+    require(estimate_result.best_tasks.size() == 4,
+        "Vulkan mean-estimate Rice best task count mismatch");
+    require(estimate_result.analyzed_tasks.size() == result.analyzed_tasks.size(),
+        "Vulkan mean-estimate Rice analyzed task count mismatch");
+    require_rice_parameters_valid(
+        estimate_result.best_tasks, estimate_result.best_rice_parameters,
+        "Vulkan mean-estimate Rice sidecar was invalid");
+    require_mean_estimate_sizes_diverge(result.analyzed_tasks, estimate_result.analyzed_tasks,
+        "Vulkan mean-estimate Rice profile still returned exact-recost predictive sizes");
+
+    const auto estimate_best =
+        session.run_generated_best_analysis(samples, estimate_plan, 12, 5);
+    require(estimate_best.best_tasks.size() == estimate_result.best_tasks.size(),
+        "Vulkan mean-estimate Rice best-only task count mismatch");
+    require_rice_parameters_match(
+        estimate_result.best_tasks,
+        estimate_best.best_rice_parameters,
+        estimate_result.best_rice_parameters,
+        "Vulkan mean-estimate Rice Rice parameter sidecar mismatch");
+    for (std::size_t i = 0; i < estimate_result.best_tasks.size(); ++i) {
+        require_task_matches_task(estimate_best.best_tasks[i], estimate_result.best_tasks[i],
+            "Vulkan mean-estimate Rice best-only task diverged from full result");
+        if (estimate_result.best_tasks[i].data.type == kFlacClSubframeFixed ||
+            estimate_result.best_tasks[i].data.type == kFlacClSubframeLpc) {
+            (void)flaccl_task_to_selected_rice_parameters(
+                estimate_result.best_tasks[i], estimate_result.best_rice_parameters[i]);
+        }
+    }
+
+    auto subdivide_options = task_options;
+    subdivide_options.analysis_profile =
+        ldcompress::NativeAnalysisProfile::SubdivideTukey3MeanRice;
+    const auto subdivide_plan =
+        build_mono_analysis_task_plan_for_samples(samples, 4, subdivide_options);
+    auto subdivide_estimate_options = task_options;
+    subdivide_estimate_options.analysis_profile =
+        ldcompress::NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice;
+    const auto subdivide_estimate_plan =
+        build_mono_analysis_task_plan_for_samples(samples, 4, subdivide_estimate_options);
+    require(subdivide_plan.residual_tasks_per_frame ==
+            subdivide_estimate_plan.residual_tasks_per_frame,
+        "Vulkan subdivide mean-estimate Rice smoke task shape mismatch");
+
+    const auto subdivide_result =
+        ldcompress::vulkan_detail::run_vulkan_mono_generated_analysis(
+            samples, subdivide_plan, device_index, 12, 5);
+    const auto subdivide_estimate_result =
+        ldcompress::vulkan_detail::run_vulkan_mono_generated_analysis(
+            samples, subdivide_estimate_plan, device_index, 12, 5);
+    require_rice_parameters_valid(
+        subdivide_estimate_result.best_tasks,
+        subdivide_estimate_result.best_rice_parameters,
+        "Vulkan subdivide mean-estimate Rice sidecar was invalid");
+    require_mean_estimate_sizes_diverge(
+        subdivide_result.analyzed_tasks,
+        subdivide_estimate_result.analyzed_tasks,
+        "Vulkan subdivide mean-estimate Rice profile still returned exact-recost predictive sizes");
 }
 
 }  // namespace

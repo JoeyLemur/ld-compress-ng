@@ -60,13 +60,16 @@ bool generated_profile_uses_order_guess(NativeAnalysisProfile profile)
 
 bool generated_profile_uses_subdivide_tukey3(NativeAnalysisProfile profile)
 {
-    return profile == NativeAnalysisProfile::SubdivideTukey3MeanRice;
+    return profile == NativeAnalysisProfile::SubdivideTukey3MeanRice ||
+        profile == NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice;
 }
 
 bool analysis_profile_uses_mean_rice(NativeAnalysisProfile profile)
 {
     return profile == NativeAnalysisProfile::OrderGuessMeanRice ||
-        profile == NativeAnalysisProfile::SubdivideTukey3MeanRice;
+        profile == NativeAnalysisProfile::OrderGuessMeanEstimateRice ||
+        profile == NativeAnalysisProfile::SubdivideTukey3MeanRice ||
+        profile == NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice;
 }
 
 std::int32_t opencl_analysis_profile_arg(NativeAnalysisProfile profile)
@@ -78,8 +81,12 @@ std::int32_t opencl_analysis_profile_arg(NativeAnalysisProfile profile)
         return 1;
     case NativeAnalysisProfile::OrderGuessMeanRice:
         return 2;
+    case NativeAnalysisProfile::OrderGuessMeanEstimateRice:
+        return 4;
     case NativeAnalysisProfile::SubdivideTukey3MeanRice:
         return 3;
+    case NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice:
+        return 5;
     }
     return 0;
 }
@@ -1347,8 +1354,11 @@ const char* mono_analysis_kernel_source()
 #define EXACT_LEAF_MAX_RICE_PARTITION_ORDER 6
 #define EXACT_LEAF_RICE_PARAMETER_COUNT 15
 #define ANALYSIS_PROFILE_EXACT 0
+#define ANALYSIS_PROFILE_ORDER_GUESS_EXACT_RICE 1
 #define ANALYSIS_PROFILE_ORDER_GUESS_MEAN_RICE 2
 #define ANALYSIS_PROFILE_SUBDIVIDE_TUKEY3_MEAN_RICE 3
+#define ANALYSIS_PROFILE_ORDER_GUESS_MEAN_ESTIMATE_RICE 4
+#define ANALYSIS_PROFILE_SUBDIVIDE_TUKEY3_MEAN_ESTIMATE_RICE 5
 
 typedef enum
 {
@@ -2026,7 +2036,15 @@ typedef struct
 int ldcompressProfileUsesMeanRice(int analysisProfile)
 {
     return analysisProfile == ANALYSIS_PROFILE_ORDER_GUESS_MEAN_RICE ||
-        analysisProfile == ANALYSIS_PROFILE_SUBDIVIDE_TUKEY3_MEAN_RICE;
+        analysisProfile == ANALYSIS_PROFILE_ORDER_GUESS_MEAN_ESTIMATE_RICE ||
+        analysisProfile == ANALYSIS_PROFILE_SUBDIVIDE_TUKEY3_MEAN_RICE ||
+        analysisProfile == ANALYSIS_PROFILE_SUBDIVIDE_TUKEY3_MEAN_ESTIMATE_RICE;
+}
+
+int ldcompressProfileUsesMeanEstimatedSize(int analysisProfile)
+{
+    return analysisProfile == ANALYSIS_PROFILE_ORDER_GUESS_MEAN_ESTIMATE_RICE ||
+        analysisProfile == ANALYSIS_PROFILE_SUBDIVIDE_TUKEY3_MEAN_ESTIMATE_RICE;
 }
 
 uint ldcompressIlog2Ulong(ulong value)
@@ -2286,6 +2304,8 @@ void ldcompressAnalyzeSubframeExact(
     int bestPartitionOrder = 0;
     const int maxPartitionOrder = min(maxRicePartitionOrder, 8);
     const int useMeanRice = ldcompressProfileUsesMeanRice(analysisProfile);
+    const int useMeanEstimatedSize =
+        ldcompressProfileUsesMeanEstimatedSize(analysisProfile);
     const int useLeafExactRice =
         !useMeanRice &&
         maxPartitionOrder <= EXACT_LEAF_MAX_RICE_PARTITION_ORDER &&
@@ -2442,20 +2462,31 @@ void ldcompressAnalyzeSubframeExact(
 
     if (useMeanRice)
     {
-        bestBits = baseBits;
-        const int partitionCount = 1 << bestPartitionOrder;
-        const int partitionSamples = bs >> bestPartitionOrder;
-        for (int partition = 0; partition < partitionCount; partition++)
+        if (useMeanEstimatedSize)
         {
-            const int residualCount = partition == 0
-                ? partitionSamples - ro
-                : partitionSamples;
-            const int partitionStart = partition == 0
-                ? ro
-                : partition * partitionSamples;
-            const MeanRiceChoice choice = ldcompressCooperativeMeanRiceForPartition(
-                data, partitionStart, residualCount, task, reduceScratchUlong, 1);
-            bestBits += 4UL + choice.exactBits;
+            const ulong riceHeaderBits = 2UL + 4UL;
+            const ulong estimateBaseBits = baseBits - riceHeaderBits;
+            bestBits = bestEstimatedBits >= 0xffffffffffffffffUL - estimateBaseBits
+                ? 0xffffffffffffffffUL
+                : estimateBaseBits + bestEstimatedBits;
+        }
+        else
+        {
+            bestBits = baseBits;
+            const int partitionCount = 1 << bestPartitionOrder;
+            const int partitionSamples = bs >> bestPartitionOrder;
+            for (int partition = 0; partition < partitionCount; partition++)
+            {
+                const int residualCount = partition == 0
+                    ? partitionSamples - ro
+                    : partitionSamples;
+                const int partitionStart = partition == 0
+                    ? ro
+                    : partition * partitionSamples;
+                const MeanRiceChoice choice = ldcompressCooperativeMeanRiceForPartition(
+                    data, partitionStart, residualCount, task, reduceScratchUlong, 1);
+                bestBits += 4UL + choice.exactBits;
+            }
         }
     }
 

@@ -185,7 +185,27 @@ bool signed_value_fits_bits(std::int32_t value, unsigned bits)
 
 bool generated_profile_uses_subdivide_tukey3(NativeAnalysisProfile profile)
 {
-    return profile == NativeAnalysisProfile::SubdivideTukey3MeanRice;
+    return profile == NativeAnalysisProfile::SubdivideTukey3MeanRice ||
+        profile == NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice;
+}
+
+std::uint32_t vulkan_analysis_profile_arg(NativeAnalysisProfile profile)
+{
+    switch (profile) {
+    case NativeAnalysisProfile::Exact:
+        return 0;
+    case NativeAnalysisProfile::OrderGuessExactRice:
+        return 1;
+    case NativeAnalysisProfile::OrderGuessMeanRice:
+        return 2;
+    case NativeAnalysisProfile::SubdivideTukey3MeanRice:
+        return 3;
+    case NativeAnalysisProfile::OrderGuessMeanEstimateRice:
+        return 4;
+    case NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice:
+        return 5;
+    }
+    return 0;
 }
 
 float tukey_weight(std::size_t n, std::size_t blocksize, double taper_fraction)
@@ -1271,7 +1291,7 @@ public:
                 ? checked_u32(generated_lpc->max_lpc_order, "max LPC order")
                 : 0,
             .analysis_profile = generated_lpc.has_value()
-                ? static_cast<std::uint32_t>(generated_lpc->analysis_profile)
+                ? vulkan_analysis_profile_arg(generated_lpc->analysis_profile)
                 : 0,
         };
 

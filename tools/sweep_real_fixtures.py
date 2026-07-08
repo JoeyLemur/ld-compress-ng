@@ -148,7 +148,9 @@ VALID_ANALYSIS_PROFILES = {
     "exact",
     "order-guess-exact-rice",
     "order-guess-mean-rice",
+    "order-guess-mean-estimate-rice",
     "subdivide-tukey3-mean-rice",
+    "subdivide-tukey3-mean-estimate-rice",
 }
 
 

@@ -329,6 +329,37 @@ void require_rice_parameters_valid(
     }
 }
 
+void require_mean_estimate_sizes_diverge(
+    const std::vector<ldcompress::opencl_detail::FlacClSubframeTask>& recosted_tasks,
+    const std::vector<ldcompress::opencl_detail::FlacClSubframeTask>& estimated_tasks,
+    const char* label)
+{
+    using namespace ldcompress::opencl_detail;
+
+    require(recosted_tasks.size() == estimated_tasks.size(), label);
+    bool saw_estimated_predictive_size = false;
+    for (std::size_t i = 0; i < recosted_tasks.size(); ++i) {
+        const auto& recosted = recosted_tasks[i];
+        const auto& estimated = estimated_tasks[i];
+        require(estimated.data.type == recosted.data.type, label);
+        require(estimated.data.residualOrder == recosted.data.residualOrder, label);
+        require(estimated.data.samplesOffs == recosted.data.samplesOffs, label);
+        require(estimated.data.porder == recosted.data.porder, label);
+        if ((estimated.data.type == kFlacClSubframeFixed ||
+                estimated.data.type == kFlacClSubframeLpc) &&
+            recosted.data.size != std::numeric_limits<std::int32_t>::max()) {
+            require(estimated.data.size > 0, label);
+            require(estimated.data.size < std::numeric_limits<std::int32_t>::max(), label);
+            if (estimated.data.size != recosted.data.size) {
+                saw_estimated_predictive_size = true;
+            }
+        } else {
+            require(estimated.data.size == recosted.data.size, label);
+        }
+    }
+    require(saw_estimated_predictive_size, label);
+}
+
 void require_selected_rice_parameters_match(
     const std::vector<ldcompress::opencl_detail::FlacClSubframeTask>& actual_tasks,
     const std::vector<ldcompress::opencl_detail::FlacClRiceParameterSet>& actual_parameters,
@@ -1007,6 +1038,20 @@ void test_subdivide_tukey3_profile_task_plan()
     require(plan.selected_tasks.size() == 30,
         "subdivide Tukey profile selected task vector size mismatch");
 
+    auto estimate_options = options;
+    estimate_options.analysis_profile =
+        ldcompress::NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice;
+    const auto estimate_plan = build_mono_analysis_task_plan(2, estimate_options);
+    require(estimate_plan.analysis_profile ==
+            ldcompress::NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice,
+        "subdivide Tukey estimate profile task plan did not retain analysis profile");
+    require(estimate_plan.residual_tasks_per_frame == plan.residual_tasks_per_frame,
+        "subdivide Tukey estimate profile task count mismatch");
+    require(estimate_plan.residual_tasks.size() == plan.residual_tasks.size(),
+        "subdivide Tukey estimate profile residual task vector size mismatch");
+    require(estimate_plan.selected_tasks.size() == plan.selected_tasks.size(),
+        "subdivide Tukey estimate profile selected task vector size mismatch");
+
     for (std::size_t frame = 0; frame < 2; ++frame) {
         const auto base = frame * plan.residual_tasks_per_frame;
         for (std::size_t window = 0; window < 9; ++window) {
@@ -1098,6 +1143,21 @@ void test_compact_order_guess_profile_task_plan()
         "compact order-guess residual task vector size mismatch");
     require(compact.selected_tasks.size() == 10,
         "compact order-guess selected task vector size mismatch");
+
+    auto estimate_options = options;
+    estimate_options.analysis_profile =
+        ldcompress::NativeAnalysisProfile::OrderGuessMeanEstimateRice;
+    const auto estimate_compact =
+        build_mono_analysis_task_plan_for_samples(samples, 2, estimate_options);
+    require(estimate_compact.analysis_profile ==
+            ldcompress::NativeAnalysisProfile::OrderGuessMeanEstimateRice,
+        "compact order-guess estimate profile did not retain analysis profile");
+    require(estimate_compact.residual_tasks_per_frame == compact.residual_tasks_per_frame,
+        "compact order-guess estimate profile task count mismatch");
+    require(estimate_compact.residual_tasks.size() == compact.residual_tasks.size(),
+        "compact order-guess estimate profile residual task vector size mismatch");
+    require(estimate_compact.selected_tasks.size() == compact.selected_tasks.size(),
+        "compact order-guess estimate profile selected task vector size mismatch");
 
     for (std::size_t i = 0; i < compact.selected_tasks.size(); ++i) {
         require(compact.selected_tasks[i] == static_cast<int>(i),
@@ -1229,6 +1289,18 @@ void test_compact_order_guess_profile_task_plan()
         build_mono_analysis_task_plan_for_samples(samples, 2, subdivide_options);
     require(subdivide_compact.residual_tasks_per_frame == 11,
         "compact subdivide order-guess profile task count mismatch");
+
+    auto subdivide_estimate_options = subdivide_options;
+    subdivide_estimate_options.analysis_profile =
+        ldcompress::NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice;
+    const auto subdivide_estimate_compact =
+        build_mono_analysis_task_plan_for_samples(samples, 2, subdivide_estimate_options);
+    require(subdivide_estimate_compact.analysis_profile ==
+            ldcompress::NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice,
+        "compact subdivide estimate profile did not retain analysis profile");
+    require(subdivide_estimate_compact.residual_tasks_per_frame ==
+            subdivide_compact.residual_tasks_per_frame,
+        "compact subdivide estimate profile task count mismatch");
     for (std::size_t frame = 0; frame < 2; ++frame) {
         const auto expanded_base = frame * subdivide_expanded.residual_tasks_per_frame;
         const auto compact_base = frame * subdivide_compact.residual_tasks_per_frame;
@@ -2077,6 +2149,23 @@ void test_opencl_order_guess_mean_rice_profile_smoke()
     require(mean_plan.selected_tasks.size() == mean_plan.residual_tasks.size(),
         "OpenCL mean Rice smoke selected task count mismatch");
 
+    auto estimate_options = options;
+    estimate_options.analysis_profile =
+        ldcompress::NativeAnalysisProfile::OrderGuessMeanEstimateRice;
+    const auto estimate_plan =
+        build_mono_analysis_task_plan_for_samples(samples, 4, estimate_options);
+    require(estimate_plan.fixed_order_guess_on_gpu,
+        "OpenCL mean-estimate Rice smoke did not retain GPU fixed-order pruning");
+    require(estimate_plan.analysis_profile ==
+            ldcompress::NativeAnalysisProfile::OrderGuessMeanEstimateRice,
+        "OpenCL mean-estimate Rice smoke did not retain analysis profile");
+    require(estimate_plan.residual_tasks_per_frame == mean_plan.residual_tasks_per_frame,
+        "OpenCL mean-estimate Rice smoke task shape mismatch");
+    require(estimate_plan.residual_tasks.size() == mean_plan.residual_tasks.size(),
+        "OpenCL mean-estimate Rice smoke residual task count mismatch");
+    require(estimate_plan.selected_tasks.size() == mean_plan.selected_tasks.size(),
+        "OpenCL mean-estimate Rice smoke selected task count mismatch");
+
     OpenClMonoAnalysisSession session(device_index);
     const auto mean =
         session.run_generated_best_analysis(samples, mean_plan, 12, 5);
@@ -2097,6 +2186,64 @@ void test_opencl_order_guess_mean_rice_profile_smoke()
                 mean.best_tasks[i], mean.best_rice_parameters[i]);
         }
     }
+
+    const auto mean_full =
+        session.run_generated_analysis(samples, mean_plan, 12, 5);
+    const auto estimate_full =
+        session.run_generated_analysis(samples, estimate_plan, 12, 5);
+    require(mean_full.analyzed_tasks.size() == estimate_full.analyzed_tasks.size(),
+        "OpenCL mean-estimate Rice analyzed task count mismatch");
+    require(estimate_full.best_tasks.size() == 4,
+        "OpenCL mean-estimate Rice best task count mismatch");
+    require_rice_parameters_valid(
+        estimate_full.best_tasks, estimate_full.best_rice_parameters,
+        "OpenCL mean-estimate Rice sidecar was invalid");
+    require_mean_estimate_sizes_diverge(mean_full.analyzed_tasks, estimate_full.analyzed_tasks,
+        "OpenCL mean-estimate Rice profile still returned exact-recost predictive sizes");
+
+    const auto estimate_best =
+        session.run_generated_best_analysis(samples, estimate_plan, 12, 5);
+    require(estimate_best.best_tasks.size() == estimate_full.best_tasks.size(),
+        "OpenCL mean-estimate Rice best-only task count mismatch");
+    require_rice_parameters_valid(
+        estimate_best.best_tasks, estimate_best.best_rice_parameters,
+        "OpenCL mean-estimate Rice best-only sidecar was invalid");
+    for (std::size_t i = 0; i < estimate_full.best_tasks.size(); ++i) {
+        require_task_matches_task(estimate_best.best_tasks[i], estimate_full.best_tasks[i],
+            "OpenCL mean-estimate Rice best-only task diverged from full result");
+        if (estimate_best.best_tasks[i].data.type == kFlacClSubframeFixed ||
+            estimate_best.best_tasks[i].data.type == kFlacClSubframeLpc) {
+            (void)flaccl_task_to_selected_rice_parameters(
+                estimate_best.best_tasks[i], estimate_best.best_rice_parameters[i]);
+        }
+    }
+
+    auto subdivide_options = options;
+    subdivide_options.analysis_profile =
+        ldcompress::NativeAnalysisProfile::SubdivideTukey3MeanRice;
+    const auto subdivide_plan =
+        build_mono_analysis_task_plan_for_samples(samples, 4, subdivide_options);
+    auto subdivide_estimate_options = options;
+    subdivide_estimate_options.analysis_profile =
+        ldcompress::NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice;
+    const auto subdivide_estimate_plan =
+        build_mono_analysis_task_plan_for_samples(samples, 4, subdivide_estimate_options);
+    require(subdivide_plan.residual_tasks_per_frame ==
+            subdivide_estimate_plan.residual_tasks_per_frame,
+        "OpenCL subdivide mean-estimate Rice smoke task shape mismatch");
+
+    const auto subdivide_full =
+        session.run_generated_analysis(samples, subdivide_plan, 12, 5);
+    const auto subdivide_estimate_full =
+        session.run_generated_analysis(samples, subdivide_estimate_plan, 12, 5);
+    require_rice_parameters_valid(
+        subdivide_estimate_full.best_tasks,
+        subdivide_estimate_full.best_rice_parameters,
+        "OpenCL subdivide mean-estimate Rice sidecar was invalid");
+    require_mean_estimate_sizes_diverge(
+        subdivide_full.analyzed_tasks,
+        subdivide_estimate_full.analyzed_tasks,
+        "OpenCL subdivide mean-estimate Rice profile still returned exact-recost predictive sizes");
 }
 
 void test_opencl_generated_frame_analysis_wrapper_smoke()

@@ -442,8 +442,14 @@ ldcompress::NativeAnalysisProfile parse_native_analysis_profile(std::string_view
     if (text == "order-guess-mean-rice") {
         return ldcompress::NativeAnalysisProfile::OrderGuessMeanRice;
     }
+    if (text == "order-guess-mean-estimate-rice") {
+        return ldcompress::NativeAnalysisProfile::OrderGuessMeanEstimateRice;
+    }
     if (text == "subdivide-tukey3-mean-rice") {
         return ldcompress::NativeAnalysisProfile::SubdivideTukey3MeanRice;
+    }
+    if (text == "subdivide-tukey3-mean-estimate-rice") {
+        return ldcompress::NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice;
     }
     throw std::runtime_error("unknown analysis profile: " + std::string(text));
 }

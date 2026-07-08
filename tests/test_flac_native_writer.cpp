@@ -380,6 +380,37 @@ ldcompress::FlacSubframeDecision write_fixed_rice_file(
     return writer(output, samples, frame_info);
 }
 
+ldcompress::FlacSubframeDecision write_profiled_best_file(
+    const std::filesystem::path& flac_path,
+    const std::vector<std::int32_t>& samples,
+    ldcompress::NativeAnalysisProfile profile,
+    unsigned max_lpc_order = 12,
+    unsigned lpc_coefficient_precision = 12,
+    unsigned max_rice_partition_order = 5)
+{
+    std::ofstream output(flac_path, std::ios::binary);
+    if (!output) {
+        throw std::runtime_error("could not create test FLAC file");
+    }
+
+    const ldcompress::FlacStreamInfo stream_info {
+        .min_block_size = static_cast<unsigned>(samples.size()),
+        .max_block_size = static_cast<unsigned>(samples.size()),
+        .min_frame_size = 0,
+        .max_frame_size = 0,
+        .sample_rate = 40000,
+        .channels = 1,
+        .bits_per_sample = 16,
+        .total_samples = samples.size(),
+        .md5 = md5_samples_s16le(samples),
+    };
+    ldcompress::write_native_flac_streaminfo(output, stream_info);
+
+    const auto frame_info = make_frame_info(
+        max_lpc_order, lpc_coefficient_precision, max_rice_partition_order);
+    return ldcompress::write_mono_best_frame(output, samples, frame_info, profile);
+}
+
 ldcompress::FlacSubframeDecision write_selected_file(
     const std::filesystem::path& flac_path,
     const std::vector<std::int32_t>& samples,
@@ -547,6 +578,12 @@ void verify_lpc_round_trip(
     require(stats.samples == samples.size(), "unexpected LPC decoded sample count");
     require(stats.output_bytes == expected.size(), "unexpected LPC decoded LDS byte count");
     require(decoded.str() == expected, "native LPC FLAC did not round-trip to expected LDS");
+}
+
+bool is_predictive(const ldcompress::FlacSubframeDecision& decision)
+{
+    return decision.kind == ldcompress::FlacSubframeKind::FixedRice ||
+        decision.kind == ldcompress::FlacSubframeKind::LpcRice;
 }
 
 void test_native_verbatim_round_trip()
@@ -963,6 +1000,65 @@ void test_native_lpc_analysis_surface()
         "native LPC analysis returned a candidate for a too-small block");
 }
 
+void test_native_mean_estimate_profiles()
+{
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+        ("ld-compress-ng-native-profile-test-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directory(temp_dir);
+
+    const auto samples = make_lpc_friendly_samples();
+    const auto order_mean = write_profiled_best_file(
+        temp_dir / "order-mean.flac",
+        samples,
+        ldcompress::NativeAnalysisProfile::OrderGuessMeanRice);
+    const auto order_estimate = write_profiled_best_file(
+        temp_dir / "order-estimate.flac",
+        samples,
+        ldcompress::NativeAnalysisProfile::OrderGuessMeanEstimateRice);
+    const auto subdivide_mean = write_profiled_best_file(
+        temp_dir / "subdivide-mean.flac",
+        samples,
+        ldcompress::NativeAnalysisProfile::SubdivideTukey3MeanRice);
+    const auto subdivide_estimate = write_profiled_best_file(
+        temp_dir / "subdivide-estimate.flac",
+        samples,
+        ldcompress::NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice);
+
+    require(is_predictive(order_mean),
+        "native order-guess mean Rice profile did not choose a predictive subframe");
+    require(is_predictive(order_estimate),
+        "native order-guess mean-estimate Rice profile did not choose a predictive subframe");
+    require(is_predictive(subdivide_mean),
+        "native subdivide mean Rice profile did not choose a predictive subframe");
+    require(is_predictive(subdivide_estimate),
+        "native subdivide mean-estimate Rice profile did not choose a predictive subframe");
+
+    require(order_mean.estimated_bits != order_estimate.estimated_bits,
+        "native order-guess mean-estimate profile still returned exact-recost bits");
+    require(subdivide_mean.estimated_bits != subdivide_estimate.estimated_bits,
+        "native subdivide mean-estimate profile still returned exact-recost bits");
+
+    const auto expected = pack_expected_lds(samples);
+    for (const auto path : {
+             temp_dir / "order-mean.flac",
+             temp_dir / "order-estimate.flac",
+             temp_dir / "subdivide-mean.flac",
+             temp_dir / "subdivide-estimate.flac",
+         }) {
+        std::ostringstream decoded;
+        const auto stats = ldcompress::decompress_flac_to_lds(path.string(), decoded);
+        require(stats.samples == samples.size(),
+            "native profiled writer decoded sample count mismatch");
+        require(stats.output_bytes == expected.size(),
+            "native profiled writer decoded LDS byte count mismatch");
+        require(decoded.str() == expected,
+            "native profiled writer FLAC did not round-trip to expected LDS");
+    }
+
+    std::filesystem::remove_all(temp_dir);
+}
+
 void test_native_streaminfo_and_frame_header_contract()
 {
     const auto temp_dir = std::filesystem::temp_directory_path() /
@@ -1217,6 +1313,7 @@ int main()
         test_native_best_subframe_selection();
         test_native_subframe_analysis_matches_writer();
         test_native_lpc_analysis_surface();
+        test_native_mean_estimate_profiles();
         test_native_streaminfo_and_frame_header_contract();
         test_native_encoder_streaminfo_block_bounds_for_short_tail();
         test_native_streaminfo_md5_mismatch_is_rejected();
