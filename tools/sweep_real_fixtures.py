@@ -114,6 +114,7 @@ class SweepConfig:
     analysis_profile: str
     include_opencl: bool
     opencl_device: str | None
+    reuse_opencl_session: bool
     include_vulkan: bool
     vulkan_device: str | None
     reuse_vulkan_session: bool
@@ -189,6 +190,8 @@ def bench_command(binary: Path, config: SweepConfig, fixture: Path) -> list[str]
     ]
     if config.include_opencl:
         command.append("--include-opencl")
+        if config.reuse_opencl_session:
+            command.append("--reuse-opencl-session")
         if config.opencl_device is not None:
             command.extend(["--opencl-device", config.opencl_device])
     if config.include_vulkan:
@@ -366,6 +369,9 @@ def write_markdown(
         output.write(f"- Rice partition orders: `{config.rice_partition_order}`\n")
         output.write(f"- Analysis profiles: `{config.analysis_profile}`\n")
         output.write(f"- OpenCL included: `{str(config.include_opencl).lower()}`\n")
+        output.write(
+            f"- OpenCL session reuse: `{str(config.reuse_opencl_session).lower()}`\n"
+        )
         if config.opencl_device is not None:
             output.write(f"- OpenCL device: `{config.opencl_device}`\n")
         output.write(f"- Vulkan included: `{str(config.include_vulkan).lower()}`\n")
@@ -509,6 +515,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=analysis_profile_arg)
     parser.add_argument("--include-opencl", action="store_true",
         help="include OpenCL backend rows in each bench run")
+    parser.add_argument("--reuse-opencl-session", action="store_true",
+        help="reuse one OpenCL analysis session across OpenCL bench rows")
     parser.add_argument("--opencl-device",
         help="flattened OpenCL device index to pass to bench when --include-opencl is set")
     parser.add_argument("--include-vulkan", action="store_true",
@@ -549,12 +557,15 @@ def main(argv: list[str]) -> int:
         analysis_profile=args.analysis_profile,
         include_opencl=args.include_opencl,
         opencl_device=args.opencl_device,
+        reuse_opencl_session=args.reuse_opencl_session,
         include_vulkan=args.include_vulkan,
         vulkan_device=args.vulkan_device,
         reuse_vulkan_session=args.reuse_vulkan_session,
     )
     if args.opencl_device is not None and not args.include_opencl:
         raise RuntimeError("--opencl-device requires --include-opencl")
+    if args.reuse_opencl_session and not args.include_opencl:
+        raise RuntimeError("--reuse-opencl-session requires --include-opencl")
     if args.vulkan_device is not None and not args.include_vulkan:
         raise RuntimeError("--vulkan-device requires --include-vulkan")
     if args.reuse_vulkan_session and not args.include_vulkan:

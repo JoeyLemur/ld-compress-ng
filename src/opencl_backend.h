@@ -6,12 +6,17 @@
 
 #include <cstddef>
 #include <iosfwd>
+#include <memory>
 #include <optional>
 #include <string>
 
 namespace ldcompress {
 
 struct NativeCompressionStats;
+
+namespace opencl_detail {
+class OpenClMonoAnalysisSession;
+}
 
 struct OpenClCompressionOptions {
     FlacContainer container = FlacContainer::Native;
@@ -24,6 +29,27 @@ struct OpenClCompressionOptions {
     NativeAnalysisProfile analysis_profile = NativeAnalysisProfile::Exact;
     std::optional<std::size_t> device_index;
     NativeCompressionStats* native_stats = nullptr;
+};
+
+class OpenClCompressionSession final {
+public:
+    explicit OpenClCompressionSession(
+        std::optional<std::size_t> requested_device_index = std::nullopt);
+    ~OpenClCompressionSession();
+
+    OpenClCompressionSession(const OpenClCompressionSession&) = delete;
+    OpenClCompressionSession& operator=(const OpenClCompressionSession&) = delete;
+
+    std::size_t device_index() const noexcept { return device_index_; }
+
+    ConversionStats compress_lds_to_native_flac(
+        std::istream& lds_input,
+        const std::string& output_path,
+        const OpenClCompressionOptions& options);
+
+private:
+    std::size_t device_index_ = 0;
+    std::unique_ptr<opencl_detail::OpenClMonoAnalysisSession> analysis_session_;
 };
 
 ConversionStats compress_lds_to_opencl_native_flac(

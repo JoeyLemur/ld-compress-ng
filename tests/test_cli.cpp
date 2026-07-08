@@ -538,8 +538,13 @@ void test_cli(const std::filesystem::path& exe)
             std::to_string(*opencl_device_index) +
             " --threads 1 --frame-samples 2048 --lpc-order 0,12 --lpc-precision 12 --rice-partition-order 5 " +
             shell_quote(lds));
+        run_ok(shell_quote(exe) + " bench --include-opencl --reuse-opencl-session --device " +
+            std::to_string(*opencl_device_index) +
+            " --threads 1 --frame-samples 2048 --lpc-order 0 --lpc-precision 12 --rice-partition-order 5 " +
+            shell_quote(lds));
     } else {
         run_ok(shell_quote(exe) + " bench --include-opencl --threads 1 --frame-samples 2048 --lpc-order 0 --lpc-precision 12 --rice-partition-order 5 " + shell_quote(lds));
+        run_ok(shell_quote(exe) + " bench --include-opencl --reuse-opencl-session --threads 1 --frame-samples 2048 --lpc-order 0 --lpc-precision 12 --rice-partition-order 5 " + shell_quote(lds));
     }
     run_ok(shell_quote(exe) + " bench --include-opencl --device 999999 --threads 1 --frame-samples 2048 --lpc-order 0 --lpc-precision 12 --rice-partition-order 5 " + shell_quote(lds));
     if (vulkan_device_index.has_value()) {
@@ -559,6 +564,7 @@ void test_cli(const std::filesystem::path& exe)
     run_fails(shell_quote(exe) + " bench --include-opencl --include-vulkan --device 0 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --device 0 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --vulkan-device 0 " + shell_quote(lds));
+    run_fails(shell_quote(exe) + " bench --reuse-opencl-session " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --reuse-vulkan-session " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --threads 0 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --threads 1,,2 " + shell_quote(lds));

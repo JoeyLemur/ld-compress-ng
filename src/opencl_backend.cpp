@@ -219,7 +219,95 @@ void validate_opencl_options(const OpenClCompressionOptions& options)
     }
 }
 
+void validate_opencl_session_device(
+    const OpenClCompressionOptions& options,
+    std::size_t session_device_index)
+{
+    if (!options.device_index.has_value()) {
+        return;
+    }
+    if (*options.device_index != session_device_index) {
+        throw std::runtime_error("OpenCL compression session device does not match requested OpenCL device");
+    }
+}
+
+ConversionStats compress_lds_to_opencl_native_flac_with_session(
+    std::istream& lds_input,
+    const std::string& output_path,
+    const OpenClCompressionOptions& options,
+    opencl_detail::OpenClMonoAnalysisSession* generated_session,
+    Clock::time_point total_started)
+{
+    const auto device_index = options.device_index;
+
+    const AcceleratedNativeCompressionOptions accelerated_options {
+        .backend_label = "OpenCL",
+        .container = options.container,
+        .sample_rate = options.sample_rate,
+        .thread_count = options.thread_count,
+        .frame_samples = options.frame_samples,
+        .max_lpc_order = options.max_lpc_order,
+        .lpc_precision = options.lpc_precision,
+        .max_rice_partition_order = options.max_rice_partition_order,
+        .batch_frames = kOpenClBatchFrames,
+        .native_stats = options.native_stats,
+    };
+
+    auto stats = compress_lds_to_accelerated_native_flac(
+        lds_input,
+        output_path,
+        accelerated_options,
+        [device_index, generated_session,
+            analysis_profile = options.analysis_profile,
+            native_stats = options.native_stats](
+            const std::vector<std::int32_t>& samples,
+            const FlacFrameInfo& frame_info,
+            unsigned frame_samples) {
+            return analyze_opencl_selected_frames(
+                samples, frame_info, frame_samples, device_index, generated_session,
+                analysis_profile, native_stats);
+        });
+    if (options.native_stats != nullptr) {
+        add_elapsed_ns(options.native_stats->accelerated_total_ns, total_started);
+    }
+    return stats;
+}
+
 }  // namespace
+
+OpenClCompressionSession::OpenClCompressionSession(
+    std::optional<std::size_t> requested_device_index)
+{
+    const auto selected_device = select_opencl_device(requested_device_index);
+    device_index_ = selected_device.flat_index;
+    analysis_session_ =
+        std::make_unique<opencl_detail::OpenClMonoAnalysisSession>(
+            std::optional<std::size_t>(device_index_));
+}
+
+OpenClCompressionSession::~OpenClCompressionSession() = default;
+
+ConversionStats OpenClCompressionSession::compress_lds_to_native_flac(
+    std::istream& lds_input,
+    const std::string& output_path,
+    const OpenClCompressionOptions& options)
+{
+    const auto total_started = Clock::now();
+    OpenClCompressionOptions session_options = options;
+    if (!session_options.device_index.has_value()) {
+        session_options.device_index = device_index_;
+    }
+    validate_opencl_options(session_options);
+    validate_opencl_session_device(session_options, device_index_);
+    if (session_options.max_lpc_order == 0) {
+        (void)select_opencl_device(session_options.device_index);
+    }
+    if (session_options.native_stats != nullptr) {
+        add_elapsed_ns(session_options.native_stats->accelerated_setup_ns, total_started);
+    }
+    return compress_lds_to_opencl_native_flac_with_session(
+        lds_input, output_path, session_options, analysis_session_.get(), total_started);
+}
 
 ConversionStats compress_lds_to_opencl_native_flac(
     std::istream& lds_input,
@@ -246,37 +334,8 @@ ConversionStats compress_lds_to_opencl_native_flac(
         add_elapsed_ns(options.native_stats->accelerated_setup_ns, total_started);
     }
 
-    const AcceleratedNativeCompressionOptions accelerated_options {
-        .backend_label = "OpenCL",
-        .container = options.container,
-        .sample_rate = options.sample_rate,
-        .thread_count = options.thread_count,
-        .frame_samples = options.frame_samples,
-        .max_lpc_order = options.max_lpc_order,
-        .lpc_precision = options.lpc_precision,
-        .max_rice_partition_order = options.max_rice_partition_order,
-        .batch_frames = kOpenClBatchFrames,
-        .native_stats = options.native_stats,
-    };
-
-    auto stats = compress_lds_to_accelerated_native_flac(
-        lds_input,
-        output_path,
-        accelerated_options,
-        [device_index, generated_session_ptr = generated_session.get(),
-            analysis_profile = options.analysis_profile,
-            native_stats = options.native_stats](
-            const std::vector<std::int32_t>& samples,
-            const FlacFrameInfo& frame_info,
-            unsigned frame_samples) {
-            return analyze_opencl_selected_frames(
-                samples, frame_info, frame_samples, device_index, generated_session_ptr,
-                analysis_profile, native_stats);
-        });
-    if (options.native_stats != nullptr) {
-        add_elapsed_ns(options.native_stats->accelerated_total_ns, total_started);
-    }
-    return stats;
+    return compress_lds_to_opencl_native_flac_with_session(
+        lds_input, output_path, options, generated_session.get(), total_started);
 }
 
 }  // namespace ldcompress
