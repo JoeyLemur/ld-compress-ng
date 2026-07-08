@@ -31,9 +31,9 @@ Install the baseline CPU build dependencies with Homebrew:
 brew install cmake pkg-config flac libogg
 ```
 
-Xcode Command Line Tools provide AppleClang and the macOS SDK. The SDK also
-provides the deprecated but still linkable OpenCL framework used by the optional
-`devices` command. If OpenCL is unavailable or intentionally unwanted, configure
+Xcode Command Line Tools provide AppleClang and the macOS SDK. The SDK may also
+provide the deprecated but still linkable OpenCL framework used by optional
+OpenCL support. If OpenCL is unavailable or intentionally unwanted, configure
 with `-DLDCOMPRESS_ENABLE_OPENCL=OFF`.
 
 Apple has deprecated OpenCL and current macOS systems may build the OpenCL path
@@ -279,8 +279,11 @@ Compression still defaults to one thread unless `--threads` is specified. Use
 the scalar native backend as a reference/debug oracle for tuning and writer
 coverage; use CPU/libFLAC for normal CPU-only compression. OpenCL and Vulkan use
 the same native tuning options, and `--threads` parallelizes their CPU
-selected-frame writer after GPU analysis.
-Vulkan exact-costs fixed/Rice and GPU-generated LPC candidates. Use `--stats`
+selected-frame writer after GPU analysis. The normal `compress` command uses the
+exact native analysis profile; faster order-guess and mean-Rice profiles are
+available through `bench` and the sweep helper for tuning work.
+Vulkan exact-costs fixed/Rice and GPU-generated LPC candidates in the normal
+compression path. Use `--stats`
 on native/OpenCL/Vulkan compression when investigating backend behavior;
 accelerated backends also print coarse timing splits for setup, ingest, analyzer,
 selected-frame writing, and accelerator plan/exact-analysis stages. Vulkan
@@ -439,12 +442,15 @@ python3 tools/sweep_real_fixtures.py \
 ```
 
 The default sweep is intentionally focused: frame size `4608`, LPC orders
-`10,12`, LPC coefficient precisions `10,12`, Rice partition order `5`, and `8`
-native threads. Add `--include-opencl` and optionally `--opencl-device INDEX` to include
-OpenCL backend rows in the CSV/Markdown output when an OpenCL device is
-available. Add `--include-vulkan` and optionally `--vulkan-device INDEX` to
-include Vulkan backend rows; on mixed-GPU hosts, pass the discrete GPU index so
-the run does not land on an integrated GPU. Expand the grid explicitly when
+`10,12`, LPC coefficient precisions `10,12`, Rice partition order `5`, exact
+analysis, and `8` native threads. Add `--include-opencl` and optionally
+`--opencl-device INDEX` to include OpenCL backend rows in the CSV/Markdown
+output when an OpenCL device is available. Add `--include-vulkan` and optionally
+`--vulkan-device INDEX` to include Vulkan backend rows; on mixed-GPU hosts, pass
+the discrete GPU index so the run does not land on an integrated GPU. For
+accelerator speed sweeps, `--reuse-opencl-session` and
+`--reuse-vulkan-session` reuse one analysis session across rows and avoid
+charging device setup to every benchmark case. Expand the grid explicitly when
 doing a broader local tuning pass:
 
 ```sh
@@ -453,7 +459,8 @@ python3 tools/sweep_real_fixtures.py \
     --frame-samples 2304,4608 \
     --lpc-order 8,10,12 \
     --lpc-precision 8,10,12,14 \
-    --rice-partition-order 4,5,6
+    --rice-partition-order 4,5,6 \
+    --analysis-profile exact,order-guess-mean-estimate-rice
 ```
 
 Use `--dry-run` to print the generated `bench` commands and `--limit N` for a
@@ -463,14 +470,21 @@ quick subset check. The helper depends only on Python 3 stdlib, the built
 After adding Tukey-windowed LPC analysis candidates plus high-order
 Welch-windowed candidates and retuning over the six current real fixtures, frame
 size `4608`, LPC order `12`, LPC coefficient precision `12`, and Rice partition
-order `5` are the current native reference settings. In the latest pinned sweep,
-raw LDS inputs total `149,954,560` bytes, CPU/libFLAC outputs total
-`80,086,984` bytes, scalar native-fixed outputs total `79,867,690` bytes, and
-OpenCL outputs total `79,952,087` bytes. The latest Vulkan sweep on NVIDIA
-device `1` outputs `79,892,217` bytes. Scalar native-fixed is useful as a size
-and decision oracle, but CPU/libFLAC remains the recommended CPU-only encoder;
-keep Rice partition order `5` as the default native speed/size tradeoff unless
-a future sweep justifies changing it.
+order `5` remain the exact-analysis native reference settings for normal
+compression. In the pinned exact sweep, raw LDS inputs total `149,954,560`
+bytes, CPU/libFLAC outputs total `80,086,984` bytes, scalar native-fixed outputs
+total `79,867,690` bytes, and OpenCL outputs total `79,952,087` bytes.
+
+The current speed-focused sweep is
+`build/real-fixture-sweeps/real-fixture-sweep-20260708-130758.{csv,md}`. It used
+`threads=8`, `frame=4608`, `lpc=12`, `prec=12`, Rice orders `5,6`,
+`analysis-profile=order-guess-mean-estimate-rice`, and OpenCL/Vulkan session
+reuse. Across the six local real fixtures, the best speed-profile rows were:
+native-fixed Rice order `6` at `79,926,901` bytes in `1.735` seconds, OpenCL
+Rice order `6` at `79,946,987` bytes in `0.828` seconds, and Vulkan Rice order
+`6` at `79,946,934` bytes in `0.810` seconds. Scalar native-fixed is useful as
+a size and decision oracle, but CPU/libFLAC remains the recommended CPU-only
+encoder.
 
 ## Legacy Fixture Regeneration
 

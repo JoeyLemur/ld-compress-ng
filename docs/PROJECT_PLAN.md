@@ -2,34 +2,34 @@
 
 ## Summary
 
-This project will replace the existing `ld-compress` shell pipeline with a targeted,
-self-contained compression tool for LaserDisc RF captures. The new project should
-focus only on compression, decompression, verification, and the LDS sample-format
+This project replaces the existing `ld-compress` shell pipeline with a targeted,
+self-contained compression tool for LaserDisc RF captures. The project focuses
+only on compression, decompression, verification, and the LDS sample-format
 conversion needed for those operations.
 
 The preferred implementation is a C++20/CMake command-line tool that targets Linux
 and macOS on both arm64 and amd64/x86_64 CPUs. It should avoid depending at
 runtime on `ffmpeg`, `.NET`, Mono, `flaldf`, `pv`, `openssl`, `xxd`, or an
 external `ld-lds-converter` command. System libraries such as `libFLAC`,
-`libogg`, and OpenCL are acceptable.
+`libogg`, OpenCL, and Vulkan are acceptable.
 
 ## Reference And Legacy State
 
 - `ld-compress` is a shell script that orchestrates several external tools.
-- CPU compression currently streams LDS input through `ld-lds-converter -u`, then
+- Legacy CPU compression streams LDS input through `ld-lds-converter -u`, then
   through `ffmpeg` as signed 16-bit mono PCM at 40 kHz, producing Ogg FLAC output.
-- GPU compression currently streams LDS input through `ld-lds-converter -r -u`,
+- Legacy GPU compression streams LDS input through `ld-lds-converter -r -u`,
   then through `flaldf`, producing native FLAC-style `.flac.ldf` output.
 - Decompression streams compressed input through `ffmpeg`, then repacks the
   resulting signed 16-bit PCM with `ld-lds-converter -p`.
 - Verification computes hashes over both the compressed file and the decompressed,
   repacked LDS data.
 - `FlaLDF/` contains the C# and OpenCL GPU encoder implementation that should be
-  treated first as a reference implementation, then as a source for a later native
-  OpenCL backend.
+  treated as a reference implementation and source for native OpenCL backend
+  work.
 - `ld-decode-tools/` contains the LDS sample converter logic. The relevant
-  conversion itself is small and should be lifted into this project without
-  bringing along the full Qt-based `ld-decode-tools` build.
+  conversion itself has been lifted into this project without bringing along the
+  full Qt-based `ld-decode-tools` build.
 - `reference/testdata/` contains ignored real `.lds` fixtures from
   `ld-decode-testdata-ci` for opt-in regression and tuning sweeps.
 - `reference/ld-decode/` contains the upstream RF decoder and is the direct
@@ -80,7 +80,7 @@ Implemented:
 - Native wasted-bits support for the low zero bits in LDS-derived PCM.
 - Rice partition search, scalar LPC order search, LPC coefficient precision
   control, and frame sample count control.
-- Public scalar `analyze_mono_best_frame()` decision surface for future OpenCL
+- Public scalar `analyze_mono_best_frame()` decision surface for accelerator
   analysis parity tests, without exposing private residual or subframe structs.
 - FLACCL-compatible mono OpenCL analysis task ABI, selected-task plan builder,
   and device-free tests for the host-side task layout.
@@ -107,8 +107,8 @@ Implemented:
   best-method selection.
 - Hardware-optional OpenCL mono LPC autocorrelation/coefficient generation for
   one-window all-order task groups, feeding the exact residual/Rice analyzer.
-- Device-free scalar generated-LPC task oracle for the current one-window
-  OpenCL path, plus hardware-optional validation of generated order, shift,
+- Device-free scalar generated-LPC task oracle for the early one-window OpenCL
+  path, plus hardware-optional validation of generated order, shift,
   coefficient precision, coefficient ordering, and exact-analysis stability.
 - Hardware-optional mixed OpenCL generated analysis for encoder-shaped mono
   task groups, combining generated LPC orders with constant and fixed
@@ -125,7 +125,7 @@ Implemented:
   compression gain without the full scalar runtime cost.
 - Encoder-facing OpenCL generated frame analysis wrapper that builds mixed
   mono task plans from frame samples and maps best FLACCL tasks to native
-  `FlacSubframeDecision` records for future writer integration.
+  `FlacSubframeDecision` records for writer integration.
 - Native selected-subframe writer bridge that can write exact OpenCL-selected
   constant, fixed/Rice, and LPC/Rice subframes without exposing private writer
   residual/Rice structures, including hardware-optional OpenCL-selected native
@@ -206,7 +206,7 @@ Current default native tuning values:
 Real-fixture sweep result:
 
 - Broad sweep artifact paths are under ignored `build/real-fixture-sweeps/`.
-- Latest pinned current-default comparison:
+- Pinned exact current-default comparison:
   `build/real-fixture-sweeps/real-fixture-sweep-20260705-102155.{csv,md}`.
 - Current default target across the six local real fixtures:
   `threads=1`, `frame=4608`, `lpc=12`, `prec=12`, `rice=5`.
@@ -214,13 +214,13 @@ Real-fixture sweep result:
   candidates: `79,867,690` bytes, about `-0.27%` smaller than CPU/libFLAC for
   the same fixtures. The broader scalar all-order Welch experiment reached
   `79,865,754` bytes but took `274.760` sweep seconds; the top-two-order shape
-  keeps nearly the same size result at `210.522` sweep seconds in the latest
+  keeps nearly the same size result at `210.522` sweep seconds in that
   pinned comparison.
 - Aggregate OpenCL size after adding Tukey plus two high-order Welch generated
   LPC candidates: `79,952,087` bytes, about `-0.17%` smaller than CPU/libFLAC
   and down from the Tukey-only OpenCL aggregate of `80,443,214` bytes
   (`+0.44%`) and the pre-Tukey OpenCL aggregate of `81,217,362` bytes
-  (`+1.41%`). In the latest pinned comparison, OpenCL took `182.213` sweep
+  (`+1.41%`). In that pinned comparison, OpenCL took `182.213` sweep
   seconds versus CPU/libFLAC at `2.414` seconds and scalar native-fixed at
   `210.522` seconds.
 - Current default aggregate decision stats: scalar native-fixed and OpenCL both
@@ -275,7 +275,7 @@ Real-fixture sweep result:
   followed by `verify --source` matches the original LDS MD5, and OpenCL
   selected subframes recost exactly through the native writer
   (`opencl_recost_delta_bits=0`, `opencl_recost_mismatches=0`).
-- Across the latest six-fixture sweep, the raw LDS inputs total
+- Across that six-fixture exact sweep, the raw LDS inputs total
   `149,954,560` bytes, CPU/libFLAC outputs total `80,086,984` bytes, scalar
   native-fixed outputs total `79,867,690` bytes, and OpenCL outputs total
   `79,952,087` bytes. OpenCL is smaller than CPU/libFLAC by `134,897` bytes and
@@ -283,15 +283,15 @@ Real-fixture sweep result:
   now; stop OpenCL LPC parity tuning unless a future task explicitly chooses a
   higher-compression or higher-precision OpenCL design.
 
-## 1.1 Vulkan Acceleration Checkpoint
+## 1.1 Vulkan Acceleration History
 
-The 1.1 development branch targets Linux-first Vulkan compute acceleration for
+The 1.1 development branch targeted Linux-first Vulkan compute acceleration for
 native FLAC compression. NVIDIA is the local validation target; AMD support is a
 design requirement through standard Vulkan compute features, but is not a
 release-blocking hardware validation requirement until AMD hardware is
 available.
 
-Implemented for the first 1.1 checkpoint:
+Implemented during the first 1.1 checkpoint:
 
 - Optional `LDCOMPRESS_ENABLE_VULKAN` CMake plumbing. Vulkan support is enabled
   only when Vulkan development files and `glslangValidator` are found; otherwise
@@ -386,10 +386,10 @@ Implemented for the first 1.1 checkpoint:
   alias, backend-specific `--opencl-device`/`--vulkan-device` selectors, and
   the `bench` ambiguity rule.
 
-Remaining Vulkan work:
+Post-checkpoint Vulkan/OpenCL performance history:
 
 - Treat Vulkan/OpenCL throughput as an architecture problem before any
-  shader-level micro-tuning. Current NVIDIA RTX 5070 Ti timings on
+  shader-level micro-tuning. Earlier NVIDIA RTX 5070 Ti timings on
   `ntsc/issue176.lds` after the Vulkan best-task-only readback, 128-frame
   batching, device-local buffer placement, shared writer-copy cleanup, GPU
   queue timestamp instrumentation, one-pass Rice-parameter costing, prepared
@@ -464,8 +464,9 @@ Remaining Vulkan work:
   opencl --stats` run improved from about `10.30` wall seconds
   (`46` batches, `9.735` analyzer seconds) to about `3.18` wall seconds
   (`12` batches, `2.587` exact-analysis seconds) with unchanged `4,298,234`
-  byte output. The matching bench row improved to `2.969` seconds. Remaining
-  OpenCL time is now dominated by the exact residual/Rice kernel shape, not
+  byte output. The matching bench row improved to `2.969` seconds. At that
+  point, remaining OpenCL time was dominated by the exact residual/Rice kernel
+  shape, not
   writer work, host allocation churn, or full-task readback; the next OpenCL
   performance step is a bounded parallel exact/Rice analysis kernel pass,
   modeled after the Vulkan workgroup reduction design.
@@ -494,7 +495,7 @@ Remaining Vulkan work:
   autocorrelation and `0.126` analyzer seconds total, down from `0.587` and
   `0.702` respectively. The matching no-stats bench row improved to `0.516`
   seconds with `4,291,949` byte output, source verification passed, and this is
-  slightly smaller/faster than the current Vulkan row on that fixture
+  slightly smaller/faster than the then-current Vulkan row on that fixture
   (`4,292,100` bytes in `0.715` seconds). The largest remaining OpenCL time is
   now outside generated analysis, primarily selected-frame writer work and
   backend/host overhead.
@@ -634,9 +635,9 @@ Validation status for the wrap-up checkpoint:
 Immediate engineering focus:
 
 - Move on from OpenCL LPC parity tuning. Keep the Linux/NVIDIA OpenCL path under
-  regression coverage, continue the Linux-first Vulkan 1.1 backend, treat Metal
-  for macOS as a later optional backend, and reopen OpenCL tuning only for an
-  explicit higher-compression or higher-speed design pass.
+  regression coverage, keep the Linux-first Vulkan backend covered, treat Metal
+  for macOS as a later optional backend, and reopen accelerator tuning only for
+  an explicit higher-compression or higher-speed design pass.
 - Continue native FLAC compatibility hardening using `reference/rfc9639.txt`
   and `reference/flac/` as read-only references.
 - Use `reference/ld-decode/` as the direct compatibility target for compressed
@@ -679,8 +680,7 @@ Immediate engineering focus:
 
 ## Recommendation
 
-Build a single native CLI, tentatively named `ld-compress-ng`, using C++20 and
-CMake.
+Build a single native CLI named `ld-compress-ng`, using C++20 and CMake.
 
 C++ is the best fit for this targeted project because:
 
@@ -704,17 +704,18 @@ ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl|vulka
 ld-compress-ng decompress INPUT [OUTPUT]
 ld-compress-ng verify INPUT [--source ORIGINAL.lds]
 ld-compress-ng convert --pack|--unpack INPUT [OUTPUT]
-ld-compress-ng bench [--threads 8] [--include-opencl] [--include-vulkan] INPUT
+ld-compress-ng bench [--threads 8] [--analysis-profile NAME[,NAME...]]
+                     [--include-opencl] [--include-vulkan]
+                     [--reuse-opencl-session] [--reuse-vulkan-session] INPUT
 ld-compress-ng devices
 ```
 
-Initial behavior:
+Implemented behavior:
 
 - `compress` defaults to CPU compression using Ogg FLAC-compatible `.ldf` output.
-- `compress --backend cpu|native-verbatim|native-fixed|opencl|vulkan` should
-  select between the implemented CPU/libFLAC path, reference/debug native FLAC
-  writer paths, the OpenCL-native FLAC encoder, and the Linux-first Vulkan
-  encoder.
+- `compress --backend cpu|native-verbatim|native-fixed|opencl|vulkan` selects
+  between the implemented CPU/libFLAC path, reference/debug native FLAC writer
+  paths, the OpenCL-native FLAC encoder, and the Linux-first Vulkan encoder.
 - `decompress` accepts existing `.ldf`, `.raw.oga`, and `.flac.ldf` inputs where
   supported by the implemented decoder path.
 - `verify` reports hashes for the compressed input and the decompressed/repacked
@@ -724,21 +725,22 @@ Initial behavior:
 - `bench` compares the CPU/libFLAC path with native FLAC backends across selected
   thread counts, using temporary outputs so performance and compression-ratio
   checks do not require hand-managed files. It supports native tuning sweeps over
-  frame size, LPC order, LPC coefficient precision, Rice partition order, and
-  thread count, plus opt-in OpenCL and Vulkan rows with `--include-opencl`
-  and `--include-vulkan`.
+  frame size, LPC order, LPC coefficient precision, Rice partition order,
+  analysis profile, and thread count, plus opt-in OpenCL and Vulkan rows with
+  `--include-opencl` and `--include-vulkan`. Accelerator sweeps can reuse one
+  analysis session per backend with `--reuse-opencl-session` and
+  `--reuse-vulkan-session`.
 - `devices` lists available OpenCL and Vulkan devices when support is built and
   provides the backend-local indexes used by accelerated compression.
 
-Default output naming should preserve existing conventions unless explicitly
+Default output naming preserves existing conventions unless explicitly
 overridden:
 
 - CPU compressed output: `INPUT_BASENAME.ldf`
-- Native FLAC output, including GPU compressed output later: `INPUT_BASENAME.flac.ldf`
+- Native FLAC output, including accelerated output: `INPUT_BASENAME.flac.ldf`
 - Decompressed output: `INPUT_BASENAME.lds`
 
-The tool should refuse to overwrite existing outputs unless `--overwrite` is
-provided.
+The tool refuses to overwrite existing outputs unless `--overwrite` is provided.
 
 ## Implementation Phases
 
@@ -786,8 +788,11 @@ provided.
   into unbounded memory use. Done.
 - Improve scalar native LPC/Rice compression enough to close the remaining
   CPU/libFLAC gap on real fixtures before starting the OpenCL port in earnest.
-- Port FlaLDF host-side encoder logic to native C++.
-- Reuse or adapt the existing OpenCL kernel from `FlaLDF/`.
+  Done for the current exact native reference path.
+- Port FlaLDF/FLACCL-style host-side encoder logic to native C++. Done for the
+  mono RF analysis/compression path used by OpenCL and Vulkan.
+- Reuse or adapt the existing OpenCL kernel from `FlaLDF/`. Done for the
+  current fixed/LPC generated analysis kernels, with local LGPL notices kept.
 - Start the GPU port with a mono OpenCL analysis path that compares
   wasted-bits, fixed/LPC, Rice partition, and best-method decisions against the
   scalar native-fixed encoder before exposing GPU residual/Rice bitstream
@@ -810,17 +815,18 @@ provided.
   tasks against the scalar oracle, including multi-order task groups and
   best-method selection. Done for a first mono one-window OpenCL LPC
   autocorrelation/coefficient-generation path that fills all order slots before
-  exact residual/Rice analysis. FLACCL-style multi-window generation, heuristic
-  order/precision pruning, and integration into the encoder path still need to
-  be ported. Kernel code copied or adapted from FLACCL must keep the original
-  LGPL-2.1-or-later notices and local modification notes. The current
+  exact residual/Rice analysis. Done for the current encoder-shaped generated
+  task set, including rectangular, Tukey, high-order Welch, order-guess, and
+  mean-Rice speed-profile variants used by benchmark sweeps. Kernel code copied
+  or adapted from FLACCL must keep the original LGPL-2.1-or-later notices and
+  local modification notes. The current
   fixed/constant, pre-populated LPC, generated-LPC, and encoder-facing OpenCL
   compression tests have been validated on Linux/NVIDIA hardware; macOS
   currently has no local OpenCL device for runtime kernel validation.
 - Extend the initial OpenCL platform/device enumeration into explicit device
   selection for GPU compression. Done for CLI plumbing, metadata selection, and
   the OpenCL-native FLAC compression backend.
-- Add the `devices` subcommand. Done for enumeration scaffolding.
+- Add the `devices` subcommand. Done for grouped OpenCL and Vulkan enumeration.
 - Preserve current GPU-style native FLAC `.flac.ldf` output unless a deliberate
   format migration is chosen later.
 - Treat Metal support on macOS as a later optional backend after the OpenCL path
@@ -829,7 +835,7 @@ provided.
 ### Phase 3: Hardening and Packaging
 
 - Maintain Linux and macOS build documentation, including the required CPU
-  dependency set and optional OpenCL packages.
+  dependency set and optional OpenCL/Vulkan packages.
 - Add CI or a local equivalent for generated fixtures. Done for a local helper
   that covers default, no-OpenCL, optional FLAC-testbench, and optional
   real-fixture validation lanes.
@@ -844,7 +850,7 @@ provided.
   compression defaults. Done for the first default precision change and the
   Tukey-windowed LPC retune; repeat before future default changes.
 - Document compatibility with historical `.ldf`, `.raw.oga`, and `.flac.ldf`
-  files.
+  files. Done in the README, build/testing notes, and compatibility tests.
 - Consider CPU-specific optimizations such as SIMD or tuned block processing only
   after the portable CPU path has compatibility coverage on arm64 and
   amd64/x86_64.

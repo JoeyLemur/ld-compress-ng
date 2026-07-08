@@ -68,10 +68,10 @@ package names include `ocl-icd-opencl-dev`/`opencl-headers` on Debian/Ubuntu,
 Arch.
 
 For the Vulkan backend, install Vulkan development headers, the loader,
-`glslangValidator`, and a vendor Vulkan runtime. Vulkan is Linux-first for 1.1;
-the backend supports `--backend vulkan` and requires a compute-capable non-CPU
-device with `shaderInt64` unless you explicitly select a CPU Vulkan device for
-functional testing.
+`glslangValidator`, and a vendor Vulkan runtime. Vulkan acceleration is
+Linux-first; the backend supports `--backend vulkan` and requires a
+compute-capable non-CPU device with `shaderInt64` unless you explicitly select
+a CPU Vulkan device for functional testing.
 
 ### macOS
 
@@ -220,6 +220,11 @@ build/ld-compress-ng bench --threads 8 capture.lds
 build/ld-compress-ng bench --threads 8 --include-opencl --opencl-device INDEX capture.lds
 build/ld-compress-ng bench --threads 8 --include-vulkan --vulkan-device INDEX capture.lds
 ```
+
+`bench` also accepts comma-separated native tuning grids, `--analysis-profile`,
+and `--reuse-opencl-session`/`--reuse-vulkan-session` for local sweep work. The
+normal `compress` command keeps the exact native analysis profile; the faster
+analysis profiles are benchmarking/tuning controls.
 
 Convert between packed LDS and signed 16-bit little-endian mono PCM:
 

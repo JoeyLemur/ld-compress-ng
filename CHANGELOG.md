@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Improved accelerated native-FLAC throughput with reusable OpenCL analysis
+  sessions, OpenCL selected Rice-parameter handoff, larger OpenCL compression
+  batches, pipelined accelerator ingest/analyze/write flow, and faster selected
+  writer bitstream paths.
+- Added benchmark/sweep support for native analysis profiles, including
+  order-guess and mean-Rice speed profiles, plus OpenCL/Vulkan session reuse for
+  multi-row accelerator sweeps.
+- Documented the current 2026-07-08 real-fixture speed sweep and refreshed
+  maintainer-facing notes so post-1.1 work is not hidden behind the release
+  handoff.
+
 ## 1.1.0 - 2026-07-07
 
 - Added the Linux-first Vulkan native FLAC acceleration backend, using Vulkan

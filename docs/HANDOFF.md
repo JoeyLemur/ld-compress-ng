@@ -1,6 +1,7 @@
 # Handoff Notes
 
-Last updated: 2026-07-07, immediately after publishing `v1.1.0`.
+Last updated: 2026-07-08, after the post-1.1 accelerator performance pass and
+documentation review.
 
 This file is for maintainer/agent continuity. It is intentionally not installed
 by CMake; release-facing installed docs are listed explicitly in
@@ -8,16 +9,51 @@ by CMake; release-facing installed docs are listed explicitly in
 
 ## Current Repository State
 
-- Active branch after release: `main`.
-- `main` and `origin/main` point to `25f71cd842d4e4aa12e911a320484a5f98049975`
+- Active branch: `main`.
+- `origin/main` still points to the published `v1.1.0` release commit
+  `25f71cd842d4e4aa12e911a320484a5f98049975`
   (`Finalize 1.1 release readiness docs`).
-- Local branch `codex/vulkan-1.1` still points at the same commit as `main`.
-  It can be kept as history context or deleted later.
+- Local `main` has post-release work on top of `v1.1.0`. The performance
+  wrap-up commit before this documentation review was `v1.1.0-29-g4212ebc`
+  (`Document performance pass wrap-up`); this review adds one follow-up docs
+  commit on top.
+- Local branch `codex/vulkan-1.1` still exists as release-branch history
+  context. It can be kept or deleted later.
 - Annotated tag `v1.1.0` has been pushed to origin.
 - GitHub release was created as source-only, with no binary assets:
   `https://github.com/JoeyLemur/ld-compress-ng/releases/tag/v1.1.0`
 - Project version is `1.1.0` in `CMakeLists.txt`; `ld-compress-ng --version`
   prints `ld-compress-ng 1.1.0`.
+
+## Post-1.1 Mainline Work
+
+- Added benchmark/sweep-only native analysis profiles, including order-guess
+  and mean-Rice speed profiles. The normal `compress` command still uses exact
+  native analysis.
+- Improved OpenCL throughput with selected Rice-parameter handoff, reusable
+  generated-analysis sessions, larger accepted compression batches, and
+  cooperative generated autocorrelation.
+- Pipelined the shared accelerated host flow so the host can ingest/MD5 the next
+  batch while the GPU analyzes one batch and then write the previous analyzed
+  frames in order.
+- Retained Vulkan/OpenCL compatibility through the shared native writer while
+  improving accelerator sweep throughput.
+
+Current accepted speed-focused reference:
+
+- Sweep artifact:
+  `build/real-fixture-sweeps/real-fixture-sweep-20260708-130758.{csv,md}`.
+- Sweep shape: `threads=8`, `frame=4608`, `lpc=12`, `prec=12`, Rice orders
+  `5,6`, `analysis-profile=order-guess-mean-estimate-rice`, OpenCL/Vulkan
+  session reuse enabled.
+- Six-fixture aggregate rows:
+  CPU/libFLAC `80,086,984` bytes in `2.440` seconds; native-fixed Rice order
+  `6` `79,926,901` bytes in `1.735` seconds; OpenCL Rice order `6`
+  `79,946,987` bytes in `0.828` seconds; Vulkan Rice order `6`
+  `79,946,934` bytes in `0.810` seconds.
+- Validation for the wrap-up checkpoint: `cmake --build build` passed, full
+  GPU-visible `ctest --test-dir build --output-on-failure` passed with `21/21`
+  tests, and the final focused sweep above completed.
 
 ## What 1.1 Shipped
 
@@ -32,7 +68,7 @@ by CMake; release-facing installed docs are listed explicitly in
 - Release/docs cleanup, including LGPL/CUETools notice coverage for the Vulkan
   shader path.
 
-## Final Validation That Passed
+## 1.1 Release Validation That Passed
 
 Required release gate:
 
@@ -142,9 +178,30 @@ Native tuning defaults:
 - `--threads 1` by default
 
 For routine OpenCL/Vulkan benchmark comparisons, use `--threads 8`. OpenCL and
-Vulkan still default to one thread, but additional threads parallelize the CPU
-selected-frame writer after GPU analysis. Use CPU/libFLAC for normal CPU-only
-compression; use `native-fixed` when scalar reference behavior is needed.
+Vulkan still default to one thread for `compress`, but additional threads
+parallelize the CPU selected-frame writer after GPU analysis. Use CPU/libFLAC
+for normal CPU-only compression; use `native-fixed` when scalar reference
+behavior is needed.
+
+Speed-profile sweep command shape:
+
+```sh
+python3 tools/sweep_real_fixtures.py \
+    --binary build/ld-compress-ng \
+    --fixtures reference/testdata/ld-decode-testdata-ci/1cf698d2025e8515e9ef57e34adaf85a194da96a \
+    --threads 8 \
+    --frame-samples 4608 \
+    --lpc-order 12 \
+    --lpc-precision 12 \
+    --rice-partition-order 5,6 \
+    --analysis-profile order-guess-mean-estimate-rice \
+    --include-opencl \
+    --reuse-opencl-session \
+    --opencl-device 1 \
+    --include-vulkan \
+    --reuse-vulkan-session \
+    --vulkan-device 1
+```
 
 ## Important Decisions To Preserve
 
@@ -169,7 +226,10 @@ compression; use `native-fixed` when scalar reference behavior is needed.
 
 ## Good Places To Resume Future Work
 
-Start future work from `main` after pulling `origin/main`.
+Start future work from the current local `main`. `origin/main` may still be at
+the published `v1.1.0` release until the post-release mainline commits are
+pushed, so check `git status --short --branch` and `git log --oneline -5`
+before syncing.
 
 Potential next branches:
 
@@ -184,8 +244,8 @@ Reasonable next tasks:
   branch.
 - If desired later, add binary packaging or GitHub Actions as a separate scoped
   plan; they were intentionally out of scope for 1.0/1.1.
-- Revisit accelerator performance only at the architecture level. The known
-  remaining costs are mostly writer/backend overhead, not PCIe transfer, and
-  OpenCL/Vulkan are already good enough for the 1.1 release target.
+- Revisit accelerator performance only at the architecture level. The next
+  promising direction is reusable per-frame ingest facts or writer-ready
+  residual/Rice state, not shader micro-tuning.
 - Consider future macOS acceleration as a Metal backend; OpenCL on macOS is
   deprecated and was not treated as a runtime validation target.

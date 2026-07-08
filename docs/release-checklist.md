@@ -89,13 +89,12 @@ python3 tools/roundtrip_real_fixtures.py \
 
 ## Tag And Publish
 
-After the required gate passes, tag and push the chosen release version. For
-example, for a `v1.1.0` source release:
+After the required gate passes, tag and push the chosen release version:
 
 ```sh
-git tag -a v1.1.0 -m "ld-compress-ng 1.1.0"
+git tag -a vX.Y.Z -m "ld-compress-ng X.Y.Z"
 git push origin main
-git push origin v1.1.0
+git push origin vX.Y.Z
 ```
 
 Create the GitHub source release manually from the release tag, using
