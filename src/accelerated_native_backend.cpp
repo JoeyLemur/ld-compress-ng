@@ -6,7 +6,6 @@
 #include <array>
 #include <chrono>
 #include <condition_variable>
-#include <cstring>
 #include <deque>
 #include <exception>
 #include <filesystem>
@@ -17,8 +16,8 @@
 #include <mutex>
 #include <ostream>
 #include <span>
-#include <sstream>
 #include <stdexcept>
+#include <streambuf>
 #include <string>
 #include <thread>
 #include <vector>
@@ -27,6 +26,7 @@ namespace ldcompress {
 namespace {
 
 constexpr std::size_t kGroupsPerChunk = 8192;
+constexpr std::size_t kSamplesPerGroup = 4;
 constexpr unsigned kMinimumStreamInfoBlockSize = 16;
 using Clock = std::chrono::steady_clock;
 
@@ -41,51 +41,32 @@ void add_elapsed_ns(std::uint64_t& counter, Clock::time_point start)
     counter += elapsed_ns(start, Clock::now());
 }
 
-void update_md5_s16le(Md5& md5, const SampleGroup& samples)
+void write_i16le(std::uint8_t* bytes, std::int16_t sample)
 {
-    std::array<std::uint8_t, 8> bytes {};
-    for (std::size_t i = 0; i < samples.size(); ++i) {
-        const auto value = static_cast<std::uint16_t>(samples[i]);
-        bytes[(i * 2U) + 0U] = static_cast<std::uint8_t>(value & 0xffU);
-        bytes[(i * 2U) + 1U] = static_cast<std::uint8_t>((value >> 8U) & 0xffU);
-    }
-    md5.update(bytes.data(), bytes.size());
+    const auto value = static_cast<std::uint16_t>(sample);
+    bytes[0] = static_cast<std::uint8_t>(value & 0xffU);
+    bytes[1] = static_cast<std::uint8_t>((value >> 8U) & 0xffU);
 }
 
-template <typename OnGroup>
-ConversionStats process_lds_sample_groups(std::istream& input, OnGroup&& on_group)
+SampleGroup unpack_group_bytes(const std::uint8_t* bytes)
 {
-    ConversionStats stats;
-    std::vector<std::uint8_t> input_buffer(5 * kGroupsPerChunk);
+    const int byte0 = bytes[0];
+    const int byte1 = bytes[1];
+    const int byte2 = bytes[2];
+    const int byte3 = bytes[3];
+    const int byte4 = bytes[4];
 
-    while (input) {
-        input.read(reinterpret_cast<char*>(input_buffer.data()),
-            static_cast<std::streamsize>(input_buffer.size()));
-        const auto got = input.gcount();
-        if (got == 0) {
-            break;
-        }
-        if ((got % 5) != 0) {
-            throw std::runtime_error("truncated LDS input: byte count is not divisible by 5");
-        }
+    const int word0 = ((byte0 & 0xff) * 4) + ((byte1 & 0xc0) >> 6);
+    const int word1 = ((byte1 & 0x3f) * 16) + ((byte2 & 0xf0) >> 4);
+    const int word2 = ((byte2 & 0x0f) * 64) + ((byte3 & 0xfc) >> 2);
+    const int word3 = ((byte3 & 0x03) * 256) + (byte4 & 0xff);
 
-        const auto groups = static_cast<std::size_t>(got / 5);
-        for (std::size_t i = 0; i < groups; ++i) {
-            PackedLdsGroup packed;
-            std::memcpy(packed.data(), input_buffer.data() + (i * 5), packed.size());
-            const SampleGroup samples = unpack_group(packed);
-            on_group(samples);
-        }
-
-        stats.input_bytes += static_cast<std::uint64_t>(got);
-        stats.samples += groups * 4;
-    }
-
-    if (input.bad()) {
-        throw std::runtime_error("failed to read LDS input");
-    }
-
-    return stats;
+    return {
+        static_cast<std::int16_t>((word0 - 512) * 64),
+        static_cast<std::int16_t>((word1 - 512) * 64),
+        static_cast<std::int16_t>((word2 - 512) * 64),
+        static_cast<std::int16_t>((word3 - 512) * 64),
+    };
 }
 
 void rewrite_native_flac_streaminfo(
@@ -206,6 +187,37 @@ struct SelectedFrameJob {
     bool collect_timings = false;
 };
 
+class FrameByteStreambuf final : public std::streambuf {
+public:
+    explicit FrameByteStreambuf(std::size_t reserve_bytes)
+    {
+        bytes_.reserve(reserve_bytes);
+    }
+
+    std::string take() { return std::move(bytes_); }
+
+protected:
+    int_type overflow(int_type ch) override
+    {
+        if (std::char_traits<char>::eq_int_type(ch, std::char_traits<char>::eof())) {
+            return std::char_traits<char>::not_eof(ch);
+        }
+        bytes_.push_back(std::char_traits<char>::to_char_type(ch));
+        return ch;
+    }
+
+    std::streamsize xsputn(const char* data, std::streamsize size) override
+    {
+        if (size > 0) {
+            bytes_.append(data, static_cast<std::size_t>(size));
+        }
+        return size;
+    }
+
+private:
+    std::string bytes_;
+};
+
 FlacFrameInfo make_frame_info(
     std::uint64_t frame_number,
     const AcceleratedNativeCompressionOptions& options)
@@ -222,7 +234,10 @@ FlacFrameInfo make_frame_info(
 
 SelectedEncodedFrame encode_selected_frame(SelectedFrameJob job)
 {
-    std::ostringstream output(std::ios::out | std::ios::binary);
+    const auto expected_bytes =
+        static_cast<std::size_t>((job.decision.estimated_bits + 7U) / 8U) + 24U;
+    FrameByteStreambuf output_buffer(expected_bytes);
+    std::ostream output(&output_buffer);
     FlacSelectedFrameWriteTimings timings;
     const auto decision = write_mono_selected_frame_with_decision(
         output,
@@ -235,7 +250,7 @@ SelectedEncodedFrame encode_selected_frame(SelectedFrameJob job)
         throw std::runtime_error("failed to encode selected native FLAC frame");
     }
     return SelectedEncodedFrame {
-        .bytes = output.str(),
+        .bytes = output_buffer.take(),
         .decision = decision,
         .timings = timings,
     };
@@ -524,13 +539,62 @@ ConversionStats compress_lds_to_accelerated_native_flac(
             }
         }
     };
-
-    auto stats = process_lds_sample_groups(lds_input, [&](const SampleGroup& samples) {
-        update_md5_s16le(pcm_md5, samples);
-        for (const auto sample : samples) {
-            append_sample(sample);
+    const bool frame_is_group_aligned = (frame_sample_count % kSamplesPerGroup) == 0;
+    const auto append_sample_group = [&](const SampleGroup& samples) {
+        if (!frame_is_group_aligned) {
+            for (const auto sample : samples) {
+                append_sample(sample);
+            }
+            return;
         }
-    });
+
+        const auto old_size = batch_samples.size();
+        batch_samples.resize(old_size + samples.size());
+        for (std::size_t i = 0; i < samples.size(); ++i) {
+            batch_samples[old_size + i] = samples[i];
+        }
+
+        samples_in_current_frame += samples.size();
+        if (samples_in_current_frame == frame_sample_count) {
+            samples_in_current_frame = 0;
+            ++frame_number;
+            if (batch_samples.size() == batch_sample_count) {
+                flush_batch();
+            }
+        }
+    };
+
+    ConversionStats stats;
+    std::vector<std::uint8_t> input_buffer(5 * kGroupsPerChunk);
+    std::vector<std::uint8_t> pcm_md5_buffer(8 * kGroupsPerChunk);
+    while (lds_input) {
+        lds_input.read(reinterpret_cast<char*>(input_buffer.data()),
+            static_cast<std::streamsize>(input_buffer.size()));
+        const auto got = lds_input.gcount();
+        if (got == 0) {
+            break;
+        }
+        if ((got % 5) != 0) {
+            throw std::runtime_error("truncated LDS input: byte count is not divisible by 5");
+        }
+
+        const auto groups = static_cast<std::size_t>(got / 5);
+        for (std::size_t group = 0; group < groups; ++group) {
+            const auto samples = unpack_group_bytes(input_buffer.data() + (group * 5U));
+            auto* pcm = pcm_md5_buffer.data() + (group * 8U);
+            for (std::size_t sample_index = 0; sample_index < samples.size(); ++sample_index) {
+                write_i16le(pcm + (sample_index * 2U), samples[sample_index]);
+            }
+            append_sample_group(samples);
+        }
+        pcm_md5.update(pcm_md5_buffer.data(), groups * 8U);
+        stats.input_bytes += static_cast<std::uint64_t>(got);
+        stats.samples += groups * 4U;
+    }
+
+    if (lds_input.bad()) {
+        throw std::runtime_error("failed to read LDS input");
+    }
 
     std::vector<std::int32_t> tail_samples;
     const auto complete_sample_count =
