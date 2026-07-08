@@ -5,6 +5,12 @@
 - Made OpenCL and Vulkan compression substantially faster in the current
   real-capture benchmark sweep while preserving verified round trips back to
   the original `.lds` data.
+- On the six local release fixtures, normal OpenCL/Vulkan compression verified
+  end-to-end and produced about `79.9 MB` of `.flac.ldf` output from
+  `150.0 MB` of source `.lds` input. The speed-focused benchmark profile
+  measured CPU/libFLAC at `80,086,984` bytes in `2.440` seconds, OpenCL at
+  `79,946,987` bytes in `0.814` seconds, and Vulkan at `79,946,934` bytes in
+  `0.813` seconds on the local validation host.
 - Kept the compatibility story unchanged: CPU compression still defaults to
   Ogg FLAC `.ldf`, while OpenCL and Vulkan continue to write native FLAC
   `.flac.ldf` files.

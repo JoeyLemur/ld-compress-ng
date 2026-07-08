@@ -1,7 +1,7 @@
 # Handoff Notes
 
-Last updated: 2026-07-08, during the 1.1.1 release-readiness review after the
-post-1.1 accelerator performance pass.
+Last updated: 2026-07-08, during the paused 1.1.1 publish after full
+real-fixture validation and refreshed speed/size documentation.
 
 This file is for maintainer/agent continuity. It is intentionally not installed
 by CMake; release-facing installed docs are listed explicitly in
@@ -10,15 +10,14 @@ by CMake; release-facing installed docs are listed explicitly in
 ## Current Repository State
 
 - Active branch: `main`.
-- `origin/main` still points to the published `v1.1.0` release commit
-  `25f71cd842d4e4aa12e911a320484a5f98049975`
-  (`Finalize 1.1 release readiness docs`).
-- Local `main` has 1.1.1 release-prep work on top of `v1.1.0`, including the
-  performance pass, documentation refresh, and release corrections.
+- `origin/main` was pushed to the 1.1.1 release-prep commit
+  `a390f5a` (`Polish 1.1.1 release notes`) during the first publish attempt.
+- Local `main` has one more release-validation/docs update on top of that push.
 - Local branch `codex/vulkan-1.1` still exists as release-branch history
   context. It can be kept or deleted later.
 - Annotated tag `v1.1.0` has been pushed to origin.
-- Annotated tag `v1.1.1` has not been created yet in this checkout.
+- Annotated tag `v1.1.1` exists locally and has not been pushed to origin.
+  Make sure it points at the final release commit before pushing it.
 - GitHub release was created as source-only, with no binary assets:
   `https://github.com/JoeyLemur/ld-compress-ng/releases/tag/v1.1.0`
 - Project version is `1.1.1` in `CMakeLists.txt`; `ld-compress-ng --version`
@@ -41,18 +40,21 @@ by CMake; release-facing installed docs are listed explicitly in
 Current accepted speed-focused reference:
 
 - Sweep artifact:
-  `build/real-fixture-sweeps/real-fixture-sweep-20260708-130758.{csv,md}`.
+  `build/real-fixture-sweeps/real-fixture-sweep-20260708-145656.{csv,md}`.
 - Sweep shape: `threads=8`, `frame=4608`, `lpc=12`, `prec=12`, Rice orders
   `5,6`, `analysis-profile=order-guess-mean-estimate-rice`, OpenCL/Vulkan
   session reuse enabled.
 - Six-fixture aggregate rows:
   CPU/libFLAC `80,086,984` bytes in `2.440` seconds; native-fixed Rice order
-  `6` `79,926,901` bytes in `1.735` seconds; OpenCL Rice order `6`
-  `79,946,987` bytes in `0.828` seconds; Vulkan Rice order `6`
-  `79,946,934` bytes in `0.810` seconds.
+  `6` `79,926,901` bytes in `1.689` seconds; OpenCL Rice order `6`
+  `79,946,987` bytes in `0.814` seconds; Vulkan Rice order `6`
+  `79,946,934` bytes in `0.813` seconds.
 - Validation for the wrap-up checkpoint: `cmake --build build` passed, full
   GPU-visible `ctest --test-dir build --output-on-failure` passed with `21/21`
-  tests, and the final focused sweep above completed.
+  tests, focused OpenCL/Vulkan/real-fixture CTest rerun passed with `9/9`
+  tests, the all-six-fixture OpenCL/Vulkan roundtrip helper wrote
+  `build/real-fixture-roundtrips/real-fixture-roundtrip-20260708-145623/`,
+  and the final focused sweep above completed.
 
 ## What 1.1 Shipped
 
@@ -126,13 +128,13 @@ python3 tools/roundtrip_real_fixtures.py \
 
 Final report:
 
-- `build/real-fixture-roundtrips/real-fixture-roundtrip-20260707-003152/`
+- `build/real-fixture-roundtrips/real-fixture-roundtrip-20260708-145623/`
 - Six local `.lds` fixtures, two backends, twelve total rows.
 - Each row ran `compress`, `verify --source`, `decompress`, and decoded
   size/MD5 comparison against the source `.lds`.
 - Aggregate input: `149,954,560` bytes.
-- OpenCL output: `79,892,119` bytes; aggregate compress time `9.078` seconds.
-- Vulkan output: `79,892,217` bytes; aggregate compress time `9.134` seconds.
+- OpenCL output: `79,892,119` bytes; aggregate compress time `4.452` seconds.
+- Vulkan output: `79,892,217` bytes; aggregate compress time `3.938` seconds.
 
 ## Device Assumptions
 

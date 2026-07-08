@@ -544,18 +544,18 @@ Post-checkpoint Vulkan/OpenCL performance history:
   `1`.
 - Full accelerator real-fixture roundtrip coverage is now repeatable through
   `tools/roundtrip_real_fixtures.py`. The latest GPU-visible run wrote
-  `build/real-fixture-roundtrips/real-fixture-roundtrip-20260707-003152/`
+  `build/real-fixture-roundtrips/real-fixture-roundtrip-20260708-145623/`
   and passed all six local fixtures on OpenCL device `1` and Vulkan device `1`.
   Each row compressed, verified with `verify --source`, decompressed, and
   compared decoded size plus MD5 against the source `.lds`. Aggregate input was
-  `149,954,560` bytes; OpenCL output was `79,892,119` bytes with `9.078`
-  compress seconds, and Vulkan output was `79,892,217` bytes with `9.134`
+  `149,954,560` bytes; OpenCL output was `79,892,119` bytes with `4.452`
+  compress seconds, and Vulkan output was `79,892,217` bytes with `3.938`
   compress seconds.
 
 ## Performance Pass Wrap-Up - 2026-07-08
 
 The current accepted speed-focused reference is the GPU-visible sweep at
-`build/real-fixture-sweeps/real-fixture-sweep-20260708-130758.{csv,md}`. It
+`build/real-fixture-sweeps/real-fixture-sweep-20260708-145656.{csv,md}`. It
 used `threads=8`, `frame=4608`, `lpc=12`, `prec=12`, Rice orders `5,6`, and
 `analysis-profile=order-guess-mean-estimate-rice` with OpenCL/Vulkan session
 reuse enabled. Treat older timing notes above as historical checkpoint data.
@@ -563,12 +563,12 @@ reuse enabled. Treat older timing notes above as historical checkpoint data.
 Current aggregate results across the six local real fixtures:
 
 - CPU/libFLAC: `80,086,984` bytes in `2.440` seconds.
-- Native-fixed, Rice order `5`: `79,930,556` bytes in `1.669` seconds.
-- Native-fixed, Rice order `6`: `79,926,901` bytes in `1.735` seconds.
-- OpenCL, Rice order `5`: `79,950,606` bytes in `0.845` seconds.
-- OpenCL, Rice order `6`: `79,946,987` bytes in `0.828` seconds.
-- Vulkan, Rice order `5`: `79,950,496` bytes in `0.844` seconds.
-- Vulkan, Rice order `6`: `79,946,934` bytes in `0.810` seconds.
+- Native-fixed, Rice order `5`: `79,930,556` bytes in `1.649` seconds.
+- Native-fixed, Rice order `6`: `79,926,901` bytes in `1.689` seconds.
+- OpenCL, Rice order `5`: `79,950,606` bytes in `0.829` seconds.
+- OpenCL, Rice order `6`: `79,946,987` bytes in `0.814` seconds.
+- Vulkan, Rice order `5`: `79,950,496` bytes in `0.834` seconds.
+- Vulkan, Rice order `6`: `79,946,934` bytes in `0.813` seconds.
 
 The pass accepted broad throughput changes that kept compressed bytes unchanged
 for OpenCL/Vulkan on the speed sweep:
@@ -590,9 +590,9 @@ for OpenCL/Vulkan on the speed sweep:
 The final pipeline change moved the current speed-profile rows materially:
 
 - OpenCL Rice order `6`: `1.033` seconds before the final OpenCL batch/pipeline
-  pass to `0.828` seconds, with unchanged `79,946,987` bytes.
+  pass to `0.814` seconds, with unchanged `79,946,987` bytes.
 - Vulkan Rice order `6`: `1.298` seconds before the final pipeline pass to
-  `0.810` seconds, with unchanged `79,946,934` bytes.
+  `0.813` seconds, with unchanged `79,946,934` bytes.
 
 Rejected experiments from this pass:
 
@@ -629,8 +629,15 @@ Validation status for the wrap-up checkpoint:
 - Full GPU-visible `ctest --test-dir build --output-on-failure` passed with
   `21/21` tests, including OpenCL/Vulkan analysis, real-fixture compatibility,
   and FLAC test-file coverage.
-- The final focused sweep wrote
-  `build/real-fixture-sweeps/real-fixture-sweep-20260708-130758.{csv,md}`.
+- Focused OpenCL/Vulkan/real-fixture CTest rerun passed with `9/9` tests.
+- Full accelerator real-fixture roundtrip coverage passed for all six local
+  fixtures on OpenCL device `1` and Vulkan device `1`, writing
+  `build/real-fixture-roundtrips/real-fixture-roundtrip-20260708-145623/`.
+  Normal `compress` output totals were OpenCL `79,892,119` bytes in
+  `4.452` aggregate compress seconds and Vulkan `79,892,217` bytes in
+  `3.938` aggregate compress seconds.
+- The final focused speed sweep wrote
+  `build/real-fixture-sweeps/real-fixture-sweep-20260708-145656.{csv,md}`.
 
 Immediate engineering focus:
 

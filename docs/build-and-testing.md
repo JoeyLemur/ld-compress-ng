@@ -487,15 +487,19 @@ bytes, CPU/libFLAC outputs total `80,086,984` bytes, scalar native-fixed outputs
 total `79,867,690` bytes, and OpenCL outputs total `79,952,087` bytes.
 
 The current speed-focused sweep is
-`build/real-fixture-sweeps/real-fixture-sweep-20260708-130758.{csv,md}`. It used
+`build/real-fixture-sweeps/real-fixture-sweep-20260708-145656.{csv,md}`. It used
 `threads=8`, `frame=4608`, `lpc=12`, `prec=12`, Rice orders `5,6`,
 `analysis-profile=order-guess-mean-estimate-rice`, and OpenCL/Vulkan session
 reuse. Across the six local real fixtures, the best speed-profile rows were:
-native-fixed Rice order `6` at `79,926,901` bytes in `1.735` seconds, OpenCL
-Rice order `6` at `79,946,987` bytes in `0.828` seconds, and Vulkan Rice order
-`6` at `79,946,934` bytes in `0.810` seconds. Scalar native-fixed is useful as
-a size and decision oracle, but CPU/libFLAC remains the recommended CPU-only
-encoder.
+CPU/libFLAC at `80,086,984` bytes in `2.440` seconds, native-fixed Rice order
+`6` at `79,926,901` bytes in `1.689` seconds, OpenCL Rice order `6` at
+`79,946,987` bytes in `0.814` seconds, and Vulkan Rice order `6` at
+`79,946,934` bytes in `0.813` seconds. The normal exact-analysis OpenCL/Vulkan
+`compress` roundtrip helper produced smaller aggregate output,
+`79,892,119` bytes for OpenCL and `79,892,217` bytes for Vulkan, while verifying
+and decompressing back to the original LDS bytes across all six fixtures.
+Scalar native-fixed is useful as a size and decision oracle, but CPU/libFLAC
+remains the recommended CPU-only encoder.
 
 ## Legacy Fixture Regeneration
 
