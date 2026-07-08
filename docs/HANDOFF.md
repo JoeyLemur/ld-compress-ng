@@ -1,6 +1,7 @@
 # Handoff Notes
 
-Last updated: 2026-07-08, after starting the 1.2.0 Metal backend work.
+Last updated: 2026-07-08, after M5 Metal real-fixture correctness and baseline
+metrics validation.
 
 This file is for maintainer/agent continuity. It is intentionally not installed
 by CMake; release-facing installed docs are listed explicitly in
@@ -36,6 +37,70 @@ by CMake; release-facing installed docs are listed explicitly in
   cmake --build build-no-metal --parallel
   ctest --test-dir build-no-metal --output-on-failure
   ```
+
+## 1.2 Metal M5 Correctness And Baseline Checkpoint
+
+GPU-visible validation on Apple M5 Pro device index `0` passed:
+
+- `build-metal/ld-compress-ng devices` saw Metal `[0] Apple M5 Pro` and OpenCL
+  `[0] Apple M5 Pro`; Vulkan was not built.
+- `ctest --test-dir build-metal -L metal --output-on-failure` passed `3/3`.
+- Real-fixture build:
+
+  ```sh
+  cmake -S . -B build-metal-real-fixtures \
+      -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+      -DLDCOMPRESS_ENABLE_METAL=ON \
+      -DLDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS=ON \
+      -DLDCOMPRESS_REAL_FIXTURE_DIR=$PWD/reference/testdata/ld-decode-testdata-ci/1cf698d2025e8515e9ef57e34adaf85a194da96a \
+      -DLDCOMPRESS_METAL_TEST_DEVICE=0
+  cmake --build build-metal-real-fixtures --parallel
+  ```
+
+- `ctest --test-dir build-metal-real-fixtures -L real-fixtures -LE
+  'opencl|vulkan' --output-on-failure` passed with `3/3`; the optional
+  `ld-decode` loader compatibility tests skipped due missing optional Python
+  reference-loader dependencies.
+- `ctest --test-dir build-metal-real-fixtures -L metal --output-on-failure`
+  passed `4/4`, with the optional Metal loader-compat test skipped.
+- `ctest --test-dir build-metal-real-fixtures --output-on-failure` passed
+  `24/24`, with six optional external-decode/reference-loader skips.
+
+Full six-fixture `native-fixed,metal` roundtrip passed:
+
+- Artifact:
+  `build/real-fixture-roundtrips/real-fixture-roundtrip-20260708-172240/`.
+- Each row ran `compress`, `verify --source`, `decompress`, and decoded
+  size/MD5 comparison.
+
+| Backend | Output bytes | Ratio | Aggregate compress time |
+| --- | ---: | ---: | ---: |
+| Native-fixed | `79,867,690` | `0.532613` | `9.453s` |
+| Metal | `119,832,125` | `0.799123` | `341.736s` |
+
+Baseline sweep artifacts:
+
+- Metal-only comparison:
+  `build/metal-baseline-sweeps/real-fixture-sweep-20260708-172930.{csv,md}`.
+- OpenCL+Metal comparison:
+  `build/metal-opencl-baseline-sweeps/real-fixture-sweep-20260708-175114.{csv,md}`.
+
+Best-row aggregate sizes from the OpenCL+Metal comparison sweep:
+
+| Backend | Output bytes | Ratio | Aggregate elapsed |
+| --- | ---: | ---: | ---: |
+| CPU/libFLAC | `80,086,982` | `0.534075` | `2.666s` |
+| Native-fixed | `79,843,831` | `0.532454` | `9.532s` |
+| OpenCL | `79,876,133` | `0.532669` | `3.947s` |
+| Metal | `119,775,018` | `0.798742` | `339.675s` |
+
+Metal best rows were about `+49.56%` larger than CPU/libFLAC, `+50.01%`
+larger than native-fixed, and `+49.95%` larger than OpenCL. OpenCL was
+`+0.0405%` larger than native-fixed in the same sweep. Metal elapsed time was
+dominated by `metal_lpc_s` plus `metal_exact_s`; `metal_choose_s` and
+`metal_read_s` were effectively negligible. Treat the current Metal backend as
+functionally correct on these fixtures but not yet compression- or
+performance-competitive.
 
 ## 1.1 Release Context
 
