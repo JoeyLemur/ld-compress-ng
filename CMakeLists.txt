@@ -195,6 +195,8 @@ install(FILES
 
 if(BUILD_TESTING)
     add_library(ldcompress_test_support
+        tests/support/opencl_analysis_test_support.cpp
+        tests/support/vulkan_analysis_test_support.cpp
         tests/support/vulkan_smoke.cpp
     )
 
