@@ -1420,7 +1420,7 @@ void print_bench_result(const BenchResult& result)
     print_optional_unsigned(result.native_max_lpc_order, result.show_lpc_order, 10);
     print_optional_unsigned(result.native_lpc_precision, result.show_lpc_precision, 9);
     print_optional_unsigned(result.native_max_rice_partition_order, result.show_rice_partition_order, 11);
-    print_optional_profile(result.native_analysis_profile, result.show_analysis_profile, 30);
+    print_optional_profile(result.native_analysis_profile, result.show_analysis_profile, 40);
     std::cout << std::setw(14) << result.stats.input_bytes
               << std::setw(15) << result.stats.output_bytes
               << std::setw(12) << result.stats.samples
@@ -1647,7 +1647,7 @@ int run_bench(const Options& options)
               << std::setw(10) << "lpc_order"
               << std::setw(9) << "lpc_prec"
               << std::setw(11) << "rice_order"
-              << std::setw(30) << "profile"
+              << std::setw(40) << "profile"
               << std::setw(14) << "input_bytes"
               << std::setw(15) << "output_bytes"
               << std::setw(12) << "samples"
