@@ -10,14 +10,16 @@ analysis work is checked against the Xiph.org FLAC reference implementation
 under `reference/flac/`.
 
 The OpenCL and Vulkan analysis paths include reduced, locally modified
-kernel/shader code and ABI-compatible analysis structures adapted from
-CUETools.FLACCL. Preserve the LGPL notice in the kernel or shader source and
-keep local modification notes when changing that code.
+kernel/shader code, ABI-compatible analysis structures, and test or diagnostic
+oracles adapted from CUETools.FLACCL. Preserve the LGPL notice in the kernel or
+shader source and keep local modification notes when changing that code.
 
 ## CUETools.FLACCL Analysis Kernels
 
-Portions of `src/opencl_analysis.cpp`, `shaders/vulkan_fixed_constant.comp`,
-and the related Vulkan analysis glue are derived from or adapted from the
+Portions of `src/opencl_analysis.cpp`, `src/opencl_analysis.h`,
+`src/opencl_analysis_internal.h`, `tests/support/opencl_analysis_test_support.*`,
+`tests/compare_opencl_scalar_frames.cpp`, `shaders/vulkan_fixed_constant.comp`,
+and related OpenCL/Vulkan analysis glue are derived from or adapted from the
 CUETools.FLACCL OpenCL encoder kernels for mono wasted-bits, LPC, residual, and
 Rice-cost analysis.
 

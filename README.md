@@ -136,7 +136,7 @@ build/ld-compress-ng decompress --overwrite capture.ldf capture.lds
 
 | Backend | Output | Notes |
 | --- | --- | --- |
-| `cpu` | Ogg FLAC `.ldf` | Default, portable, uses system `libFLAC`/`libogg`; supports `--level`. |
+| `cpu` | Ogg FLAC `.ldf` by default | Default, portable, uses system `libFLAC`/`libogg`; supports `--level` and can write native FLAC with `--container flac`. |
 | `opencl` | Native FLAC `.flac.ldf` | GPU-assisted native encoder; list devices with `devices`, select one with `--device INDEX` or `--opencl-device INDEX`. |
 | `vulkan` | Native FLAC `.flac.ldf` | Linux-first acceleration backend with Vulkan exact costing for fixed/Rice and GPU-generated LPC candidates; validated locally on NVIDIA and intended for standard Vulkan compute devices; select one with `--device INDEX` or `--vulkan-device INDEX`. |
 | `native-fixed` | Native FLAC `.flac.ldf` | Reference/debug scalar encoder for analysis parity, native writer coverage, and tuning sweeps. |
@@ -187,6 +187,13 @@ Tune CPU/libFLAC compression level:
 build/ld-compress-ng compress --backend cpu --level 12 capture.lds
 ```
 
+Write CPU/libFLAC output as native FLAC instead of the default Ogg FLAC
+container:
+
+```sh
+build/ld-compress-ng compress --backend cpu --container flac capture.lds capture.flac.ldf
+```
+
 Run the scalar native reference backend with multiple encoding threads and
 summary stats:
 
@@ -225,6 +232,13 @@ build/ld-compress-ng bench --threads 8 --include-vulkan --vulkan-device INDEX ca
 and `--reuse-opencl-session`/`--reuse-vulkan-session` for local sweep work. The
 normal `compress` command keeps the exact native analysis profile; the faster
 analysis profiles are benchmarking/tuning controls.
+
+Valid analysis profiles are `exact`, `order-guess-exact-rice`,
+`order-guess-mean-rice`, `order-guess-mean-estimate-rice`,
+`subdivide-tukey3-mean-rice`, and
+`subdivide-tukey3-mean-estimate-rice`. Use `--opencl-device` and
+`--vulkan-device` for explicit accelerator rows; invalid explicit device
+indexes fail instead of silently dropping the requested backend.
 
 Convert between packed LDS and signed 16-bit little-endian mono PCM:
 

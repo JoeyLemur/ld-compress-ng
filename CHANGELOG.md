@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.1 - 2026-07-08
 
 - Improved accelerated native-FLAC throughput with reusable OpenCL analysis
   sessions, OpenCL selected Rice-parameter handoff, larger OpenCL compression

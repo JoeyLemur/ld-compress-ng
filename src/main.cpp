@@ -123,6 +123,14 @@ struct Options {
         << "  --stats                      Print native backend decision stats and timings.\n"
         << "  --container ogg|flac         cpu can write Ogg or native FLAC; native/opencl/vulkan write flac.\n"
         << "  --overwrite                  Replace an existing output path.\n\n"
+        << "Bench options:\n"
+        << "  --analysis-profile NAME      exact, order-guess-exact-rice,\n"
+        << "                               order-guess-mean-rice,\n"
+        << "                               order-guess-mean-estimate-rice,\n"
+        << "                               subdivide-tukey3-mean-rice, or\n"
+        << "                               subdivide-tukey3-mean-estimate-rice.\n"
+        << "  --reuse-opencl-session       Reuse OpenCL setup across benchmark rows.\n"
+        << "  --reuse-vulkan-session       Reuse Vulkan setup across benchmark rows.\n\n"
         << "More details: README.md and docs/build-and-testing.md\n";
     std::exit(exit_code);
 }
@@ -1613,9 +1621,10 @@ int run_bench(const Options& options)
         } else {
             const auto requested_opencl_device_index = effective_opencl_device_index(options);
             if (requested_opencl_device_index.has_value()) {
-                std::cerr << "bench: requested OpenCL device "
-                          << *requested_opencl_device_index
-                          << " is not available; omitting opencl rows\n";
+                throw std::runtime_error(
+                    "bench: requested OpenCL device " +
+                    std::to_string(*requested_opencl_device_index) +
+                    " is not available");
             } else {
                 std::cerr << "bench: OpenCL requested but no available device was found; omitting opencl rows\n";
             }
@@ -1659,9 +1668,10 @@ int run_bench(const Options& options)
         } else {
             const auto requested_vulkan_device_index = effective_vulkan_device_index(options);
             if (requested_vulkan_device_index.has_value()) {
-                std::cerr << "bench: requested Vulkan device "
-                          << *requested_vulkan_device_index
-                          << " is not available or lacks shaderInt64; omitting vulkan rows\n";
+                throw std::runtime_error(
+                    "bench: requested Vulkan device " +
+                    std::to_string(*requested_vulkan_device_index) +
+                    " is not available or lacks shaderInt64");
             } else {
                 std::cerr << "bench: Vulkan requested but no non-CPU device with shaderInt64 was found; omitting vulkan rows\n";
             }

@@ -286,11 +286,13 @@ void test_cli(const std::filesystem::path& exe)
         "help output did not include Vulkan in native container description");
     require(help_text.find("More details: README.md and docs/build-and-testing.md") != std::string::npos,
         "help output did not point to documentation");
+    require(help_text.find("order-guess-mean-estimate-rice") != std::string::npos,
+        "help output did not list benchmark analysis profiles");
     require(help_text.find("ld-compress-ng --version") != std::string::npos,
         "help output did not mention --version");
 
     run_ok(shell_quote(exe) + " --version > " + shell_quote(version_output));
-    require(read_file(version_output) == "ld-compress-ng 1.1.0\n",
+    require(read_file(version_output) == "ld-compress-ng 1.1.1\n",
         "version output did not match project version");
 
     run_ok(shell_quote(exe) + " convert --unpack " + shell_quote(lds) + " " + shell_quote(pcm));
@@ -546,7 +548,7 @@ void test_cli(const std::filesystem::path& exe)
         run_ok(shell_quote(exe) + " bench --include-opencl --threads 1 --frame-samples 2048 --lpc-order 0 --lpc-precision 12 --rice-partition-order 5 " + shell_quote(lds));
         run_ok(shell_quote(exe) + " bench --include-opencl --reuse-opencl-session --threads 1 --frame-samples 2048 --lpc-order 0 --lpc-precision 12 --rice-partition-order 5 " + shell_quote(lds));
     }
-    run_ok(shell_quote(exe) + " bench --include-opencl --device 999999 --threads 1 --frame-samples 2048 --lpc-order 0 --lpc-precision 12 --rice-partition-order 5 " + shell_quote(lds));
+    run_fails(shell_quote(exe) + " bench --include-opencl --device 999999 --threads 1 --frame-samples 2048 --lpc-order 0 --lpc-precision 12 --rice-partition-order 5 " + shell_quote(lds));
     if (vulkan_device_index.has_value()) {
         run_ok(shell_quote(exe) + " bench --include-vulkan --device " +
             std::to_string(*vulkan_device_index) +
@@ -560,7 +562,7 @@ void test_cli(const std::filesystem::path& exe)
         run_ok(shell_quote(exe) + " bench --include-vulkan --threads 1 --frame-samples 2048 --lpc-order 0 --lpc-precision 12 --rice-partition-order 5 " + shell_quote(lds));
         run_ok(shell_quote(exe) + " bench --include-vulkan --reuse-vulkan-session --threads 1 --frame-samples 2048 --lpc-order 0 --lpc-precision 12 --rice-partition-order 5 " + shell_quote(lds));
     }
-    run_ok(shell_quote(exe) + " bench --include-vulkan --vulkan-device 999999 --threads 1 --frame-samples 2048 --lpc-order 0 --lpc-precision 12 --rice-partition-order 5 " + shell_quote(lds));
+    run_fails(shell_quote(exe) + " bench --include-vulkan --vulkan-device 999999 --threads 1 --frame-samples 2048 --lpc-order 0 --lpc-precision 12 --rice-partition-order 5 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --include-opencl --include-vulkan --device 0 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --device 0 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --vulkan-device 0 " + shell_quote(lds));
