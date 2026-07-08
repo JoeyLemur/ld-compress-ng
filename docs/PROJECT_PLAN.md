@@ -551,6 +551,86 @@ Remaining Vulkan work:
   compress seconds, and Vulkan output was `79,892,217` bytes with `9.134`
   compress seconds.
 
+## Performance Pass Wrap-Up - 2026-07-08
+
+The current accepted speed-focused reference is the GPU-visible sweep at
+`build/real-fixture-sweeps/real-fixture-sweep-20260708-130758.{csv,md}`. It
+used `threads=8`, `frame=4608`, `lpc=12`, `prec=12`, Rice orders `5,6`, and
+`analysis-profile=order-guess-mean-estimate-rice` with OpenCL/Vulkan session
+reuse enabled. Treat older timing notes above as historical checkpoint data.
+
+Current aggregate results across the six local real fixtures:
+
+- CPU/libFLAC: `80,086,984` bytes in `2.440` seconds.
+- Native-fixed, Rice order `5`: `79,930,556` bytes in `1.669` seconds.
+- Native-fixed, Rice order `6`: `79,926,901` bytes in `1.735` seconds.
+- OpenCL, Rice order `5`: `79,950,606` bytes in `0.845` seconds.
+- OpenCL, Rice order `6`: `79,946,987` bytes in `0.828` seconds.
+- Vulkan, Rice order `5`: `79,950,496` bytes in `0.844` seconds.
+- Vulkan, Rice order `6`: `79,946,934` bytes in `0.810` seconds.
+
+The pass accepted broad throughput changes that kept compressed bytes unchanged
+for OpenCL/Vulkan on the speed sweep:
+
+- OpenCL now returns selected Rice parameters through the sidecar handoff, so
+  the selected-frame writer does not recompute them for fixed/LPC subframes.
+- OpenCL generated analysis keeps a reusable session and grow-only buffers for
+  compression/sweep reuse.
+- The accelerated writer trusts the selected decision for stats and uses faster
+  Rice bitstream emission.
+- The shared accelerated host flow avoids avoidable frame-vector slicing and
+  now pipelines batch analysis: while the GPU analyzes one full batch, the host
+  can ingest/MD5 the next batch and then write the previous analyzed frames in
+  order. This mirrors libFLAC's main structural advantage: fewer large serial
+  phase boundaries.
+- OpenCL uses a larger accepted compression batch size of `2048` frames. Vulkan
+  remains at `512` frames because larger Vulkan batches were flat or slower.
+
+The final pipeline change moved the current speed-profile rows materially:
+
+- OpenCL Rice order `6`: `1.033` seconds before the final OpenCL batch/pipeline
+  pass to `0.828` seconds, with unchanged `79,946,987` bytes.
+- Vulkan Rice order `6`: `1.298` seconds before the final pipeline pass to
+  `0.810` seconds, with unchanged `79,946,934` bytes.
+
+Rejected experiments from this pass:
+
+- Direct selected-frame Rice emission from shifted samples was correct but
+  slower; it moved residual prediction into the bitstream hot path.
+- Big-endian frame-output write tweaks were mixed/noisy and not worth carrying.
+- Larger accelerated scan chunking and chunk-level group append regressed or
+  failed to move the scan bucket.
+- `4096`-frame GPU batches rolled over; OpenCL lost part of the `2048` benefit
+  and Vulkan regressed substantially. Vulkan `2048` was not kept.
+
+The useful libFLAC lessons are now documented by code and measurements:
+
+- libFLAC uses reusable frame-local workspaces and carries analysis results into
+  writing instead of rebuilding large transient state after each decision.
+- It shifts wasted bits once per frame, then analyzes/writes the reduced-width
+  signal.
+- Its normal compression levels prefer guessed orders and mean-derived Rice
+  estimates over exhaustive exact searches.
+- It avoids our older shape of `scan -> analyze -> write` as three mostly serial
+  phases.
+
+Stop this performance pass here unless a new task explicitly reopens broad
+tuning. The next high-value speed idea is not a micro-optimization: make LDS
+ingest produce reusable per-frame facts such as wasted bits, constant/amplitude
+flags, and optionally shifted sample spans, then feed those facts into
+OpenCL/Vulkan task planning and the selected writer. A larger follow-up would
+make the analyzer produce writer-ready residual/Rice state, but that should be
+treated as a separate design pass.
+
+Validation status for the wrap-up checkpoint:
+
+- `cmake --build build` passed.
+- Full GPU-visible `ctest --test-dir build --output-on-failure` passed with
+  `21/21` tests, including OpenCL/Vulkan analysis, real-fixture compatibility,
+  and FLAC test-file coverage.
+- The final focused sweep wrote
+  `build/real-fixture-sweeps/real-fixture-sweep-20260708-130758.{csv,md}`.
+
 Immediate engineering focus:
 
 - Move on from OpenCL LPC parity tuning. Keep the Linux/NVIDIA OpenCL path under
