@@ -1,7 +1,6 @@
 # Handoff Notes
 
-Last updated: 2026-07-08, during the paused 1.1.1 publish after full
-real-fixture validation and refreshed speed/size documentation.
+Last updated: 2026-07-08, after starting the 1.2.0 Metal backend work.
 
 This file is for maintainer/agent continuity. It is intentionally not installed
 by CMake; release-facing installed docs are listed explicitly in
@@ -10,6 +9,36 @@ by CMake; release-facing installed docs are listed explicitly in
 ## Current Repository State
 
 - Active branch: `main`.
+- Project version is `1.2.0` in `CMakeLists.txt`; `ld-compress-ng --version`
+  prints `ld-compress-ng 1.2.0`.
+- 1.2.0 adds the macOS-only `metal` native FLAC accelerator backend using Apple
+  Command Line Tools, `Metal.framework`, `Foundation.framework`, and runtime
+  Metal source compilation. There is no Xcode project and no required offline
+  `.metallib`.
+- The managed Codex sandbox on macOS may hide `MTLCreateSystemDefaultDevice()`;
+  sandboxed Metal tests should skip cleanly. Hardware validation should be run
+  from a GPU-visible shell with:
+
+  ```sh
+  cmake -S . -B build-metal -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+      -DLDCOMPRESS_ENABLE_METAL=ON
+  cmake --build build-metal --parallel
+  build-metal/ld-compress-ng devices
+  ctest --test-dir build-metal -L metal --output-on-failure
+  ctest --test-dir build-metal --output-on-failure
+  ```
+
+- Also keep a no-Metal lane current:
+
+  ```sh
+  cmake -S . -B build-no-metal -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+      -DLDCOMPRESS_ENABLE_METAL=OFF
+  cmake --build build-no-metal --parallel
+  ctest --test-dir build-no-metal --output-on-failure
+  ```
+
+## 1.1 Release Context
+
 - `origin/main` was pushed to the 1.1.1 release-prep commit
   `a390f5a` (`Polish 1.1.1 release notes`) during the first publish attempt.
 - Local `main` has one more release-validation/docs update on top of that push.
@@ -20,9 +49,6 @@ by CMake; release-facing installed docs are listed explicitly in
   Make sure it points at the final release commit before pushing it.
 - GitHub release was created as source-only, with no binary assets:
   `https://github.com/JoeyLemur/ld-compress-ng/releases/tag/v1.1.0`
-- Project version is `1.1.1` in `CMakeLists.txt`; `ld-compress-ng --version`
-  prints `ld-compress-ng 1.1.1`.
-
 ## Post-1.1 Mainline Work
 
 - Added benchmark/sweep-only native analysis profiles, including order-guess
@@ -255,5 +281,5 @@ Reasonable next tasks:
 - Revisit accelerator performance only at the architecture level. The next
   promising direction is reusable per-frame ingest facts or writer-ready
   residual/Rice state, not shader micro-tuning.
-- Consider future macOS acceleration as a Metal backend; OpenCL on macOS is
-  deprecated and was not treated as a runtime validation target.
+- For Metal follow-up, prioritize GPU-visible macOS validation and parity/size
+  measurements before broad performance tuning.

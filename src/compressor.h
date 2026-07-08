@@ -19,6 +19,7 @@ enum class CompressionBackend {
     NativeFixedFlac,
     OpenClNativeFlac,
     VulkanNativeFlac,
+    MetalNativeFlac,
 };
 
 struct NativeCompressionStats {
@@ -76,6 +77,12 @@ struct NativeCompressionStats {
     std::uint64_t vulkan_gpu_exact_analysis_ns = 0;
     std::uint64_t vulkan_gpu_choose_best_ns = 0;
     std::uint64_t vulkan_gpu_readback_ns = 0;
+    std::uint64_t metal_timed_batches = 0;
+    std::uint64_t metal_upload_ns = 0;
+    std::uint64_t metal_lpc_generation_ns = 0;
+    std::uint64_t metal_exact_analysis_ns = 0;
+    std::uint64_t metal_choose_best_ns = 0;
+    std::uint64_t metal_readback_ns = 0;
 };
 
 struct CompressionOptions {
@@ -92,6 +99,7 @@ struct CompressionOptions {
     NativeCompressionStats* native_stats = nullptr;
     std::optional<std::size_t> opencl_device_index;
     std::optional<std::size_t> vulkan_device_index;
+    std::optional<std::size_t> metal_device_index;
 };
 
 const char* backend_name(CompressionBackend backend);

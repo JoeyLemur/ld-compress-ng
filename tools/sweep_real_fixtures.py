@@ -60,6 +60,11 @@ TIMING_COLUMNS = [
     "vk_gpu_exact_s",
     "vk_gpu_choose_s",
     "vk_gpu_read_s",
+    "metal_up_s",
+    "metal_lpc_s",
+    "metal_exact_s",
+    "metal_choose_s",
+    "metal_read_s",
 ]
 CSV_COLUMNS = [
     "fixture",
@@ -118,6 +123,9 @@ class SweepConfig:
     include_vulkan: bool
     vulkan_device: str | None
     reuse_vulkan_session: bool
+    include_metal: bool
+    metal_device: str | None
+    reuse_metal_session: bool
 
 
 def parse_uint_list(text: str, name: str, minimum: int, maximum: int) -> list[int]:
@@ -200,6 +208,12 @@ def bench_command(binary: Path, config: SweepConfig, fixture: Path) -> list[str]
             command.append("--reuse-vulkan-session")
         if config.vulkan_device is not None:
             command.extend(["--vulkan-device", config.vulkan_device])
+    if config.include_metal:
+        command.append("--include-metal")
+        if config.reuse_metal_session:
+            command.append("--reuse-metal-session")
+        if config.metal_device is not None:
+            command.extend(["--metal-device", config.metal_device])
     command.append(str(fixture))
     return command
 
@@ -289,6 +303,13 @@ def sorted_vulkan_rows(rows: Iterable[dict[str, str]]) -> list[dict[str, str]]:
     )
 
 
+def sorted_metal_rows(rows: Iterable[dict[str, str]]) -> list[dict[str, str]]:
+    return sorted(
+        (row for row in rows if row["backend"] == "metal"),
+        key=lambda row: (int_field(row, "output_bytes"), numeric(row, "elapsed_s")),
+    )
+
+
 def write_csv(path: Path, rows: list[dict[str, str]]) -> None:
     with path.open("w", newline="", encoding="utf-8") as output:
         writer = csv.DictWriter(output, fieldnames=CSV_COLUMNS)
@@ -356,6 +377,20 @@ def write_markdown(
         sum(numeric(row, "elapsed_s") for row in item[1]),
     ))
 
+    metal_groups: dict[tuple[str, str, str, str, str, str], list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        if row["backend"] == "metal":
+            metal_groups[native_key(row)].append(row)
+    complete_metal_groups = [
+        (key, group)
+        for key, group in metal_groups.items()
+        if len(group) == len(fixture_names)
+    ]
+    complete_metal_groups.sort(key=lambda item: (
+        sum(int_field(row, "output_bytes") for row in item[1]),
+        sum(numeric(row, "elapsed_s") for row in item[1]),
+    ))
+
     total_cpu_bytes = sum(int_field(row, "output_bytes") for row in cpu_by_fixture.values())
 
     with path.open("w", encoding="utf-8") as output:
@@ -380,6 +415,12 @@ def write_markdown(
         )
         if config.vulkan_device is not None:
             output.write(f"- Vulkan device: `{config.vulkan_device}`\n")
+        output.write(f"- Metal included: `{str(config.include_metal).lower()}`\n")
+        output.write(
+            f"- Metal session reuse: `{str(config.reuse_metal_session).lower()}`\n"
+        )
+        if config.metal_device is not None:
+            output.write(f"- Metal device: `{config.metal_device}`\n")
         output.write("\n")
 
         output.write("## Best Native Per Fixture\n\n")
@@ -441,6 +482,26 @@ def write_markdown(
                     f"{float(best['ratio']):.4f} | {gap:+.2f}% | `{settings}` |\n"
                 )
 
+        if complete_metal_groups:
+            output.write("\n## Best Metal Per Fixture\n\n")
+            output.write("| Fixture | CPU bytes | Metal bytes | Metal ratio | Gap vs CPU | Settings |\n")
+            output.write("| --- | ---: | ---: | ---: | ---: | --- |\n")
+            for name in fixture_names:
+                cpu = cpu_by_fixture[name]
+                best = sorted_metal_rows(by_fixture[name])[0]
+                cpu_bytes = int_field(cpu, "output_bytes")
+                metal_bytes = int_field(best, "output_bytes")
+                gap = ((metal_bytes / cpu_bytes) - 1.0) * 100.0 if cpu_bytes else 0.0
+                settings = (
+                    f"threads={best['threads']}, frame={best['frame_samples']}, "
+                    f"lpc={best['lpc_order']}, prec={best['lpc_precision']}, "
+                    f"rice={best['rice_order']}"
+                )
+                output.write(
+                    f"| `{name}` | {format_bytes(cpu_bytes)} | {format_bytes(metal_bytes)} | "
+                    f"{float(best['ratio']):.4f} | {gap:+.2f}% | `{settings}` |\n"
+                )
+
         output.write("\n## Aggregate Native Configs\n\n")
         output.write("| Rank | Native bytes | Gap vs CPU | Elapsed s | Settings |\n")
         output.write("| ---: | ---: | ---: | ---: | --- |\n")
@@ -494,6 +555,24 @@ def write_markdown(
                     f"{elapsed:.3f} | `{settings}` |\n"
                 )
 
+        if complete_metal_groups:
+            output.write("\n## Aggregate Metal Configs\n\n")
+            output.write("| Rank | Metal bytes | Gap vs CPU | Elapsed s | Settings |\n")
+            output.write("| ---: | ---: | ---: | ---: | --- |\n")
+            for rank, (key, group) in enumerate(complete_metal_groups[:10], start=1):
+                metal_bytes = sum(int_field(row, "output_bytes") for row in group)
+                elapsed = sum(numeric(row, "elapsed_s") for row in group)
+                gap = ((metal_bytes / total_cpu_bytes) - 1.0) * 100.0 if total_cpu_bytes else 0.0
+                threads, frame_samples, lpc_order, lpc_precision, rice_order, profile = key
+                settings = (
+                    f"threads={threads}, frame={frame_samples}, lpc={lpc_order}, "
+                    f"prec={lpc_precision}, rice={rice_order}, profile={profile}"
+                )
+                output.write(
+                    f"| {rank} | {format_bytes(metal_bytes)} | {gap:+.2f}% | "
+                    f"{elapsed:.3f} | `{settings}` |\n"
+                )
+
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -525,6 +604,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="reuse one Vulkan analysis session across Vulkan bench rows")
     parser.add_argument("--vulkan-device",
         help="Vulkan device index to pass to bench when --include-vulkan is set")
+    parser.add_argument("--include-metal", action="store_true",
+        help="include Metal backend rows in each bench run")
+    parser.add_argument("--reuse-metal-session", action="store_true",
+        help="reuse one Metal analysis session across Metal bench rows")
+    parser.add_argument("--metal-device",
+        help="Metal device index to pass to bench when --include-metal is set")
     parser.add_argument("--limit", type=int,
         help="benchmark only the first N fixtures after path sorting")
     parser.add_argument("--dry-run", action="store_true",
@@ -561,6 +646,9 @@ def main(argv: list[str]) -> int:
         include_vulkan=args.include_vulkan,
         vulkan_device=args.vulkan_device,
         reuse_vulkan_session=args.reuse_vulkan_session,
+        include_metal=args.include_metal,
+        metal_device=args.metal_device,
+        reuse_metal_session=args.reuse_metal_session,
     )
     if args.opencl_device is not None and not args.include_opencl:
         raise RuntimeError("--opencl-device requires --include-opencl")
@@ -570,6 +658,10 @@ def main(argv: list[str]) -> int:
         raise RuntimeError("--vulkan-device requires --include-vulkan")
     if args.reuse_vulkan_session and not args.include_vulkan:
         raise RuntimeError("--reuse-vulkan-session requires --include-vulkan")
+    if args.metal_device is not None and not args.include_metal:
+        raise RuntimeError("--metal-device requires --include-metal")
+    if args.reuse_metal_session and not args.include_metal:
+        raise RuntimeError("--reuse-metal-session requires --include-metal")
 
     if args.dry_run:
         for fixture in fixtures:
@@ -614,6 +706,16 @@ def main(argv: list[str]) -> int:
                 f"{best_vulkan['output_bytes']} bytes, ratio {best_vulkan['ratio']}, "
                 f"frame={best_vulkan['frame_samples']} lpc={best_vulkan['lpc_order']} "
                 f"prec={best_vulkan['lpc_precision']} rice={best_vulkan['rice_order']}",
+                flush=True,
+            )
+        metal_rows = sorted_metal_rows(fixture_rows)
+        if metal_rows:
+            best_metal = metal_rows[0]
+            print(
+                "    best metal: "
+                f"{best_metal['output_bytes']} bytes, ratio {best_metal['ratio']}, "
+                f"frame={best_metal['frame_samples']} lpc={best_metal['lpc_order']} "
+                f"prec={best_metal['lpc_precision']} rice={best_metal['rice_order']}",
                 flush=True,
             )
 

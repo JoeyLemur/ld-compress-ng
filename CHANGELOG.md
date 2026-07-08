@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.2.0 - 2026-07-08
+
+- Added the macOS-only Metal native FLAC acceleration backend using Apple
+  Command Line Tools, `Metal.framework`, and `Foundation.framework`.
+- Added `compress --backend metal`, `--metal-device INDEX`,
+  `bench --include-metal`, `bench --reuse-metal-session`, and Metal device
+  reporting in `ld-compress-ng devices`.
+- Metal follows the existing accelerator contract: GPU full-frame analysis,
+  shared native FLAC writer output, scalar handling for short final tails, and
+  native `.flac.ldf` output only.
+- Added Metal device, smoke, analysis, CLI, benchmark, real-fixture helper, and
+  no-Metal build coverage. Hardware-visible Metal tests skip cleanly when no
+  Metal device is visible to the process.
+- Documented CLT-only macOS setup and validation; runtime Metal source
+  compilation is used, so full Xcode and offline `.metallib` artifacts are not
+  required.
+
 ## 1.1.1 - 2026-07-08
 
 - Made OpenCL and Vulkan compression substantially faster in the current

@@ -151,6 +151,8 @@ def run_checked(args, **kwargs):
 def parsed_device_usable(fields, backend):
     if backend == "opencl":
         return fields.get("available") == "yes"
+    if backend == "metal":
+        return fields.get("available") == "yes"
     return fields.get("vulkan backend usable") == "yes"
 
 
@@ -158,6 +160,7 @@ def parse_backend_devices(devices_output, backend):
     section_labels = {
         "opencl": "OpenCL",
         "vulkan": "Vulkan",
+        "metal": "Metal",
     }
     label = section_labels[backend]
     if f"{label} support: not built" in devices_output:
@@ -188,6 +191,11 @@ def parse_backend_devices(devices_output, backend):
             in_section = backend == "vulkan"
             current_index = None
             current_fields = {}
+        elif line.startswith("Metal support:"):
+            append_current_device()
+            in_section = backend == "metal"
+            current_index = None
+            current_fields = {}
         elif in_section and line.startswith("[") and "]" in line:
             append_current_device()
             current_index = line.split("]", 1)[0][1:]
@@ -204,6 +212,7 @@ def select_backend_device_from_devices_output(devices_output, backend, requested
     section_labels = {
         "opencl": "OpenCL",
         "vulkan": "Vulkan",
+        "metal": "Metal",
     }
     label = section_labels[backend]
     devices, skip_reason = parse_backend_devices(devices_output, backend)
@@ -224,6 +233,18 @@ def select_backend_device_from_devices_output(devices_output, backend, requested
         for device in devices:
             if parsed_device_usable(device, backend):
                 return device["index"], None
+        return None, f"no available {label} device"
+
+    if backend == "metal":
+        usable_devices = [
+            device for device in devices
+            if parsed_device_usable(device, backend)
+        ]
+        for device in usable_devices:
+            if device.get("low power") == "no":
+                return device["index"], None
+        if usable_devices:
+            return usable_devices[0]["index"], None
         return None, f"no available {label} device"
 
     usable_devices = [
@@ -252,6 +273,10 @@ def available_opencl_device(binary, requested_device):
 
 def available_vulkan_device(binary, requested_device):
     return available_backend_device(binary, "vulkan", requested_device)
+
+
+def available_metal_device(binary, requested_device):
+    return available_backend_device(binary, "metal", requested_device)
 
 
 def run_binary_decode(args):
@@ -357,6 +382,16 @@ def compress_vulkan_native(binary, lds_path, flac_path, vulkan_device):
         lds_path,
         flac_path,
         device=vulkan_device,
+    )
+
+
+def compress_metal_native(binary, lds_path, flac_path, metal_device):
+    compress_native_flac_backend(
+        binary,
+        "metal",
+        lds_path,
+        flac_path,
+        device=metal_device,
     )
 
 
@@ -526,7 +561,7 @@ def decode_real_fixtures_with_ld_decode_loader(args, binary, temp_dir):
     if args.real_fixture_threads is not None:
         require(args.real_fixture_threads > 0, "real fixture thread count must be positive")
     require(
-        args.real_fixture_backend not in ("opencl", "vulkan") or
+        args.real_fixture_backend not in ("opencl", "vulkan", "metal") or
         args.real_fixture_threads is None,
         "accelerated real fixture mode does not accept --real-fixture-threads",
     )
@@ -537,12 +572,17 @@ def decode_real_fixtures_with_ld_decode_loader(args, binary, temp_dir):
 
     opencl_device = args.opencl_device
     vulkan_device = args.vulkan_device
+    metal_device = args.metal_device
     if args.real_fixture_backend == "opencl":
         opencl_device, skip_reason = available_opencl_device(binary, opencl_device)
         if skip_reason is not None:
             return skip_reason
     elif args.real_fixture_backend == "vulkan":
         vulkan_device, skip_reason = available_vulkan_device(binary, vulkan_device)
+        if skip_reason is not None:
+            return skip_reason
+    elif args.real_fixture_backend == "metal":
+        metal_device, skip_reason = available_metal_device(binary, metal_device)
         if skip_reason is not None:
             return skip_reason
 
@@ -574,6 +614,8 @@ def decode_real_fixtures_with_ld_decode_loader(args, binary, temp_dir):
             )
         elif args.real_fixture_backend == "opencl":
             compress_opencl_native(binary, lds_path, native_flac_ldf, opencl_device)
+        elif args.real_fixture_backend == "metal":
+            compress_metal_native(binary, lds_path, native_flac_ldf, metal_device)
         else:
             compress_vulkan_native(binary, lds_path, native_flac_ldf, vulkan_device)
         duplicate_file(native_flac_ldf, native_flac)
@@ -625,12 +667,13 @@ def parse_args(argv):
     )
     parser.add_argument(
         "--real-fixture-backend",
-        choices=("native-fixed", "opencl", "vulkan"),
+        choices=("native-fixed", "opencl", "vulkan", "metal"),
         default="native-fixed",
     )
     parser.add_argument("--real-fixture-threads", type=int)
     parser.add_argument("--opencl-device")
     parser.add_argument("--vulkan-device")
+    parser.add_argument("--metal-device")
     return parser.parse_args(argv)
 
 

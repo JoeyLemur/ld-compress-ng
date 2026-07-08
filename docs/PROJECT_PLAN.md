@@ -11,7 +11,7 @@ The preferred implementation is a C++20/CMake command-line tool that targets Lin
 and macOS on both arm64 and amd64/x86_64 CPUs. It should avoid depending at
 runtime on `ffmpeg`, `.NET`, Mono, `flaldf`, `pv`, `openssl`, `xxd`, or an
 external `ld-lds-converter` command. System libraries such as `libFLAC`,
-`libogg`, OpenCL, and Vulkan are acceptable.
+`libogg`, OpenCL, Vulkan, and Apple Metal are acceptable.
 
 ## Reference And Legacy State
 
@@ -194,6 +194,44 @@ Implemented:
   isolated default and no-OpenCL configure/build/test lanes, optional FLAC
   testbench and real-fixture lanes, and device smoke checks from ignored build
   directories.
+
+## Implementation Checkpoint - 2026-07-08, 1.2.0 Metal
+
+The 1.2.0 development line adds a macOS-only Metal acceleration backend without
+introducing an Xcode project or offline `.metallib` artifact.
+
+Implemented:
+
+- Optional `LDCOMPRESS_ENABLE_METAL` CMake plumbing. Metal is enabled only on
+  Apple platforms when Objective-C++, `Metal.framework`, and
+  `Foundation.framework` are available; no-Metal builds keep the public stubs
+  and report `Metal support: not built`.
+- `metal_devices` support detection, device enumeration, backend-local device
+  indexes, default non-low-power selection, and explicit-index errors that point
+  users back to `ld-compress-ng devices`.
+- A persistent `MetalMonoAnalysisSession` with the same OpenCL-shaped task/result
+  ABI used by the OpenCL and Vulkan backends. Runtime Metal source compilation
+  uses `newLibraryWithSource`.
+- A Metal exact-analysis kernel using one 64-lane threadgroup per selected task,
+  64-bit reductions, exact fixed/Rice and LPC/Rice costing, best-task selection,
+  and selected Rice-parameter sidecar output for the native writer.
+- Host-side generated-LPC candidate population for the first Metal release,
+  followed by Metal exact costing and best selection. This keeps the writer and
+  CLI contract aligned while leaving broad Metal LPC-generation tuning for later
+  performance work.
+- `CompressionBackend::MetalNativeFlac`, `--backend metal`, `--metal-device`,
+  backend-local `--device`, `bench --include-metal`,
+  `bench --reuse-metal-session`, Metal timing columns, and a Metal section in
+  `devices`.
+- `metal_backend` integration with `compress_lds_to_accelerated_native_flac`,
+  native FLAC-only validation, frame sample/LPC/Rice limits matching the other
+  accelerators, scalar short-tail handling, and selected native writer output.
+- Device-free/no-device-safe Metal tests plus hardware-optional `metal_devices`,
+  `metal_smoke`, and `metal_analysis` CTests. The sandboxed macOS Codex
+  environment can build Metal but may hide `MTLCreateSystemDefaultDevice()`;
+  run `ctest -L metal` from a GPU-visible shell for hardware validation.
+- CLI, fixture-helper, local-matrix, external decode, README, build/testing,
+  release checklist, changelog, and handoff updates for the Metal backend.
 
 Current default native tuning values:
 
@@ -738,12 +776,13 @@ Implemented behavior:
   thread counts, using temporary outputs so performance and compression-ratio
   checks do not require hand-managed files. It supports native tuning sweeps over
   frame size, LPC order, LPC coefficient precision, Rice partition order,
-  analysis profile, and thread count, plus opt-in OpenCL and Vulkan rows with
-  `--include-opencl` and `--include-vulkan`. Accelerator sweeps can reuse one
-  analysis session per backend with `--reuse-opencl-session` and
-  `--reuse-vulkan-session`.
-- `devices` lists available OpenCL and Vulkan devices when support is built and
-  provides the backend-local indexes used by accelerated compression.
+  analysis profile, and thread count, plus opt-in OpenCL, Vulkan, and Metal
+  rows with `--include-opencl`, `--include-vulkan`, and `--include-metal`.
+  Accelerator sweeps can reuse one analysis session per backend with
+  `--reuse-opencl-session`, `--reuse-vulkan-session`, and
+  `--reuse-metal-session`.
+- `devices` lists available OpenCL, Vulkan, and Metal devices when support is
+  built and provides the backend-local indexes used by accelerated compression.
 
 Default output naming preserves existing conventions unless explicitly
 overridden:
@@ -838,16 +877,17 @@ The tool refuses to overwrite existing outputs unless `--overwrite` is provided.
 - Extend the initial OpenCL platform/device enumeration into explicit device
   selection for GPU compression. Done for CLI plumbing, metadata selection, and
   the OpenCL-native FLAC compression backend.
-- Add the `devices` subcommand. Done for grouped OpenCL and Vulkan enumeration.
+- Add the `devices` subcommand. Done for grouped OpenCL, Vulkan, and Metal
+  enumeration.
 - Preserve current GPU-style native FLAC `.flac.ldf` output unless a deliberate
   format migration is chosen later.
-- Treat Metal support on macOS as a later optional backend after the OpenCL path
-  and CPU compatibility suite are working.
+- Treat Metal support on macOS as an optional backend after the OpenCL path and
+  CPU compatibility suite are working. Done for the first 1.2.0 Metal backend.
 
 ### Phase 3: Hardening and Packaging
 
 - Maintain Linux and macOS build documentation, including the required CPU
-  dependency set and optional OpenCL/Vulkan packages.
+  dependency set and optional OpenCL/Vulkan/Metal packages.
 - Add CI or a local equivalent for generated fixtures. Done for a local helper
   that covers default, no-OpenCL, optional FLAC-testbench, and optional
   real-fixture validation lanes.

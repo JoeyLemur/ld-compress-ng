@@ -17,6 +17,7 @@ tools when they are available and skip cleanly when they are not.
 | `libogg` development files | Yes | Ogg FLAC container support | Requires pkg-config module `ogg`. |
 | OpenCL headers + loader/framework | Optional | `devices` enumeration and OpenCL compression backend | Disable with `-DLDCOMPRESS_ENABLE_OPENCL=OFF`. |
 | Vulkan headers + loader + `glslangValidator` | Optional | Vulkan `devices` enumeration and Linux-first Vulkan backend | Disable with `-DLDCOMPRESS_ENABLE_VULKAN=OFF`. |
+| Apple Metal + Foundation frameworks | Optional on macOS | Metal `devices` enumeration and macOS Metal backend | Provided by Command Line Tools/macOS SDK; disable with `-DLDCOMPRESS_ENABLE_METAL=OFF`. |
 | Python 3 interpreter | Optional | Skip-safe external decode compatibility CTests and helper scripts | CMake adds Python-based tests only when an interpreter is found. |
 | `ffmpeg`/`ffprobe` | Optional | External native-FLAC decode compatibility CTest and legacy fixture regeneration | The compatibility test skips if `ffmpeg` is unavailable. |
 | PyAV and reference `ld-decode` dependencies | Optional | External `ld-decode` loader compatibility CTests | Tests skip if the local reference tree or imports are unavailable. |
@@ -31,20 +32,38 @@ Install the baseline CPU build dependencies with Homebrew:
 brew install cmake pkg-config flac libogg
 ```
 
-Xcode Command Line Tools provide AppleClang and the macOS SDK. The SDK may also
+Xcode Command Line Tools provide AppleClang, the macOS SDK, and the
+Metal/Foundation frameworks used by the macOS Metal backend. The SDK may also
 provide the deprecated but still linkable OpenCL framework used by optional
 OpenCL support. If OpenCL is unavailable or intentionally unwanted, configure
 with `-DLDCOMPRESS_ENABLE_OPENCL=OFF`.
 
 Apple has deprecated OpenCL and current macOS systems may build the OpenCL path
-without exposing any usable OpenCL devices. Treat OpenCL runtime validation as a
-Linux-first task; macOS GPU acceleration should be a later Metal backend.
+without exposing any usable OpenCL devices. Use `--backend metal` for native
+macOS GPU acceleration. The Metal backend embeds its Metal Shading Language
+source and compiles it at runtime with `newLibraryWithSource`; full Xcode,
+`metal`, `metallib`, and an Xcode project are not required.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
+
+Metal-focused local build:
+
+```sh
+cmake -S . -B build-metal -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DLDCOMPRESS_ENABLE_METAL=ON
+cmake --build build-metal --parallel
+build-metal/ld-compress-ng devices
+ctest --test-dir build-metal -L metal --output-on-failure
+```
+
+Some managed sandboxes hide `MTLCreateSystemDefaultDevice()` even on systems
+with a working Metal GPU. In that case the Metal tests print skip messages in
+the sandbox; rerun `ld-compress-ng devices` and `ctest -L metal` from an
+unsandboxed terminal for hardware validation.
 
 Install from a configured build:
 
@@ -57,7 +76,8 @@ CPU-only configure:
 ```sh
 cmake -S . -B build-cpu-only -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DLDCOMPRESS_ENABLE_OPENCL=OFF \
-    -DLDCOMPRESS_ENABLE_VULKAN=OFF
+    -DLDCOMPRESS_ENABLE_VULKAN=OFF \
+    -DLDCOMPRESS_ENABLE_METAL=OFF
 cmake --build build-cpu-only --parallel
 ctest --test-dir build-cpu-only --output-on-failure
 ```
@@ -208,8 +228,8 @@ ldd build/ld-compress-ng
 ```
 
 Expected required runtime libraries for the CPU build are the C++ runtime,
-system C library, `libFLAC`, and `libogg`. OpenCL and Vulkan appear only when
-the corresponding optional paths are enabled and found by CMake.
+system C library, `libFLAC`, and `libogg`. OpenCL, Vulkan, and Metal appear only
+when the corresponding optional paths are enabled and found by CMake.
 
 Useful smoke commands:
 
@@ -220,13 +240,14 @@ build/ld-compress-ng devices
 ctest --test-dir build --output-on-failure
 ```
 
-`ld-compress-ng devices` prints grouped OpenCL and Vulkan device indexes.
+`ld-compress-ng devices` prints grouped OpenCL, Vulkan, and Metal device indexes.
 OpenCL indexes are used by `compress --backend opencl --device INDEX` or
 `--opencl-device INDEX`, plus platform-local `platform/device` coordinates. The
 OpenCL compression backend writes native FLAC and requires an available OpenCL
 device at runtime. Vulkan indexes are backend-local and used by
 `compress --backend vulkan --device INDEX`; Vulkan compression requires a
-compute-capable device with `shaderInt64`.
+compute-capable device with `shaderInt64`. Metal indexes are backend-local and
+used by `compress --backend metal --device INDEX` or `--metal-device INDEX`.
 
 Manual diagnostics are not built by default. Configure with
 `-DLDCOMPRESS_BUILD_DIAGNOSTICS=ON` to build tools such as
@@ -270,7 +291,7 @@ container:
 build/ld-compress-ng compress --backend cpu --container flac capture.lds capture.flac.ldf
 ```
 
-The scalar native reference backend and the OpenCL/Vulkan backends use native
+The scalar native reference backend and the OpenCL/Vulkan/Metal backends use native
 FLAC tuning controls:
 
 ```sh
@@ -288,16 +309,17 @@ The current native tuning defaults are frame size `4608`, maximum LPC order
 `12`, LPC coefficient precision `12`, and maximum Rice partition order `5`.
 Compression still defaults to one thread unless `--threads` is specified. Use
 the scalar native backend as a reference/debug oracle for tuning and writer
-coverage; use CPU/libFLAC for normal CPU-only compression. OpenCL and Vulkan use
-the same native tuning options, and `--threads` parallelizes their CPU
+coverage; use CPU/libFLAC for normal CPU-only compression. OpenCL, Vulkan, and
+Metal use the same native tuning options, and `--threads` parallelizes their CPU
 selected-frame writer after GPU analysis. The normal `compress` command uses the
 exact native analysis profile; faster order-guess and mean-Rice profiles are
 available through `bench` and the sweep helper for tuning work.
 Vulkan exact-costs fixed/Rice and GPU-generated LPC candidates in the normal
 compression path. Use `--stats`
-on native/OpenCL/Vulkan compression when investigating backend behavior;
+on native/OpenCL/Vulkan/Metal compression when investigating backend behavior;
 accelerated backends also print coarse timing splits for setup, ingest, analyzer,
-selected-frame writing, and accelerator plan/exact-analysis stages. Vulkan
+selected-frame writing, and accelerator plan/exact-analysis stages. Metal prints
+host-side LPC generation plus exact-analysis/readback timing. Vulkan
 additionally prints GPU queue timestamp splits when the selected compute queue
 supports timestamp queries, which helps separate transfer/readback cost from
 generated-LPC and exact residual/Rice shader work.
@@ -338,20 +360,24 @@ device unless `--opencl-device INDEX` is provided. Pass
 `--include-vulkan-real-fixture` for the Vulkan-labelled compatibility test; it
 uses the same implicit Vulkan policy as compression: first backend-usable
 discrete GPU, then any backend-usable non-CPU device, unless
-`--vulkan-device INDEX` is provided. Run GPU lanes from a context that can see
-the accelerator runtime and devices; sandboxed executions may skip or report no
-available devices even when the system build can see them. For Vulkan
+`--vulkan-device INDEX` is provided. Pass `--include-metal-real-fixture` for the
+Metal-labelled compatibility test on macOS; it selects the first available
+non-low-power Metal device unless `--metal-device INDEX` is provided. Run GPU
+lanes from a context that can see the accelerator runtime and devices;
+sandboxed executions may skip or report no available devices even when the
+system build can see them. For Vulkan
 performance tests on mixed-GPU hosts, use an explicit discrete GPU index from
 `ld-compress-ng devices`; the integrated AMD device is suitable for functional
 smoke testing but should not be used for NVIDIA performance numbers.
 For `compress`, `--device INDEX` is backend-local shorthand for
-`--opencl-device INDEX` or `--vulkan-device INDEX` after `--backend` selects
-OpenCL or Vulkan. For `bench --include-opencl --include-vulkan`, use
-`--opencl-device INDEX` and `--vulkan-device INDEX`; the bare `--device` form
-is rejected because it is ambiguous. Optional accelerator `bench` rows are
+`--opencl-device INDEX`, `--vulkan-device INDEX`, or `--metal-device INDEX`
+after `--backend` selects OpenCL, Vulkan, or Metal. For benchmark runs that
+include multiple accelerators, use the backend-specific device flags; the bare
+`--device` form is rejected because it is ambiguous. Optional accelerator `bench` rows are
 omitted when no suitable device is visible, while direct `compress --backend
 vulkan --device INDEX` fails if the selected device is unavailable or lacks
-backend-required features such as `shaderInt64`.
+backend-required features such as `shaderInt64`, and `compress --backend metal
+--device INDEX` fails if the selected Metal device is unavailable.
 Use `--dry-run` to inspect the generated commands, and `--strict-optional` to
 fail instead of skipping when a requested local fixture directory is missing.
 
@@ -368,6 +394,12 @@ can also run them directly:
 
 ```sh
 ctest --test-dir build -L opencl --output-on-failure
+```
+
+Metal smoke and analysis tests are labelled `metal`:
+
+```sh
+ctest --test-dir build-metal -L metal --output-on-failure
 ```
 
 In a real-fixture-enabled build, that label also includes the OpenCL
@@ -397,10 +429,10 @@ When Python and the local `reference/ld-decode/` loader dependencies are
 available, the same CMake option also adds skip-safe external compatibility
 tests. Those compress the first fixture to native `.flac.ldf` output and verify
 the reference `ld-decode` loader can read both `.flac.ldf` and `.flac` suffixes.
-OpenCL and Vulkan real-fixture loader tests are added too; they skip cleanly
+OpenCL, Vulkan, and Metal real-fixture loader tests are added too; they skip cleanly
 when backend support, a runtime device, or the reference loader dependencies
 are unavailable.
-Use `ctest --test-dir build-real-fixtures -L real-fixtures -LE "opencl|vulkan"`
+Use `ctest --test-dir build-real-fixtures -L real-fixtures -LE "opencl|vulkan|metal"`
 when you want the scalar real-fixture suite without accelerator runtime checks.
 The fixture tree remains ignored by Git.
 
@@ -409,9 +441,10 @@ fixture, use the standalone helper:
 
 ```sh
 python3 tools/roundtrip_real_fixtures.py \
-    --backends opencl,vulkan \
+    --backends opencl,vulkan,metal \
     --opencl-device 1 \
-    --vulkan-device 1
+    --vulkan-device 1 \
+    --metal-device 0
 ```
 
 The helper writes ignored CSV/Markdown reports and temporary compressed/decoded
@@ -458,11 +491,12 @@ analysis, and `8` native threads. Add `--include-opencl` and optionally
 `--opencl-device INDEX` to include OpenCL backend rows in the CSV/Markdown
 output when an OpenCL device is available. Add `--include-vulkan` and optionally
 `--vulkan-device INDEX` to include Vulkan backend rows; on mixed-GPU hosts, pass
-the discrete GPU index so the run does not land on an integrated GPU. For
-accelerator speed sweeps, `--reuse-opencl-session` and
-`--reuse-vulkan-session` reuse one analysis session across rows and avoid
-charging device setup to every benchmark case. Expand the grid explicitly when
-doing a broader local tuning pass:
+the discrete GPU index so the run does not land on an integrated GPU. Add
+`--include-metal` and optionally `--metal-device INDEX` on macOS to include
+Metal rows. For accelerator speed sweeps, `--reuse-opencl-session`,
+`--reuse-vulkan-session`, and `--reuse-metal-session` reuse one analysis session
+across rows and avoid charging device setup to every benchmark case. Expand the
+grid explicitly when doing a broader local tuning pass:
 
 ```sh
 python3 tools/sweep_real_fixtures.py \
@@ -507,6 +541,14 @@ LDS bytes across all six fixtures:
 | --- | ---: | ---: | ---: |
 | OpenCL | `149,954,560` | `79,892,119` | `4.452s` |
 | Vulkan | `149,954,560` | `79,892,217` | `3.938s` |
+
+Metal rows use the same helper and report comparable measurement data when
+fixtures are present:
+
+```sh
+python3 tools/roundtrip_real_fixtures.py --backends metal --metal-device INDEX
+python3 tools/sweep_real_fixtures.py --include-metal --reuse-metal-session --metal-device INDEX
+```
 
 Scalar native-fixed is useful as a size and decision oracle, but CPU/libFLAC
 remains the recommended CPU-only encoder.

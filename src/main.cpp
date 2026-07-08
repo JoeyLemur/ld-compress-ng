@@ -2,6 +2,8 @@
 #include "flac_codec.h"
 #include "hash.h"
 #include "lds_codec.h"
+#include "metal_backend.h"
+#include "metal_devices.h"
 #include "opencl_backend.h"
 #include "opencl_devices.h"
 #include "vulkan_backend.h"
@@ -44,8 +46,10 @@ struct Options {
     bool show_stats = false;
     bool bench_include_opencl = false;
     bool bench_include_vulkan = false;
+    bool bench_include_metal = false;
     bool bench_reuse_opencl_session = false;
     bool bench_reuse_vulkan_session = false;
+    bool bench_reuse_metal_session = false;
     bool level_explicit = false;
     bool native_frame_samples_explicit = false;
     bool native_max_lpc_order_explicit = false;
@@ -54,6 +58,7 @@ struct Options {
     bool device_index_explicit = false;
     bool opencl_device_index_explicit = false;
     bool vulkan_device_index_explicit = false;
+    bool metal_device_index_explicit = false;
     unsigned level = 11;
     unsigned threads = 1;
     unsigned native_frame_samples = kDefaultNativeFrameSamples;
@@ -63,6 +68,7 @@ struct Options {
     std::optional<std::size_t> device_index;
     std::optional<std::size_t> opencl_device_index;
     std::optional<std::size_t> vulkan_device_index;
+    std::optional<std::size_t> metal_device_index;
     std::vector<unsigned> bench_threads;
     std::vector<unsigned> bench_frame_samples;
     std::vector<unsigned> bench_lpc_orders;
@@ -85,7 +91,7 @@ struct Options {
         << "  ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng verify [--source ORIGINAL.lds] INPUT\n"
         << "  ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]\n"
-        << "  ld-compress-ng bench [--threads 8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] [--lpc-precision N[,N...]] [--rice-partition-order N[,N...]] [--analysis-profile NAME[,NAME...]] [--include-opencl] [--include-vulkan] [--reuse-opencl-session] [--reuse-vulkan-session] [--device INDEX|--opencl-device INDEX|--vulkan-device INDEX] INPUT\n"
+        << "  ld-compress-ng bench [--threads 8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] [--lpc-precision N[,N...]] [--rice-partition-order N[,N...]] [--analysis-profile NAME[,NAME...]] [--include-opencl] [--include-vulkan] [--include-metal] [--reuse-opencl-session] [--reuse-vulkan-session] [--reuse-metal-session] [--device INDEX|--opencl-device INDEX|--vulkan-device INDEX|--metal-device INDEX] INPUT\n"
         << "  ld-compress-ng devices\n"
         << "  ld-compress-ng --version\n"
         << "  ld-compress-ng --help\n\n"
@@ -97,31 +103,33 @@ struct Options {
         << "  ld-compress-ng compress --backend opencl --device INDEX capture.lds\n\n"
         << "Commands:\n"
         << "  compress      Compress packed LDS input. Default output is INPUT.ldf for cpu\n"
-        << "                and INPUT.flac.ldf for native-fixed/opencl/vulkan/native-verbatim.\n"
+        << "                and INPUT.flac.ldf for native-fixed/opencl/vulkan/metal/native-verbatim.\n"
         << "  decompress    Decode Ogg/native FLAC RF input back to packed LDS output.\n"
         << "  verify        Print compressed and decoded MD5; compare with --source when set.\n"
         << "  convert       Convert between packed LDS and signed 16-bit little-endian PCM.\n"
         << "  bench         Compare backend size/speed using temporary output files.\n"
-        << "  devices       List OpenCL and Vulkan devices with --device indexes.\n\n"
+        << "  devices       List OpenCL, Vulkan, and Metal devices with --device indexes.\n\n"
         << "Compression backends:\n"
         << "  cpu              Default portable Ogg FLAC .ldf backend using libFLAC/libogg.\n"
         << "  opencl           Native FLAC .flac.ldf backend using the selected OpenCL device.\n"
         << "  vulkan           Native FLAC .flac.ldf backend using Vulkan compute.\n"
+        << "  metal            Native FLAC .flac.ldf backend using Apple Metal compute.\n"
         << "  native-fixed     Reference/debug scalar native FLAC backend for analysis parity.\n"
         << "  native-verbatim  Reference/debug native FLAC backend using verbatim frames.\n\n"
         << "Compress options:\n"
-        << "  --backend cpu|native-verbatim|native-fixed|opencl|vulkan\n"
+        << "  --backend cpu|native-verbatim|native-fixed|opencl|vulkan|metal\n"
         << "  --level N                    CPU/libFLAC level, 1..12; default 11.\n"
         << "  --threads N                  Native FLAC frame writer threads; default 1.\n"
         << "  --frame-samples N            Native FLAC block size, 16..4608; default 4608.\n"
         << "  --lpc-order N                Predictive native max LPC order, 0..12; default 12.\n"
         << "  --lpc-precision N            Predictive native LPC precision, 1..15; default 12.\n"
         << "  --rice-partition-order N     Predictive native max Rice partition order, 0..8; default 5.\n"
-        << "  --device INDEX               Backend-local OpenCL/Vulkan device index.\n"
+        << "  --device INDEX               Backend-local OpenCL/Vulkan/Metal device index.\n"
         << "  --opencl-device INDEX        Explicit OpenCL device index.\n"
         << "  --vulkan-device INDEX        Explicit Vulkan device index.\n"
+        << "  --metal-device INDEX         Explicit Metal device index.\n"
         << "  --stats                      Print native backend decision stats and timings.\n"
-        << "  --container ogg|flac         cpu can write Ogg or native FLAC; native/opencl/vulkan write flac.\n"
+        << "  --container ogg|flac         cpu can write Ogg or native FLAC; native/opencl/vulkan/metal write flac.\n"
         << "  --overwrite                  Replace an existing output path.\n\n"
         << "Bench options:\n"
         << "  --analysis-profile NAME      exact, order-guess-exact-rice,\n"
@@ -131,6 +139,7 @@ struct Options {
         << "                               subdivide-tukey3-mean-estimate-rice.\n"
         << "  --reuse-opencl-session       Reuse OpenCL setup across benchmark rows.\n"
         << "  --reuse-vulkan-session       Reuse Vulkan setup across benchmark rows.\n\n"
+        << "  --reuse-metal-session        Reuse Metal setup across benchmark rows.\n\n"
         << "More details: README.md and docs/build-and-testing.md\n";
     std::exit(exit_code);
 }
@@ -152,13 +161,15 @@ bool is_native_flac_backend(ldcompress::CompressionBackend backend)
     return backend == ldcompress::CompressionBackend::NativeVerbatimFlac ||
         backend == ldcompress::CompressionBackend::NativeFixedFlac ||
         backend == ldcompress::CompressionBackend::OpenClNativeFlac ||
-        backend == ldcompress::CompressionBackend::VulkanNativeFlac;
+        backend == ldcompress::CompressionBackend::VulkanNativeFlac ||
+        backend == ldcompress::CompressionBackend::MetalNativeFlac;
 }
 
 bool is_accelerated_native_backend(ldcompress::CompressionBackend backend)
 {
     return backend == ldcompress::CompressionBackend::OpenClNativeFlac ||
-        backend == ldcompress::CompressionBackend::VulkanNativeFlac;
+        backend == ldcompress::CompressionBackend::VulkanNativeFlac ||
+        backend == ldcompress::CompressionBackend::MetalNativeFlac;
 }
 
 std::optional<std::size_t> effective_opencl_device_index(const Options& options)
@@ -172,6 +183,13 @@ std::optional<std::size_t> effective_vulkan_device_index(const Options& options)
 {
     return options.vulkan_device_index.has_value()
         ? options.vulkan_device_index
+        : options.device_index;
+}
+
+std::optional<std::size_t> effective_metal_device_index(const Options& options)
+{
+    return options.metal_device_index.has_value()
+        ? options.metal_device_index
         : options.device_index;
 }
 
@@ -217,6 +235,35 @@ std::optional<std::size_t> available_vulkan_device_index(
     }
     for (const auto& device : devices) {
         if (device.available && device.shader_int64 && device.device_type != "cpu") {
+            return device.index;
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::optional<std::size_t> available_metal_device_index(
+    std::optional<std::size_t> requested_index)
+{
+    if (!ldcompress::metal_support_built()) {
+        return std::nullopt;
+    }
+
+    const auto devices = ldcompress::list_metal_devices();
+    if (requested_index.has_value()) {
+        if (*requested_index < devices.size() && devices[*requested_index].available) {
+            return devices[*requested_index].index;
+        }
+        return std::nullopt;
+    }
+
+    for (const auto& device : devices) {
+        if (device.available && !device.low_power) {
+            return device.index;
+        }
+    }
+    for (const auto& device : devices) {
+        if (device.available) {
             return device.index;
         }
     }
@@ -509,6 +556,8 @@ Options parse_compress(int argc, char** argv)
                 options.backend = ldcompress::CompressionBackend::OpenClNativeFlac;
             } else if (backend == "vulkan") {
                 options.backend = ldcompress::CompressionBackend::VulkanNativeFlac;
+            } else if (backend == "metal") {
+                options.backend = ldcompress::CompressionBackend::MetalNativeFlac;
             } else {
                 throw std::runtime_error("unknown backend: " + std::string(backend));
             }
@@ -569,6 +618,12 @@ Options parse_compress(int argc, char** argv)
             }
             options.vulkan_device_index_explicit = true;
             options.vulkan_device_index = parse_device_index(argv[i]);
+        } else if (arg == "--metal-device") {
+            if (++i >= argc) {
+                throw std::runtime_error(std::string(arg) + " requires a value");
+            }
+            options.metal_device_index_explicit = true;
+            options.metal_device_index = parse_device_index(argv[i]);
         } else if (arg == "--container") {
             if (++i >= argc) {
                 throw std::runtime_error("--container requires a value");
@@ -619,15 +674,19 @@ Options parse_compress(int argc, char** argv)
         throw std::runtime_error("--stats is currently supported only by native FLAC backends");
     }
     if (options.device_index_explicit && !is_accelerated_native_backend(options.backend)) {
-        throw std::runtime_error("--device is currently supported only by opencl and vulkan backends");
+        throw std::runtime_error("--device is currently supported only by opencl, vulkan, and metal backends");
     }
     if (options.backend == ldcompress::CompressionBackend::OpenClNativeFlac &&
-        options.vulkan_device_index_explicit) {
-        throw std::runtime_error("--vulkan-device cannot be used with the opencl backend");
+        (options.vulkan_device_index_explicit || options.metal_device_index_explicit)) {
+        throw std::runtime_error("--vulkan-device and --metal-device cannot be used with the opencl backend");
     }
     if (options.backend == ldcompress::CompressionBackend::VulkanNativeFlac &&
-        options.opencl_device_index_explicit) {
-        throw std::runtime_error("--opencl-device cannot be used with the vulkan backend");
+        (options.opencl_device_index_explicit || options.metal_device_index_explicit)) {
+        throw std::runtime_error("--opencl-device and --metal-device cannot be used with the vulkan backend");
+    }
+    if (options.backend == ldcompress::CompressionBackend::MetalNativeFlac &&
+        (options.opencl_device_index_explicit || options.vulkan_device_index_explicit)) {
+        throw std::runtime_error("--opencl-device and --vulkan-device cannot be used with the metal backend");
     }
     if (options.opencl_device_index_explicit &&
         options.backend != ldcompress::CompressionBackend::OpenClNativeFlac) {
@@ -636,6 +695,10 @@ Options parse_compress(int argc, char** argv)
     if (options.vulkan_device_index_explicit &&
         options.backend != ldcompress::CompressionBackend::VulkanNativeFlac) {
         throw std::runtime_error("--vulkan-device is currently supported only by the vulkan backend");
+    }
+    if (options.metal_device_index_explicit &&
+        options.backend != ldcompress::CompressionBackend::MetalNativeFlac) {
+        throw std::runtime_error("--metal-device is currently supported only by the metal backend");
     }
     if (options.backend == ldcompress::CompressionBackend::CpuLibFlac &&
         native_tuning_options_explicit) {
@@ -793,10 +856,14 @@ Options parse_bench(int argc, char** argv)
             options.bench_include_opencl = true;
         } else if (arg == "--include-vulkan") {
             options.bench_include_vulkan = true;
+        } else if (arg == "--include-metal") {
+            options.bench_include_metal = true;
         } else if (arg == "--reuse-opencl-session") {
             options.bench_reuse_opencl_session = true;
         } else if (arg == "--reuse-vulkan-session") {
             options.bench_reuse_vulkan_session = true;
+        } else if (arg == "--reuse-metal-session") {
+            options.bench_reuse_metal_session = true;
         } else if (arg == "--device") {
             if (++i >= argc) {
                 throw std::runtime_error(std::string(arg) + " requires a value");
@@ -815,6 +882,12 @@ Options parse_bench(int argc, char** argv)
             }
             options.vulkan_device_index_explicit = true;
             options.vulkan_device_index = parse_device_index(argv[i]);
+        } else if (arg == "--metal-device") {
+            if (++i >= argc) {
+                throw std::runtime_error(std::string(arg) + " requires a value");
+            }
+            options.metal_device_index_explicit = true;
+            options.metal_device_index = parse_device_index(argv[i]);
         } else if (arg == "--help" || arg == "-h") {
             usage(0);
         } else if (!arg.empty() && arg.front() == '-') {
@@ -847,13 +920,16 @@ Options parse_bench(int argc, char** argv)
     }
     if (options.device_index_explicit &&
         !options.bench_include_opencl &&
-        !options.bench_include_vulkan) {
-        throw std::runtime_error("--device is supported by bench only with --include-opencl or --include-vulkan");
+        !options.bench_include_vulkan &&
+        !options.bench_include_metal) {
+        throw std::runtime_error("--device is supported by bench only with --include-opencl, --include-vulkan, or --include-metal");
     }
-    if (options.device_index_explicit &&
-        options.bench_include_opencl &&
-        options.bench_include_vulkan) {
-        throw std::runtime_error("--device is ambiguous when bench includes both OpenCL and Vulkan; use --opencl-device and --vulkan-device");
+    const auto included_accelerator_count =
+        (options.bench_include_opencl ? 1 : 0) +
+        (options.bench_include_vulkan ? 1 : 0) +
+        (options.bench_include_metal ? 1 : 0);
+    if (options.device_index_explicit && included_accelerator_count > 1) {
+        throw std::runtime_error("--device is ambiguous when bench includes multiple accelerators; use --opencl-device, --vulkan-device, and --metal-device");
     }
     if (options.opencl_device_index_explicit && !options.bench_include_opencl) {
         throw std::runtime_error("--opencl-device is supported by bench only with --include-opencl");
@@ -861,11 +937,17 @@ Options parse_bench(int argc, char** argv)
     if (options.vulkan_device_index_explicit && !options.bench_include_vulkan) {
         throw std::runtime_error("--vulkan-device is supported by bench only with --include-vulkan");
     }
+    if (options.metal_device_index_explicit && !options.bench_include_metal) {
+        throw std::runtime_error("--metal-device is supported by bench only with --include-metal");
+    }
     if (options.bench_reuse_opencl_session && !options.bench_include_opencl) {
         throw std::runtime_error("--reuse-opencl-session requires --include-opencl");
     }
     if (options.bench_reuse_vulkan_session && !options.bench_include_vulkan) {
         throw std::runtime_error("--reuse-vulkan-session requires --include-vulkan");
+    }
+    if (options.bench_reuse_metal_session && !options.bench_include_metal) {
+        throw std::runtime_error("--reuse-metal-session requires --include-metal");
     }
 
     options.input = positional[0];
@@ -1134,6 +1216,17 @@ void print_native_stats(const ldcompress::NativeCompressionStats& stats)
                       << seconds_from_ns(stats.vulkan_gpu_readback_ns) << "s"
                       << '\n';
         }
+        if (stats.metal_timed_batches != 0) {
+            std::cerr << "metal timings: batches=" << stats.metal_timed_batches
+                      << " upload=" << seconds_from_ns(stats.metal_upload_ns) << "s"
+                      << " lpc-generation="
+                      << seconds_from_ns(stats.metal_lpc_generation_ns) << "s"
+                      << " exact=" << seconds_from_ns(stats.metal_exact_analysis_ns)
+                      << "s"
+                      << " choose=" << seconds_from_ns(stats.metal_choose_best_ns) << "s"
+                      << " readback=" << seconds_from_ns(stats.metal_readback_ns) << "s"
+                      << '\n';
+        }
         std::cerr.unsetf(std::ios::floatfield);
     }
 }
@@ -1162,6 +1255,7 @@ int run_compress(const Options& options)
         .native_stats = options.show_stats ? &native_stats : nullptr,
         .opencl_device_index = effective_opencl_device_index(options),
         .vulkan_device_index = effective_vulkan_device_index(options),
+        .metal_device_index = effective_metal_device_index(options),
     };
     const auto stats = ldcompress::compress_lds(input, options.output, compress_options);
     std::cerr << "compressed " << stats.input_bytes << " bytes to "
@@ -1289,6 +1383,7 @@ struct BenchCase {
     ldcompress::NativeAnalysisProfile native_analysis_profile;
     std::optional<std::size_t> opencl_device_index;
     std::optional<std::size_t> vulkan_device_index;
+    std::optional<std::size_t> metal_device_index;
     bool show_frame_samples;
     bool show_lpc_order;
     bool show_lpc_precision;
@@ -1320,7 +1415,8 @@ BenchResult run_bench_case(
     const std::filesystem::path& output_path,
     const BenchCase& bench_case,
     ldcompress::OpenClCompressionSession* opencl_session = nullptr,
-    ldcompress::VulkanCompressionSession* vulkan_session = nullptr)
+    ldcompress::VulkanCompressionSession* vulkan_session = nullptr,
+    ldcompress::MetalCompressionSession* metal_session = nullptr)
 {
     std::ifstream input(input_path, std::ios::binary);
     if (!input) {
@@ -1343,6 +1439,7 @@ BenchResult run_bench_case(
         .native_stats = collect_native_stats ? &native_stats : nullptr,
         .opencl_device_index = bench_case.opencl_device_index,
         .vulkan_device_index = bench_case.vulkan_device_index,
+        .metal_device_index = bench_case.metal_device_index,
     };
 
     const auto started = std::chrono::steady_clock::now();
@@ -1379,6 +1476,23 @@ BenchResult run_bench_case(
                 .max_rice_partition_order = bench_case.native_max_rice_partition_order,
                 .analysis_profile = bench_case.native_analysis_profile,
                 .device_index = bench_case.vulkan_device_index,
+                .native_stats = collect_native_stats ? &native_stats : nullptr,
+            });
+    } else if (metal_session != nullptr &&
+        bench_case.backend == ldcompress::CompressionBackend::MetalNativeFlac) {
+        stats = metal_session->compress_lds_to_native_flac(
+            input,
+            output_path.string(),
+            ldcompress::MetalCompressionOptions {
+                .container = bench_case.container,
+                .sample_rate = 40000,
+                .thread_count = bench_case.threads,
+                .frame_samples = bench_case.native_frame_samples,
+                .max_lpc_order = bench_case.native_max_lpc_order,
+                .lpc_precision = bench_case.native_lpc_precision,
+                .max_rice_partition_order = bench_case.native_max_rice_partition_order,
+                .analysis_profile = bench_case.native_analysis_profile,
+                .device_index = bench_case.metal_device_index,
                 .native_stats = collect_native_stats ? &native_stats : nullptr,
             });
     } else {
@@ -1505,6 +1619,11 @@ void print_bench_result(const BenchResult& result)
     print_seconds_field(result.native_stats.vulkan_gpu_exact_analysis_ns);
     print_seconds_field(result.native_stats.vulkan_gpu_choose_best_ns);
     print_seconds_field(result.native_stats.vulkan_gpu_readback_ns);
+    print_seconds_field(result.native_stats.metal_upload_ns);
+    print_seconds_field(result.native_stats.metal_lpc_generation_ns);
+    print_seconds_field(result.native_stats.metal_exact_analysis_ns);
+    print_seconds_field(result.native_stats.metal_choose_best_ns);
+    print_seconds_field(result.native_stats.metal_readback_ns);
     std::cout << '\n';
 }
 
@@ -1524,6 +1643,7 @@ int run_bench(const Options& options)
             .native_analysis_profile = ldcompress::NativeAnalysisProfile::Exact,
             .opencl_device_index = std::nullopt,
             .vulkan_device_index = std::nullopt,
+            .metal_device_index = std::nullopt,
             .show_frame_samples = false,
             .show_lpc_order = false,
             .show_lpc_precision = false,
@@ -1533,6 +1653,7 @@ int run_bench(const Options& options)
     };
     std::optional<std::size_t> bench_opencl_device_index;
     std::optional<std::size_t> bench_vulkan_device_index;
+    std::optional<std::size_t> bench_metal_device_index;
 
     for (const unsigned frame_samples : options.bench_frame_samples) {
         cases.push_back(BenchCase {
@@ -1546,6 +1667,7 @@ int run_bench(const Options& options)
             .native_analysis_profile = ldcompress::NativeAnalysisProfile::Exact,
             .opencl_device_index = std::nullopt,
             .vulkan_device_index = std::nullopt,
+            .metal_device_index = std::nullopt,
             .show_frame_samples = true,
             .show_lpc_order = false,
             .show_lpc_precision = false,
@@ -1571,6 +1693,7 @@ int run_bench(const Options& options)
                                 .native_analysis_profile = profile,
                                 .opencl_device_index = std::nullopt,
                                 .vulkan_device_index = std::nullopt,
+                                .metal_device_index = std::nullopt,
                                 .show_frame_samples = true,
                                 .show_lpc_order = true,
                                 .show_lpc_precision = true,
@@ -1606,6 +1729,7 @@ int run_bench(const Options& options)
                                         .native_analysis_profile = profile,
                                         .opencl_device_index = opencl_device_index,
                                         .vulkan_device_index = std::nullopt,
+                                        .metal_device_index = std::nullopt,
                                         .show_frame_samples = true,
                                         .show_lpc_order = true,
                                         .show_lpc_precision = true,
@@ -1653,6 +1777,7 @@ int run_bench(const Options& options)
                                         .native_analysis_profile = profile,
                                         .opencl_device_index = std::nullopt,
                                         .vulkan_device_index = vulkan_device_index,
+                                        .metal_device_index = std::nullopt,
                                         .show_frame_samples = true,
                                         .show_lpc_order = true,
                                         .show_lpc_precision = true,
@@ -1674,6 +1799,54 @@ int run_bench(const Options& options)
                     " is not available or lacks shaderInt64");
             } else {
                 std::cerr << "bench: Vulkan requested but no non-CPU device with shaderInt64 was found; omitting vulkan rows\n";
+            }
+        }
+    }
+
+    if (options.bench_include_metal) {
+        const auto metal_device_index =
+            available_metal_device_index(effective_metal_device_index(options));
+        if (metal_device_index.has_value()) {
+            bench_metal_device_index = metal_device_index;
+            for (const unsigned frame_samples : options.bench_frame_samples) {
+                for (const unsigned lpc_order : options.bench_lpc_orders) {
+                    for (const unsigned lpc_precision : options.bench_lpc_precisions) {
+                        for (const unsigned rice_partition_order : options.bench_rice_partition_orders) {
+                            for (const auto profile : options.bench_analysis_profiles) {
+                                for (const unsigned threads : options.bench_threads) {
+                                    cases.push_back(BenchCase {
+                                        .backend = ldcompress::CompressionBackend::MetalNativeFlac,
+                                        .container = ldcompress::FlacContainer::Native,
+                                        .threads = threads,
+                                        .native_frame_samples = frame_samples,
+                                        .native_max_lpc_order = lpc_order,
+                                        .native_lpc_precision = lpc_precision,
+                                        .native_max_rice_partition_order = rice_partition_order,
+                                        .native_analysis_profile = profile,
+                                        .opencl_device_index = std::nullopt,
+                                        .vulkan_device_index = std::nullopt,
+                                        .metal_device_index = metal_device_index,
+                                        .show_frame_samples = true,
+                                        .show_lpc_order = true,
+                                        .show_lpc_precision = true,
+                                        .show_rice_partition_order = true,
+                                        .show_analysis_profile = true,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            const auto requested_metal_device_index = effective_metal_device_index(options);
+            if (requested_metal_device_index.has_value()) {
+                throw std::runtime_error(
+                    "bench: requested Metal device " +
+                    std::to_string(*requested_metal_device_index) +
+                    " is not available");
+            } else {
+                std::cerr << "bench: Metal requested but no available device was found; omitting metal rows\n";
             }
         }
     }
@@ -1736,6 +1909,11 @@ int run_bench(const Options& options)
               << std::setw(18) << "vk_gpu_exact_s"
               << std::setw(18) << "vk_gpu_choose_s"
               << std::setw(18) << "vk_gpu_read_s"
+              << std::setw(18) << "metal_up_s"
+              << std::setw(18) << "metal_lpc_s"
+              << std::setw(18) << "metal_exact_s"
+              << std::setw(18) << "metal_choose_s"
+              << std::setw(18) << "metal_read_s"
               << '\n';
 
     std::unique_ptr<ldcompress::OpenClCompressionSession> opencl_session;
@@ -1750,12 +1928,23 @@ int run_bench(const Options& options)
             bench_vulkan_device_index);
     }
 
+    std::unique_ptr<ldcompress::MetalCompressionSession> metal_session;
+    if (options.bench_reuse_metal_session && bench_metal_device_index.has_value()) {
+        metal_session = std::make_unique<ldcompress::MetalCompressionSession>(
+            bench_metal_device_index);
+    }
+
     for (std::size_t i = 0; i < cases.size(); ++i) {
         const auto output_path = temp_dir.path() /
             ("case-" + std::to_string(i) +
                 (cases[i].container == ldcompress::FlacContainer::Native ? ".flac.ldf" : ".ldf"));
         print_bench_result(run_bench_case(
-            options.input, output_path, cases[i], opencl_session.get(), vulkan_session.get()));
+            options.input,
+            output_path,
+            cases[i],
+            opencl_session.get(),
+            vulkan_session.get(),
+            metal_session.get()));
     }
 
     return 0;
@@ -1864,6 +2053,36 @@ int run_devices(int argc, char** argv)
                           << std::dec << std::setfill(' ') << '\n'
                           << "    api version: " << device.api_version << '\n'
                           << "    driver version: " << device.driver_version << '\n';
+            }
+        }
+    }
+
+    std::cout << '\n';
+    if (!ldcompress::metal_support_built()) {
+        std::cout << "Metal support: not built\n";
+    } else {
+        std::cout << "Metal support: built\n";
+        const auto devices = ldcompress::list_metal_devices();
+        if (devices.empty()) {
+            std::cout << "No Metal devices found\n";
+        } else {
+            for (std::size_t i = 0; i < devices.size(); ++i) {
+                const auto& device = devices[i];
+                std::cout << '[' << device.index << "] " << device.device_name << '\n'
+                          << "    available: " << (device.available ? "yes" : "no") << '\n'
+                          << "    low power: " << (device.low_power ? "yes" : "no") << '\n'
+                          << "    removable: " << (device.removable ? "yes" : "no") << '\n'
+                          << "    unified memory: "
+                          << (device.unified_memory ? "yes" : "no") << '\n'
+                          << "    recommended max working set: "
+                          << device.recommended_max_working_set_bytes << " bytes\n"
+                          << "    max buffer length: "
+                          << device.max_buffer_length << " bytes\n"
+                          << "    max threads per threadgroup: "
+                          << device.max_threads_per_threadgroup << '\n'
+                          << "    registry id: 0x" << std::hex << std::setw(16)
+                          << std::setfill('0') << device.registry_id
+                          << std::dec << std::setfill(' ') << '\n';
             }
         }
     }

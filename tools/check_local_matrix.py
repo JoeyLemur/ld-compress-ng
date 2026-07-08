@@ -175,6 +175,26 @@ def build_steps(args: argparse.Namespace) -> list[Step]:
             Step("no-vulkan: devices", [str(no_vulkan_build / "ld-compress-ng"), "devices"])
         )
 
+    if not args.skip_no_metal:
+        no_metal_build = build_root / "no-metal"
+        add_configured_suite(
+            steps,
+            "no-metal",
+            no_metal_build,
+            args.build_type,
+            args.jobs,
+            [
+                "-DLDCOMPRESS_ENABLE_METAL=OFF",
+                "-DLDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS=OFF",
+                "-DLDCOMPRESS_ENABLE_FLAC_TEST_FILE_TESTS=OFF",
+                *common_cache_args,
+            ],
+            [],
+        )
+        steps.append(
+            Step("no-metal: devices", [str(no_metal_build / "ld-compress-ng"), "devices"])
+        )
+
     include_flac = args.all_local or args.include_flac_test_files
     flac_dir = optional_dir(
         root,
@@ -204,7 +224,8 @@ def build_steps(args: argparse.Namespace) -> list[Step]:
         args.all_local or
         args.include_real_fixtures or
         args.include_opencl_real_fixture or
-        args.include_vulkan_real_fixture
+        args.include_vulkan_real_fixture or
+        args.include_metal_real_fixture
     )
     real_dir = optional_dir(
         root,
@@ -221,6 +242,8 @@ def build_steps(args: argparse.Namespace) -> list[Step]:
             excluded_labels.append("opencl")
         if not args.include_vulkan_real_fixture:
             excluded_labels.append("vulkan")
+        if not args.include_metal_real_fixture:
+            excluded_labels.append("metal")
         if excluded_labels:
             real_ctest_args.extend(["-LE", "|".join(excluded_labels)])
         real_cache_args = [
@@ -233,6 +256,8 @@ def build_steps(args: argparse.Namespace) -> list[Step]:
             real_cache_args.append(f"-DLDCOMPRESS_OPENCL_TEST_DEVICE={args.opencl_device}")
         if args.vulkan_device is not None:
             real_cache_args.append(f"-DLDCOMPRESS_VULKAN_TEST_DEVICE={args.vulkan_device}")
+        if args.metal_device is not None:
+            real_cache_args.append(f"-DLDCOMPRESS_METAL_TEST_DEVICE={args.metal_device}")
         add_configured_suite(
             steps,
             "real-fixtures",
@@ -268,6 +293,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="do not run the LDCOMPRESS_ENABLE_OPENCL=OFF lane")
     parser.add_argument("--skip-no-vulkan", action="store_true",
         help="do not run the LDCOMPRESS_ENABLE_VULKAN=OFF lane")
+    parser.add_argument("--skip-no-metal", action="store_true",
+        help="do not run the LDCOMPRESS_ENABLE_METAL=OFF lane")
     parser.add_argument("--include-flac-test-files", action="store_true")
     parser.add_argument("--include-real-fixtures", action="store_true")
     parser.add_argument(
@@ -281,12 +308,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="include the real-fixture lane and its Vulkan-labelled compatibility test",
     )
     parser.add_argument(
+        "--include-metal-real-fixture",
+        action="store_true",
+        help="include the real-fixture lane and its Metal-labelled compatibility test",
+    )
+    parser.add_argument(
         "--opencl-device",
         help="flattened OpenCL device index for the OpenCL real-fixture compatibility test",
     )
     parser.add_argument(
         "--vulkan-device",
         help="Vulkan device index for the Vulkan real-fixture compatibility test",
+    )
+    parser.add_argument(
+        "--metal-device",
+        help="Metal device index for the Metal real-fixture compatibility test",
     )
     parser.add_argument(
         "--python-executable",
@@ -323,6 +359,8 @@ def main(argv: list[str]) -> int:
         raise RuntimeError("--opencl-device requires --include-opencl-real-fixture")
     if args.vulkan_device is not None and not args.include_vulkan_real_fixture:
         raise RuntimeError("--vulkan-device requires --include-vulkan-real-fixture")
+    if args.metal_device is not None and not args.include_metal_real_fixture:
+        raise RuntimeError("--metal-device requires --include-metal-real-fixture")
     root = project_root()
     steps = build_steps(args)
     if not steps:

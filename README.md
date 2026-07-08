@@ -6,13 +6,15 @@ decompresses them back to `.lds`, and verifies round trips without requiring the
 old shell pipeline or helper tools.
 
 The default CPU backend writes Ogg FLAC `.ldf` files with system `libFLAC` and
-`libogg`; this is the normal CPU-only compression path. The OpenCL and Vulkan
-backends write native FLAC `.flac.ldf` files through the native writer. The
+`libogg`; this is the normal CPU-only compression path. The OpenCL, Vulkan, and
+Metal backends write native FLAC `.flac.ldf` files through the native writer. The
 scalar native backends remain available as reference/debug paths for analysis
 parity, writer coverage, and tuning experiments, not as recommended CPU
 compression choices. Vulkan has been validated locally on NVIDIA hardware for
 compatible native FLAC output; AMD is intended through standard Vulkan compute
-but not yet hardware-validated.
+but not yet hardware-validated. Metal is macOS-only and uses Apple Command Line
+Tools plus runtime Metal source compilation; no Xcode project or offline
+`.metallib` is required.
 
 `ld-compress-ng` does not depend at runtime on Qt, ffmpeg, `.NET`, Mono, FlaLDF,
 OpenSSL, or `ld-lds-converter`.
@@ -34,6 +36,8 @@ Requirements:
   `--backend opencl`.
 - Optional Vulkan headers, loader, and `glslangValidator` for Vulkan device
   enumeration and the Linux-first Vulkan backend.
+- Optional Apple `Metal.framework` and `Foundation.framework` on macOS for
+  `devices`, `--backend metal`, and `bench --include-metal`.
 
 ### Linux
 
@@ -85,13 +89,23 @@ cmake --build build --parallel
 
 Xcode Command Line Tools provide AppleClang and the macOS SDK. The SDK may also
 provide the deprecated OpenCL framework, but Apple platform OpenCL availability
-varies by OS and hardware. If you want a CPU-only build, disable both
-accelerator backends:
+varies by OS and hardware. The same SDK provides Metal/Foundation for the
+macOS-native Metal backend:
+
+```sh
+cmake -S . -B build-metal -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DLDCOMPRESS_ENABLE_METAL=ON
+cmake --build build-metal --parallel
+build-metal/ld-compress-ng devices
+```
+
+If you want a CPU-only build, disable the accelerator backends:
 
 ```sh
 cmake -S . -B build-cpu-only -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DLDCOMPRESS_ENABLE_OPENCL=OFF \
-    -DLDCOMPRESS_ENABLE_VULKAN=OFF
+    -DLDCOMPRESS_ENABLE_VULKAN=OFF \
+    -DLDCOMPRESS_ENABLE_METAL=OFF
 cmake --build build-cpu-only --parallel
 ```
 
@@ -139,6 +153,7 @@ build/ld-compress-ng decompress --overwrite capture.ldf capture.lds
 | `cpu` | Ogg FLAC `.ldf` by default | Default, portable, uses system `libFLAC`/`libogg`; supports `--level` and can write native FLAC with `--container flac`. |
 | `opencl` | Native FLAC `.flac.ldf` | GPU-assisted native encoder; list devices with `devices`, select one with `--device INDEX` or `--opencl-device INDEX`. |
 | `vulkan` | Native FLAC `.flac.ldf` | Linux-first acceleration backend with Vulkan exact costing for fixed/Rice and GPU-generated LPC candidates; validated locally on NVIDIA and intended for standard Vulkan compute devices; select one with `--device INDEX` or `--vulkan-device INDEX`. |
+| `metal` | Native FLAC `.flac.ldf` | macOS acceleration backend using Apple Metal runtime source compilation; select one with `--device INDEX` or `--metal-device INDEX`. |
 | `native-fixed` | Native FLAC `.flac.ldf` | Reference/debug scalar encoder for analysis parity, native writer coverage, and tuning sweeps. |
 | `native-verbatim` | Native FLAC `.flac.ldf` | Reference/debug path using verbatim FLAC frames. |
 
@@ -162,10 +177,17 @@ build/ld-compress-ng devices
 build/ld-compress-ng compress --backend vulkan --device INDEX capture.lds
 ```
 
+Use Metal on macOS:
+
+```sh
+build-metal/ld-compress-ng devices
+build-metal/ld-compress-ng compress --backend metal --device INDEX capture.lds
+```
+
 For `compress`, `--device INDEX` is backend-local shorthand for the selected
-OpenCL or Vulkan backend. For `bench --include-opencl --include-vulkan`, use
-`--opencl-device INDEX` and `--vulkan-device INDEX` because a bare `--device`
-would be ambiguous.
+OpenCL, Vulkan, or Metal backend. For benchmark runs that include multiple
+accelerators, use `--opencl-device INDEX`, `--vulkan-device INDEX`, and
+`--metal-device INDEX` because a bare `--device` would be ambiguous.
 
 ## Advanced Usage
 
@@ -203,10 +225,10 @@ build/ld-compress-ng compress --backend native-fixed --threads 8 --stats capture
 
 Native tuning defaults are `--frame-samples 4608`, `--lpc-order 12`,
 `--lpc-precision 12`, `--rice-partition-order 5`, and `--threads 1`. These
-controls primarily exist for OpenCL/Vulkan tuning and scalar reference
-comparison. For OpenCL and Vulkan, `--threads` parallelizes the CPU
-selected-frame writer after GPU analysis. Vulkan still supports `--lpc-order 0`
-for fixed/Rice-only diagnostics.
+controls primarily exist for OpenCL/Vulkan/Metal tuning and scalar reference
+comparison. For OpenCL, Vulkan, and Metal, `--threads` parallelizes the CPU
+selected-frame writer after GPU analysis. Vulkan and Metal still support
+`--lpc-order 0` for fixed/Rice-only diagnostics.
 
 Use explicit native FLAC tuning controls when you are comparing reference or
 accelerated size/speed tradeoffs:
@@ -226,19 +248,21 @@ Benchmark available backends on one capture:
 build/ld-compress-ng bench --threads 8 capture.lds
 build/ld-compress-ng bench --threads 8 --include-opencl --opencl-device INDEX capture.lds
 build/ld-compress-ng bench --threads 8 --include-vulkan --vulkan-device INDEX capture.lds
+build-metal/ld-compress-ng bench --threads 8 --include-metal --metal-device INDEX capture.lds
 ```
 
 `bench` also accepts comma-separated native tuning grids, `--analysis-profile`,
-and `--reuse-opencl-session`/`--reuse-vulkan-session` for local sweep work. The
-normal `compress` command keeps the exact native analysis profile; the faster
-analysis profiles are benchmarking/tuning controls.
+and `--reuse-opencl-session`/`--reuse-vulkan-session`/`--reuse-metal-session`
+for local sweep work. The normal `compress` command keeps the exact native
+analysis profile; the faster analysis profiles are benchmarking/tuning
+controls.
 
 Valid analysis profiles are `exact`, `order-guess-exact-rice`,
 `order-guess-mean-rice`, `order-guess-mean-estimate-rice`,
 `subdivide-tukey3-mean-rice`, and
 `subdivide-tukey3-mean-estimate-rice`. Use `--opencl-device` and
-`--vulkan-device` for explicit accelerator rows; invalid explicit device
-indexes fail instead of silently dropping the requested backend.
+`--vulkan-device`, and `--metal-device` for explicit accelerator rows; invalid
+explicit device indexes fail instead of silently dropping the requested backend.
 
 Convert between packed LDS and signed 16-bit little-endian mono PCM:
 

@@ -60,6 +60,14 @@ Vulkan support: built
     available: yes
     shaderInt64: yes
     vulkan backend usable: yes
+
+Metal support: built
+[0] Apple M5 Pro
+    available: yes
+    low power: no
+[1] Low Power GPU
+    available: yes
+    low power: yes
 """
 
 INTEGRATED_AND_CPU_DEVICES = """\
@@ -77,6 +85,11 @@ Vulkan support: built
     available: yes
     shaderInt64: yes
     vulkan backend usable: yes
+
+Metal support: built
+[0] Integrated Apple GPU
+    available: yes
+    low power: yes
 """
 
 CPU_ONLY_DEVICES = """\
@@ -89,6 +102,9 @@ Vulkan support: built
     available: yes
     shaderInt64: yes
     vulkan backend usable: yes
+
+Metal support: built
+No Metal devices found
 """
 
 UNUSABLE_REQUESTED_DEVICES = """\
@@ -101,6 +117,11 @@ Vulkan support: built
     available: yes
     shaderInt64: no
     vulkan backend usable: no
+
+Metal support: built
+[0] Offline Metal Device
+    available: no
+    low power: no
 """
 
 
@@ -116,6 +137,13 @@ def main():
     require_selection(CPU_ONLY_DEVICES, "vulkan", "0", "0")
     require_skip(UNUSABLE_REQUESTED_DEVICES, "vulkan", "0", "not backend-usable")
     require_skip(MIXED_DEVICES, "vulkan", "9", "not visible")
+
+    require_selection(MIXED_DEVICES, "metal", None, "0")
+    require_selection(MIXED_DEVICES, "metal", "1", "1")
+    require_selection(INTEGRATED_AND_CPU_DEVICES, "metal", None, "0")
+    require_skip(CPU_ONLY_DEVICES, "metal", None, "no available")
+    require_skip(UNUSABLE_REQUESTED_DEVICES, "metal", "0", "not available")
+    require_skip(MIXED_DEVICES, "metal", "9", "not visible")
 
 
 if __name__ == "__main__":

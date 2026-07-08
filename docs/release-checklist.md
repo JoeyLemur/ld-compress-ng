@@ -30,9 +30,25 @@ Run a CPU-only build/test lane:
 ```sh
 cmake -S . -B build-release-cpu-only -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DLDCOMPRESS_ENABLE_OPENCL=OFF \
-    -DLDCOMPRESS_ENABLE_VULKAN=OFF
+    -DLDCOMPRESS_ENABLE_VULKAN=OFF \
+    -DLDCOMPRESS_ENABLE_METAL=OFF
 cmake --build build-release-cpu-only --parallel
 ctest --test-dir build-release-cpu-only -LE real-fixtures --output-on-failure
+```
+
+On macOS, run the Metal-enabled and no-Metal lanes:
+
+```sh
+cmake -S . -B build-metal -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DLDCOMPRESS_ENABLE_METAL=ON
+cmake --build build-metal --parallel
+build-metal/ld-compress-ng devices
+ctest --test-dir build-metal -L metal --output-on-failure
+
+cmake -S . -B build-no-metal -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DLDCOMPRESS_ENABLE_METAL=OFF
+cmake --build build-no-metal --parallel
+ctest --test-dir build-no-metal --output-on-failure
 ```
 
 Smoke-test installation:
@@ -41,7 +57,11 @@ Smoke-test installation:
 cmake --install build --prefix /tmp/ld-compress-ng-install
 /tmp/ld-compress-ng-install/bin/ld-compress-ng --version
 find /tmp/ld-compress-ng-install -maxdepth 6 -type f | sort
+otool -L /tmp/ld-compress-ng-install/bin/ld-compress-ng
 ```
+
+On macOS, `otool -L` should show Metal/Foundation only for builds configured
+with `LDCOMPRESS_ENABLE_METAL=ON`.
 
 Confirm the installed files include:
 
@@ -57,8 +77,8 @@ Confirm the installed files include:
 ## Optional Full Local Gate
 
 When local ignored fixtures and GPU access are available, run the full matrix
-from a context that can see the OpenCL and Vulkan runtimes. Use explicit device
-indexes from `ld-compress-ng devices` on mixed-GPU hosts:
+from a context that can see the OpenCL, Vulkan, and Metal runtimes. Use explicit
+device indexes from `ld-compress-ng devices` on mixed-GPU hosts:
 
 ```sh
 python3 tools/check_local_matrix.py \
@@ -68,6 +88,8 @@ python3 tools/check_local_matrix.py \
     --opencl-device 1 \
     --include-vulkan-real-fixture \
     --vulkan-device 1 \
+    --include-metal-real-fixture \
+    --metal-device 0 \
     --python-executable /path/to/ld-decode-env/bin/python \
     --jobs 2 \
     --strict-optional
@@ -82,9 +104,10 @@ the decoded bytes for each requested backend:
 
 ```sh
 python3 tools/roundtrip_real_fixtures.py \
-    --backends opencl,vulkan \
+    --backends opencl,vulkan,metal \
     --opencl-device 1 \
-    --vulkan-device 1
+    --vulkan-device 1 \
+    --metal-device 0
 ```
 
 ## Tag And Publish

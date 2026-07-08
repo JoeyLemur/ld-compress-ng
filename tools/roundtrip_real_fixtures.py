@@ -18,8 +18,8 @@ DEFAULT_FIXTURE_DIR = (
     "reference/testdata/ld-decode-testdata-ci/"
     "1cf698d2025e8515e9ef57e34adaf85a194da96a"
 )
-DEFAULT_BACKENDS = ("opencl", "vulkan")
-SUPPORTED_BACKENDS = ("cpu", "native-fixed", "opencl", "vulkan")
+DEFAULT_BACKENDS = ("opencl", "vulkan", "metal")
+SUPPORTED_BACKENDS = ("cpu", "native-fixed", "opencl", "vulkan", "metal")
 CSV_COLUMNS = [
     "fixture",
     "backend",
@@ -45,6 +45,7 @@ class RunConfig:
     native_threads: str
     opencl_device: str | None
     vulkan_device: str | None
+    metal_device: str | None
 
 
 def positive_int(text: str) -> int:
@@ -151,6 +152,8 @@ def compress_command(
         command.extend(["--device", config.opencl_device])
     if backend == "vulkan" and config.vulkan_device is not None:
         command.extend(["--device", config.vulkan_device])
+    if backend == "metal" and config.metal_device is not None:
+        command.extend(["--device", config.metal_device])
     command.extend([str(fixture), str(compressed)])
     return command
 
@@ -286,7 +289,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--fixtures", default=DEFAULT_FIXTURE_DIR, type=Path)
     parser.add_argument("--out-dir", default="build/real-fixture-roundtrips", type=Path)
     parser.add_argument("--backends", default=",".join(DEFAULT_BACKENDS), type=parse_backends,
-        help="comma-separated backends to test: cpu,native-fixed,opencl,vulkan")
+        help="comma-separated backends to test: cpu,native-fixed,opencl,vulkan,metal")
     parser.add_argument("--frame-samples", default="4608",
         type=uint_arg("frame samples", 16, 4608))
     parser.add_argument("--lpc-order", default="12", type=uint_arg("LPC order", 0, 12))
@@ -296,6 +299,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--native-threads", default="8", type=uint_arg("native threads", 1, 1024))
     parser.add_argument("--opencl-device", help="OpenCL backend-local device index")
     parser.add_argument("--vulkan-device", help="Vulkan backend-local device index")
+    parser.add_argument("--metal-device", help="Metal backend-local device index")
     parser.add_argument("--limit", type=positive_int,
         help="round-trip only the first N fixtures after path sorting")
     parser.add_argument("--dry-run", action="store_true",
@@ -317,6 +321,8 @@ def main(argv: list[str]) -> int:
         raise RuntimeError("--opencl-device requires the opencl backend")
     if args.vulkan_device is not None and "vulkan" not in backends:
         raise RuntimeError("--vulkan-device requires the vulkan backend")
+    if args.metal_device is not None and "metal" not in backends:
+        raise RuntimeError("--metal-device requires the metal backend")
 
     fixtures = find_fixtures(fixture_root, args.limit)
     if not fixtures:
@@ -330,6 +336,7 @@ def main(argv: list[str]) -> int:
         native_threads=args.native_threads,
         opencl_device=args.opencl_device,
         vulkan_device=args.vulkan_device,
+        metal_device=args.metal_device,
     )
 
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ld-compress-ng
-    VERSION 1.1.1
+    VERSION 1.2.0
     LANGUAGES CXX
 )
 
@@ -14,6 +14,7 @@ include(GNUInstallDirs)
 
 option(LDCOMPRESS_ENABLE_OPENCL "Enable OpenCL device enumeration support" ON)
 option(LDCOMPRESS_ENABLE_VULKAN "Enable Vulkan compute device enumeration support" ON)
+option(LDCOMPRESS_ENABLE_METAL "Enable Apple Metal compute support on macOS" ON)
 option(LDCOMPRESS_BUILD_DIAGNOSTICS "Build manual diagnostic tools" OFF)
 option(LDCOMPRESS_ENABLE_REAL_FIXTURE_TESTS "Enable opt-in tests against external real LDS fixtures" OFF)
 option(LDCOMPRESS_ENABLE_FLAC_TEST_FILE_TESTS "Enable opt-in tests against external FLAC decoder testbench files" OFF)
@@ -21,6 +22,7 @@ set(LDCOMPRESS_REAL_FIXTURE_DIR "" CACHE PATH "Directory containing external .ld
 set(LDCOMPRESS_FLAC_TEST_FILE_DIR "" CACHE PATH "Directory containing external FLAC decoder testbench files")
 set(LDCOMPRESS_OPENCL_TEST_DEVICE "" CACHE STRING "Flattened OpenCL device index for opt-in OpenCL compatibility tests")
 set(LDCOMPRESS_VULKAN_TEST_DEVICE "" CACHE STRING "Vulkan device index for opt-in Vulkan smoke tests")
+set(LDCOMPRESS_METAL_TEST_DEVICE "" CACHE STRING "Metal device index for opt-in Metal smoke tests")
 set(LDCOMPRESS_GLSLANG_VALIDATOR "" CACHE FILEPATH "glslangValidator executable for Vulkan shader builds")
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
@@ -62,6 +64,23 @@ if(LDCOMPRESS_ENABLE_VULKAN)
     endif()
 endif()
 
+set(LDCOMPRESS_HAVE_METAL 0)
+if(LDCOMPRESS_ENABLE_METAL)
+    if(APPLE)
+        enable_language(OBJCXX)
+        find_library(LDCOMPRESS_FOUND_METAL_FRAMEWORK Metal)
+        find_library(LDCOMPRESS_FOUND_FOUNDATION_FRAMEWORK Foundation)
+        if(LDCOMPRESS_FOUND_METAL_FRAMEWORK AND LDCOMPRESS_FOUND_FOUNDATION_FRAMEWORK)
+            set(LDCOMPRESS_HAVE_METAL 1)
+            message(STATUS "Metal compute support enabled")
+        else()
+            message(STATUS "Metal/Foundation frameworks not found; Metal support disabled")
+        endif()
+    else()
+        message(STATUS "Metal support is only available on Apple platforms")
+    endif()
+endif()
+
 add_library(ldcompress_core
     src/accelerated_native_backend.cpp
     src/compressor.cpp
@@ -74,10 +93,25 @@ add_library(ldcompress_core
     src/opencl_analysis.cpp
     src/opencl_backend.cpp
     src/opencl_devices.cpp
+    src/metal_backend.cpp
     src/vulkan_analysis.cpp
     src/vulkan_backend.cpp
     src/vulkan_devices.cpp
 )
+
+if(LDCOMPRESS_HAVE_METAL)
+    target_sources(ldcompress_core
+        PRIVATE
+            src/metal_analysis.mm
+            src/metal_devices.mm
+    )
+else()
+    target_sources(ldcompress_core
+        PRIVATE
+            src/metal_analysis.cpp
+            src/metal_devices.cpp
+    )
+endif()
 
 target_include_directories(ldcompress_core
     PUBLIC
@@ -87,12 +121,14 @@ target_include_directories(ldcompress_core
 target_compile_options(ldcompress_core
     PRIVATE
         $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-Wall -Wextra -Wpedantic>
+        $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>
 )
 
 target_compile_definitions(ldcompress_core
     PRIVATE
         LDCOMPRESS_HAVE_OPENCL=${LDCOMPRESS_HAVE_OPENCL}
         LDCOMPRESS_HAVE_VULKAN=${LDCOMPRESS_HAVE_VULKAN}
+        LDCOMPRESS_HAVE_METAL=${LDCOMPRESS_HAVE_METAL}
 )
 
 target_link_libraries(ldcompress_core
@@ -155,6 +191,14 @@ if(LDCOMPRESS_HAVE_VULKAN)
 
 endif()
 
+if(LDCOMPRESS_HAVE_METAL)
+    target_link_libraries(ldcompress_core
+        PRIVATE
+            "${LDCOMPRESS_FOUND_METAL_FRAMEWORK}"
+            "${LDCOMPRESS_FOUND_FOUNDATION_FRAMEWORK}"
+    )
+endif()
+
 add_executable(ld-compress-ng
     src/main.cpp
 )
@@ -208,12 +252,14 @@ if(BUILD_TESTING)
     target_compile_options(ldcompress_test_support
         PRIVATE
             $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-Wall -Wextra -Wpedantic>
+            $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>
     )
 
     target_compile_definitions(ldcompress_test_support
         PRIVATE
             LDCOMPRESS_HAVE_OPENCL=${LDCOMPRESS_HAVE_OPENCL}
             LDCOMPRESS_HAVE_VULKAN=${LDCOMPRESS_HAVE_VULKAN}
+            LDCOMPRESS_HAVE_METAL=${LDCOMPRESS_HAVE_METAL}
     )
 
     target_link_libraries(ldcompress_test_support
@@ -248,6 +294,14 @@ if(BUILD_TESTING)
         )
         add_custom_target(vulkan_smoke_shader
             DEPENDS "${LDCOMPRESS_VULKAN_SMOKE_SHADER}"
+        )
+    endif()
+
+    if(LDCOMPRESS_HAVE_METAL)
+        target_link_libraries(ldcompress_test_support
+            PRIVATE
+                "${LDCOMPRESS_FOUND_METAL_FRAMEWORK}"
+                "${LDCOMPRESS_FOUND_FOUNDATION_FRAMEWORK}"
         )
     endif()
 
@@ -372,6 +426,71 @@ if(BUILD_TESTING)
 
     add_test(NAME vulkan_analysis COMMAND ${vulkan_analysis_command})
     set_tests_properties(vulkan_analysis PROPERTIES LABELS vulkan)
+
+    add_executable(test_metal_devices
+        tests/test_metal_devices.cpp
+    )
+
+    target_link_libraries(test_metal_devices
+        PRIVATE
+            ldcompress_core
+    )
+
+    add_test(NAME metal_devices COMMAND test_metal_devices)
+    set_tests_properties(metal_devices PROPERTIES LABELS metal)
+
+    if(LDCOMPRESS_HAVE_METAL)
+        add_executable(test_metal_smoke
+            tests/test_metal_smoke.mm
+        )
+        target_compile_options(test_metal_smoke
+            PRIVATE
+                $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>
+        )
+        target_link_libraries(test_metal_smoke
+            PRIVATE
+                ldcompress_core
+                "${LDCOMPRESS_FOUND_METAL_FRAMEWORK}"
+                "${LDCOMPRESS_FOUND_FOUNDATION_FRAMEWORK}"
+        )
+    else()
+        add_executable(test_metal_smoke
+            tests/test_metal_smoke.cpp
+        )
+        target_link_libraries(test_metal_smoke
+            PRIVATE
+                ldcompress_core
+        )
+    endif()
+
+    set(metal_smoke_command test_metal_smoke)
+    if(LDCOMPRESS_HAVE_METAL AND NOT "${LDCOMPRESS_METAL_TEST_DEVICE}" STREQUAL "")
+        list(APPEND metal_smoke_command
+            --device "${LDCOMPRESS_METAL_TEST_DEVICE}"
+        )
+    endif()
+
+    add_test(NAME metal_smoke COMMAND ${metal_smoke_command})
+    set_tests_properties(metal_smoke PROPERTIES LABELS metal)
+
+    add_executable(test_metal_analysis
+        tests/test_metal_analysis.cpp
+    )
+
+    target_link_libraries(test_metal_analysis
+        PRIVATE
+            ldcompress_test_support
+    )
+
+    set(metal_analysis_command test_metal_analysis)
+    if(LDCOMPRESS_HAVE_METAL AND NOT "${LDCOMPRESS_METAL_TEST_DEVICE}" STREQUAL "")
+        list(APPEND metal_analysis_command
+            --device "${LDCOMPRESS_METAL_TEST_DEVICE}"
+        )
+    endif()
+
+    add_test(NAME metal_analysis COMMAND ${metal_analysis_command})
+    set_tests_properties(metal_analysis PROPERTIES LABELS metal)
 
     if(LDCOMPRESS_BUILD_DIAGNOSTICS)
         add_executable(compare_opencl_scalar_frames
@@ -556,6 +675,31 @@ if(BUILD_TESTING)
             )
             set_tests_properties(ld_decode_loader_vulkan_real_fixture_compat PROPERTIES
                 LABELS "real-fixtures;external-decode-compat;vulkan"
+                SKIP_RETURN_CODE 77
+            )
+
+            set(LDCOMPRESS_METAL_REAL_FIXTURE_ARGS)
+            if(NOT LDCOMPRESS_METAL_TEST_DEVICE STREQUAL "")
+                list(APPEND LDCOMPRESS_METAL_REAL_FIXTURE_ARGS
+                    --metal-device ${LDCOMPRESS_METAL_TEST_DEVICE}
+                )
+            endif()
+
+            add_test(
+                NAME ld_decode_loader_metal_real_fixture_compat
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_native_flac_external_decode.py
+                    --decoder ld-decode-loader
+                    --binary $<TARGET_FILE:ld-compress-ng>
+                    --ld-decode-dir ${CMAKE_CURRENT_SOURCE_DIR}/reference/ld-decode
+                    --fixture-dir ${LDCOMPRESS_REAL_FIXTURE_DIR}
+                    --fixture-limit 1
+                    --real-fixture-backend metal
+                    ${LDCOMPRESS_METAL_REAL_FIXTURE_ARGS}
+            )
+            set_tests_properties(ld_decode_loader_metal_real_fixture_compat PROPERTIES
+                LABELS "real-fixtures;external-decode-compat;metal"
                 SKIP_RETURN_CODE 77
             )
         endif()

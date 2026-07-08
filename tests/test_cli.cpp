@@ -1,4 +1,5 @@
 #include "lds_codec.h"
+#include "metal_devices.h"
 #include "opencl_devices.h"
 #include "vulkan_devices.h"
 
@@ -157,6 +158,26 @@ std::optional<std::size_t> first_available_vulkan_analysis_device_index()
     return std::nullopt;
 }
 
+std::optional<std::size_t> first_available_metal_device_index()
+{
+    if (!ldcompress::metal_support_built()) {
+        return std::nullopt;
+    }
+
+    for (const auto& device : ldcompress::list_metal_devices()) {
+        if (device.available && !device.low_power) {
+            return device.index;
+        }
+    }
+    for (const auto& device : ldcompress::list_metal_devices()) {
+        if (device.available) {
+            return device.index;
+        }
+    }
+
+    return std::nullopt;
+}
+
 void test_cli(const std::filesystem::path& exe)
 {
     const auto temp_dir = std::filesystem::temp_directory_path() /
@@ -223,6 +244,7 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_native_device = temp_dir / "fixture.bad-native-device.ldf";
     const auto bad_native_opencl_device = temp_dir / "fixture.bad-native-opencl-device.ldf";
     const auto bad_native_vulkan_device = temp_dir / "fixture.bad-native-vulkan-device.ldf";
+    const auto bad_native_metal_device = temp_dir / "fixture.bad-native-metal-device.ldf";
     const auto bad_opencl_level = temp_dir / "fixture.bad-opencl-level.flac.ldf";
     const auto empty_lds = temp_dir / "empty.lds";
     const auto empty_native_verbatim = temp_dir / "empty.native-verbatim.flac.ldf";
@@ -258,6 +280,23 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_vulkan_device_out_of_range =
         temp_dir / "fixture.bad-vulkan-device-out-of-range.flac.ldf";
     const auto bad_vulkan_container = temp_dir / "fixture.bad-vulkan-container.ldf";
+    const auto metal_output = temp_dir / "fixture.metal.flac.ldf";
+    const auto metal_output_out = temp_dir / "fixture.metal.out.lds";
+    const auto metal_stats = temp_dir / "fixture.metal-stats.flac.ldf";
+    const auto metal_stats_out = temp_dir / "fixture.metal-stats.out.lds";
+    const auto metal_container = temp_dir / "fixture.metal-container.flac.ldf";
+    const auto metal_container_out = temp_dir / "fixture.metal-container.out.lds";
+    const auto metal_fixed_only = temp_dir / "fixture.metal-fixed-only.flac.ldf";
+    const auto metal_fixed_only_out = temp_dir / "fixture.metal-fixed-only.out.lds";
+    const auto metal_threads = temp_dir / "fixture.metal-threads.flac.ldf";
+    const auto metal_threads_out = temp_dir / "fixture.metal-threads.out.lds";
+    const auto empty_metal = temp_dir / "empty.metal.flac.ldf";
+    const auto empty_metal_out = temp_dir / "empty.metal.out.lds";
+    const auto bad_metal_opencl_device = temp_dir / "fixture.bad-metal-opencl-device.flac.ldf";
+    const auto bad_metal_vulkan_device = temp_dir / "fixture.bad-metal-vulkan-device.flac.ldf";
+    const auto bad_metal_device = temp_dir / "fixture.bad-metal-device.flac.ldf";
+    const auto bad_metal_level = temp_dir / "fixture.bad-metal-level.flac.ldf";
+    const auto bad_metal_container = temp_dir / "fixture.bad-metal-container.ldf";
     const auto help_output = temp_dir / "help.txt";
     const auto version_output = temp_dir / "version.txt";
     const auto devices_output = temp_dir / "devices.txt";
@@ -280,10 +319,10 @@ void test_cli(const std::filesystem::path& exe)
         "help output did not label native-fixed as reference/debug");
     require(help_text.find("vulkan") != std::string::npos,
         "help output did not mention the Vulkan backend");
-    require(help_text.find("native-fixed/opencl/vulkan/native-verbatim") != std::string::npos,
-        "help output did not include Vulkan in native default output description");
-    require(help_text.find("native/opencl/vulkan write flac") != std::string::npos,
-        "help output did not include Vulkan in native container description");
+    require(help_text.find("native-fixed/opencl/vulkan/metal/native-verbatim") != std::string::npos,
+        "help output did not include Metal in native default output description");
+    require(help_text.find("native/opencl/vulkan/metal write flac") != std::string::npos,
+        "help output did not include Metal in native container description");
     require(help_text.find("More details: README.md and docs/build-and-testing.md") != std::string::npos,
         "help output did not point to documentation");
     require(help_text.find("order-guess-mean-estimate-rice") != std::string::npos,
@@ -292,7 +331,7 @@ void test_cli(const std::filesystem::path& exe)
         "help output did not mention --version");
 
     run_ok(shell_quote(exe) + " --version > " + shell_quote(version_output));
-    require(read_file(version_output) == "ld-compress-ng 1.1.1\n",
+    require(read_file(version_output) == "ld-compress-ng 1.2.0\n",
         "version output did not match project version");
 
     run_ok(shell_quote(exe) + " convert --unpack " + shell_quote(lds) + " " + shell_quote(pcm));
@@ -412,6 +451,12 @@ void test_cli(const std::filesystem::path& exe)
         command_stderr,
         "--vulkan-device is currently supported only by the vulkan backend");
     require(!std::filesystem::exists(bad_native_vulkan_device), "native --vulkan-device rejection wrote output");
+    run_fails_with_stderr(
+        shell_quote(exe) + " compress --backend native-fixed --metal-device 0 " +
+            shell_quote(lds) + " " + shell_quote(bad_native_metal_device),
+        command_stderr,
+        "--metal-device is currently supported only by the metal backend");
+    require(!std::filesystem::exists(bad_native_metal_device), "native --metal-device rejection wrote output");
     run_ok("cd " + shell_quote(temp_dir) + " && " + shell_quote(exe) + " compress --backend native-fixed default-name.lds");
     require(std::filesystem::exists(default_native_fixed), "native-fixed default output name was not .flac.ldf");
     run_ok("cd " + shell_quote(temp_dir) + " && " + shell_quote(exe) + " compress --backend fixed-rice alias-name.lds");
@@ -504,7 +549,7 @@ void test_cli(const std::filesystem::path& exe)
         shell_quote(exe) + " compress --backend vulkan --opencl-device 0 " +
             shell_quote(lds) + " " + shell_quote(bad_vulkan_opencl_device),
         command_stderr,
-        "--opencl-device cannot be used with the vulkan backend");
+        "--opencl-device and --metal-device cannot be used with the vulkan backend");
     require(!std::filesystem::exists(bad_vulkan_opencl_device), "Vulkan --opencl-device rejection wrote output");
     run_fails_with_stderr(
         shell_quote(exe) + " compress --backend vulkan --vulkan-device nope " +
@@ -531,6 +576,58 @@ void test_cli(const std::filesystem::path& exe)
     }
     run_fails(shell_quote(exe) + " compress --backend vulkan --container ogg " + shell_quote(lds) + " " + shell_quote(bad_vulkan_container));
     require(!std::filesystem::exists(bad_vulkan_container), "Vulkan Ogg rejection wrote output");
+    const auto metal_device_index = first_available_metal_device_index();
+    if (metal_device_index.has_value()) {
+        const auto metal_device_arg = " --device " + std::to_string(*metal_device_index);
+        run_ok(shell_quote(exe) + " compress --backend metal" + metal_device_arg + " " + shell_quote(lds) + " " + shell_quote(metal_output));
+        run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(metal_output));
+        run_ok(shell_quote(exe) + " decompress " + shell_quote(metal_output) + " " + shell_quote(metal_output_out));
+        require(read_file(metal_output_out) == fixture, "Metal FLAC round trip changed LDS bytes");
+        run_ok(shell_quote(exe) + " compress --backend metal --stats" + metal_device_arg + " " + shell_quote(lds) + " " + shell_quote(metal_stats));
+        run_ok(shell_quote(exe) + " decompress " + shell_quote(metal_stats) + " " + shell_quote(metal_stats_out));
+        require(read_file(metal_stats_out) == fixture, "Metal --stats round trip changed LDS bytes");
+        run_ok(shell_quote(exe) + " compress --backend metal --container flac" + metal_device_arg + " " + shell_quote(lds) + " " + shell_quote(metal_container));
+        run_ok(shell_quote(exe) + " decompress " + shell_quote(metal_container) + " " + shell_quote(metal_container_out));
+        require(read_file(metal_container_out) == fixture,
+            "Metal explicit native container round trip changed LDS bytes");
+        run_ok(shell_quote(exe) + " compress --backend metal --lpc-order 0" + metal_device_arg + " " + shell_quote(lds) + " " + shell_quote(metal_fixed_only));
+        run_ok(shell_quote(exe) + " decompress " + shell_quote(metal_fixed_only) + " " + shell_quote(metal_fixed_only_out));
+        require(read_file(metal_fixed_only_out) == fixture,
+            "Metal fixed-only FLAC round trip changed LDS bytes");
+        run_ok(shell_quote(exe) + " compress --backend metal --threads 2" + metal_device_arg + " " + shell_quote(lds) + " " + shell_quote(metal_threads));
+        run_ok(shell_quote(exe) + " decompress " + shell_quote(metal_threads) + " " + shell_quote(metal_threads_out));
+        require(read_file(metal_threads_out) == fixture,
+            "Metal threaded writer round trip changed LDS bytes");
+        run_ok(shell_quote(exe) + " compress --backend metal" + metal_device_arg + " " + shell_quote(empty_lds) + " " + shell_quote(empty_metal));
+        run_ok(shell_quote(exe) + " verify --source " + shell_quote(empty_lds) + " " + shell_quote(empty_metal));
+        run_ok(shell_quote(exe) + " decompress " + shell_quote(empty_metal) + " " + shell_quote(empty_metal_out));
+        require(read_file(empty_metal_out).empty(), "empty Metal FLAC produced decoded LDS bytes");
+    } else {
+        run_fails(shell_quote(exe) + " compress --backend metal --lpc-order 0 " + shell_quote(lds) + " " + shell_quote(metal_output));
+        require(!std::filesystem::exists(metal_output), "unavailable Metal backend wrote output");
+    }
+    run_fails_with_stderr(
+        shell_quote(exe) + " compress --backend metal --opencl-device 0 " +
+            shell_quote(lds) + " " + shell_quote(bad_metal_opencl_device),
+        command_stderr,
+        "--opencl-device and --vulkan-device cannot be used with the metal backend");
+    require(!std::filesystem::exists(bad_metal_opencl_device), "Metal --opencl-device rejection wrote output");
+    run_fails_with_stderr(
+        shell_quote(exe) + " compress --backend metal --vulkan-device 0 " +
+            shell_quote(lds) + " " + shell_quote(bad_metal_vulkan_device),
+        command_stderr,
+        "--opencl-device and --vulkan-device cannot be used with the metal backend");
+    require(!std::filesystem::exists(bad_metal_vulkan_device), "Metal --vulkan-device rejection wrote output");
+    run_fails_with_stderr(
+        shell_quote(exe) + " compress --backend metal --metal-device nope " +
+            shell_quote(lds) + " " + shell_quote(bad_metal_device),
+        command_stderr,
+        "invalid device index: nope");
+    require(!std::filesystem::exists(bad_metal_device), "invalid Metal device index wrote output");
+    run_fails(shell_quote(exe) + " compress --backend metal --level 8 " + shell_quote(lds) + " " + shell_quote(bad_metal_level));
+    require(!std::filesystem::exists(bad_metal_level), "Metal --level rejection wrote output");
+    run_fails(shell_quote(exe) + " compress --backend metal --container ogg " + shell_quote(lds) + " " + shell_quote(bad_metal_container));
+    require(!std::filesystem::exists(bad_metal_container), "Metal Ogg rejection wrote output");
     run_ok(shell_quote(exe) + " bench --threads 1,2 " + shell_quote(lds));
     run_ok(shell_quote(exe) + " bench --threads 1 --frame-samples 2048 --lpc-order 12 --lpc-precision 12 --rice-partition-order 5 " + shell_quote(lds));
     run_ok(shell_quote(exe) + " bench --threads 1,2 --frame-samples 1024,2048 --lpc-order 0,8 --lpc-precision 10,12 --rice-partition-order 0,4 " + shell_quote(lds));
@@ -563,11 +660,28 @@ void test_cli(const std::filesystem::path& exe)
         run_ok(shell_quote(exe) + " bench --include-vulkan --reuse-vulkan-session --threads 1 --frame-samples 2048 --lpc-order 0 --lpc-precision 12 --rice-partition-order 5 " + shell_quote(lds));
     }
     run_fails(shell_quote(exe) + " bench --include-vulkan --vulkan-device 999999 --threads 1 --frame-samples 2048 --lpc-order 0 --lpc-precision 12 --rice-partition-order 5 " + shell_quote(lds));
+    if (metal_device_index.has_value()) {
+        run_ok(shell_quote(exe) + " bench --include-metal --device " +
+            std::to_string(*metal_device_index) +
+            " --threads 1 --frame-samples 2048 --lpc-order 0 --lpc-precision 12 --rice-partition-order 5 " +
+            shell_quote(lds));
+        run_ok(shell_quote(exe) + " bench --include-metal --reuse-metal-session --device " +
+            std::to_string(*metal_device_index) +
+            " --threads 1 --frame-samples 2048 --lpc-order 0 --lpc-precision 12 --rice-partition-order 5 " +
+            shell_quote(lds));
+    } else {
+        run_ok(shell_quote(exe) + " bench --include-metal --threads 1 --frame-samples 2048 --lpc-order 0 --lpc-precision 12 --rice-partition-order 5 " + shell_quote(lds));
+        run_ok(shell_quote(exe) + " bench --include-metal --reuse-metal-session --threads 1 --frame-samples 2048 --lpc-order 0 --lpc-precision 12 --rice-partition-order 5 " + shell_quote(lds));
+    }
+    run_fails(shell_quote(exe) + " bench --include-metal --metal-device 999999 --threads 1 --frame-samples 2048 --lpc-order 0 --lpc-precision 12 --rice-partition-order 5 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --include-opencl --include-vulkan --device 0 " + shell_quote(lds));
+    run_fails(shell_quote(exe) + " bench --include-opencl --include-metal --device 0 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --device 0 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --vulkan-device 0 " + shell_quote(lds));
+    run_fails(shell_quote(exe) + " bench --metal-device 0 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --reuse-opencl-session " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --reuse-vulkan-session " + shell_quote(lds));
+    run_fails(shell_quote(exe) + " bench --reuse-metal-session " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --threads 0 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --threads 1,,2 " + shell_quote(lds));
     run_fails(shell_quote(exe) + " bench --frame-samples 1024,15 " + shell_quote(lds));
@@ -581,6 +695,8 @@ void test_cli(const std::filesystem::path& exe)
         "devices output did not include OpenCL support status");
     require(devices_text.find("Vulkan support:") != std::string::npos,
         "devices output did not include Vulkan support status");
+    require(devices_text.find("Metal support:") != std::string::npos,
+        "devices output did not include Metal support status");
     if (ldcompress::vulkan_support_built()) {
         const auto vulkan_devices = ldcompress::list_vulkan_devices();
         if (!vulkan_devices.empty()) {
