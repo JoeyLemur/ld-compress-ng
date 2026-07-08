@@ -9,6 +9,7 @@
 #include <deque>
 #include <exception>
 #include <filesystem>
+#include <future>
 #include <fstream>
 #include <istream>
 #include <map>
@@ -185,6 +186,12 @@ struct SelectedFrameJob {
     FlacSelectedSubframe selected;
     FlacSubframeDecision decision;
     bool collect_timings = false;
+};
+
+struct AnalyzedSelectedBatch {
+    std::vector<std::int32_t> samples;
+    std::uint64_t first_frame_number = 0;
+    AcceleratedSelectedFrameAnalysis analysis;
 };
 
 class FrameByteStreambuf final : public std::streambuf {
@@ -373,16 +380,14 @@ private:
     bool stopping_ = false;
 };
 
-void write_accelerated_selected_batch(
-    std::ostream& output,
-    const std::vector<std::int32_t>& batch_samples,
+AnalyzedSelectedBatch analyze_accelerated_selected_batch(
+    std::vector<std::int32_t> batch_samples,
     std::uint64_t first_frame_number,
     const AcceleratedNativeCompressionOptions& options,
-    const AcceleratedBatchAnalyzer& analyzer,
-    SelectedFrameWriterPool* frame_pool)
+    const AcceleratedBatchAnalyzer& analyzer)
 {
     if (batch_samples.empty()) {
-        return;
+        return AnalyzedSelectedBatch {};
     }
     if ((batch_samples.size() % options.frame_samples) != 0) {
         throw std::runtime_error(
@@ -396,7 +401,7 @@ void write_accelerated_selected_batch(
         ++options.native_stats->accelerated_batches;
     }
     const auto analyzer_started = Clock::now();
-    const auto analysis = analyzer(batch_samples, base_frame_info, options.frame_samples);
+    auto analysis = analyzer(batch_samples, base_frame_info, options.frame_samples);
     if (options.native_stats != nullptr) {
         add_elapsed_ns(options.native_stats->accelerated_analyzer_ns, analyzer_started);
     }
@@ -407,20 +412,50 @@ void write_accelerated_selected_batch(
             " selected frame count did not match input batch");
     }
 
+    return AnalyzedSelectedBatch {
+        .samples = std::move(batch_samples),
+        .first_frame_number = first_frame_number,
+        .analysis = std::move(analysis),
+    };
+}
+
+void write_accelerated_analyzed_batch(
+    std::ostream& output,
+    const AnalyzedSelectedBatch& batch,
+    const AcceleratedNativeCompressionOptions& options,
+    SelectedFrameWriterPool* frame_pool)
+{
+    if (batch.samples.empty()) {
+        return;
+    }
+    if ((batch.samples.size() % options.frame_samples) != 0) {
+        throw std::runtime_error(
+            "internal " + std::string(options.backend_label) +
+            " analyzed batch was not frame-aligned");
+    }
+
+    const auto frame_count = batch.samples.size() / options.frame_samples;
+    if (batch.analysis.selected_subframes.size() != frame_count ||
+        batch.analysis.decisions.size() != frame_count) {
+        throw std::runtime_error(
+            std::string(options.backend_label) +
+            " analyzed frame count did not match input batch");
+    }
+
     const auto write_started = Clock::now();
     for (std::size_t frame = 0; frame < frame_count; ++frame) {
         const auto offset = frame * static_cast<std::size_t>(options.frame_samples);
         const std::span<const std::int32_t> frame_samples(
-            batch_samples.data() + offset,
+            batch.samples.data() + offset,
             static_cast<std::size_t>(options.frame_samples));
-        auto frame_info = make_frame_info(first_frame_number + frame, options);
+        auto frame_info = make_frame_info(batch.first_frame_number + frame, options);
         if (frame_pool != nullptr) {
             frame_pool->submit(SelectedFrameJob {
-                .frame_number = first_frame_number + frame,
+                .frame_number = batch.first_frame_number + frame,
                 .frame_info = frame_info,
                 .samples = frame_samples,
-                .selected = analysis.selected_subframes[frame],
-                .decision = analysis.decisions[frame],
+                .selected = batch.analysis.selected_subframes[frame],
+                .decision = batch.analysis.decisions[frame],
                 .collect_timings = options.native_stats != nullptr,
             });
             continue;
@@ -430,15 +465,15 @@ void write_accelerated_selected_batch(
             output,
             frame_samples,
             frame_info,
-            analysis.selected_subframes[frame],
-            analysis.decisions[frame],
+            batch.analysis.selected_subframes[frame],
+            batch.analysis.decisions[frame],
             options.native_stats != nullptr ? &writer_timings : nullptr);
         record_native_stats(options.native_stats, decision);
         record_selected_write_timings(options.native_stats, writer_timings);
     }
     if (frame_pool != nullptr) {
         for (std::size_t frame = 0; frame < frame_count; ++frame) {
-            auto encoded = frame_pool->take(first_frame_number + frame);
+            auto encoded = frame_pool->take(batch.first_frame_number + frame);
             write_frame_bytes(output, encoded.bytes);
             record_native_stats(options.native_stats, encoded.decision);
             record_selected_write_timings(options.native_stats, encoded.timings);
@@ -499,6 +534,7 @@ ConversionStats compress_lds_to_accelerated_native_flac(
     const auto frame_sample_count = static_cast<std::size_t>(options.frame_samples);
     const auto batch_sample_count = frame_sample_count * options.batch_frames;
     batch_samples.reserve(batch_sample_count);
+    std::future<AnalyzedSelectedBatch> pending_batch;
     std::uint64_t frame_number = 0;
     std::size_t samples_in_current_frame = 0;
     std::unique_ptr<SelectedFrameWriterPool> frame_pool;
@@ -506,15 +542,41 @@ ConversionStats compress_lds_to_accelerated_native_flac(
         frame_pool = std::make_unique<SelectedFrameWriterPool>(options.thread_count);
     }
 
+    const auto launch_batch_analysis = [&](std::vector<std::int32_t> samples,
+                                           std::uint64_t first_frame_number) {
+        return std::async(
+            std::launch::async,
+            [&options, &analyzer,
+                samples = std::move(samples), first_frame_number]() mutable {
+                return analyze_accelerated_selected_batch(
+                    std::move(samples), first_frame_number, options, analyzer);
+            });
+    };
+    const auto write_pending_batch = [&] {
+        if (!pending_batch.valid()) {
+            return;
+        }
+        auto analyzed = pending_batch.get();
+        write_accelerated_analyzed_batch(
+            output, analyzed, options, frame_pool.get());
+    };
     const auto flush_batch = [&] {
         if (batch_samples.empty()) {
             return;
         }
         const auto batch_first_frame =
             frame_number - (batch_samples.size() / frame_sample_count);
-        write_accelerated_selected_batch(
-            output, batch_samples, batch_first_frame, options, analyzer, frame_pool.get());
-        batch_samples.clear();
+        std::vector<std::int32_t> full_batch;
+        full_batch.swap(batch_samples);
+        batch_samples.reserve(batch_sample_count);
+        if (pending_batch.valid()) {
+            auto analyzed = pending_batch.get();
+            pending_batch = launch_batch_analysis(std::move(full_batch), batch_first_frame);
+            write_accelerated_analyzed_batch(
+                output, analyzed, options, frame_pool.get());
+            return;
+        }
+        pending_batch = launch_batch_analysis(std::move(full_batch), batch_first_frame);
     };
 
     const auto ingest_started = Clock::now();
@@ -527,6 +589,7 @@ ConversionStats compress_lds_to_accelerated_native_flac(
     const auto tail_write_before = options.native_stats != nullptr
         ? options.native_stats->accelerated_tail_write_ns
         : 0;
+    std::uint64_t explicit_scan_ns = 0;
 
     const auto append_sample = [&](std::int16_t sample) {
         batch_samples.push_back(sample);
@@ -545,7 +608,7 @@ ConversionStats compress_lds_to_accelerated_native_flac(
             for (const auto sample : samples) {
                 append_sample(sample);
             }
-            return;
+            return false;
         }
 
         const auto old_size = batch_samples.size();
@@ -558,16 +621,16 @@ ConversionStats compress_lds_to_accelerated_native_flac(
         if (samples_in_current_frame == frame_sample_count) {
             samples_in_current_frame = 0;
             ++frame_number;
-            if (batch_samples.size() == batch_sample_count) {
-                flush_batch();
-            }
+            return batch_samples.size() == batch_sample_count;
         }
+        return false;
     };
 
     ConversionStats stats;
     std::vector<std::uint8_t> input_buffer(5 * kGroupsPerChunk);
     std::vector<std::uint8_t> pcm_md5_buffer(8 * kGroupsPerChunk);
     while (lds_input) {
+        auto scan_segment_started = Clock::now();
         lds_input.read(reinterpret_cast<char*>(input_buffer.data()),
             static_cast<std::streamsize>(input_buffer.size()));
         const auto got = lds_input.gcount();
@@ -579,15 +642,34 @@ ConversionStats compress_lds_to_accelerated_native_flac(
         }
 
         const auto groups = static_cast<std::size_t>(got / 5);
+        std::size_t md5_segment_start_group = 0;
         for (std::size_t group = 0; group < groups; ++group) {
             const auto samples = unpack_group_bytes(input_buffer.data() + (group * 5U));
             auto* pcm = pcm_md5_buffer.data() + (group * 8U);
             for (std::size_t sample_index = 0; sample_index < samples.size(); ++sample_index) {
                 write_i16le(pcm + (sample_index * 2U), samples[sample_index]);
             }
-            append_sample_group(samples);
+            const bool batch_full = append_sample_group(samples);
+            if (frame_is_group_aligned && batch_full) {
+                pcm_md5.update(
+                    pcm_md5_buffer.data() + (md5_segment_start_group * 8U),
+                    ((group + 1U) - md5_segment_start_group) * 8U);
+                if (options.native_stats != nullptr) {
+                    explicit_scan_ns += elapsed_ns(scan_segment_started, Clock::now());
+                }
+                flush_batch();
+                md5_segment_start_group = group + 1U;
+                scan_segment_started = Clock::now();
+            }
         }
-        pcm_md5.update(pcm_md5_buffer.data(), groups * 8U);
+        if (md5_segment_start_group < groups) {
+            pcm_md5.update(
+                pcm_md5_buffer.data() + (md5_segment_start_group * 8U),
+                (groups - md5_segment_start_group) * 8U);
+        }
+        if (options.native_stats != nullptr && frame_is_group_aligned) {
+            explicit_scan_ns += elapsed_ns(scan_segment_started, Clock::now());
+        }
         stats.input_bytes += static_cast<std::uint64_t>(got);
         stats.samples += groups * 4U;
     }
@@ -606,19 +688,24 @@ ConversionStats compress_lds_to_accelerated_native_flac(
         batch_samples.resize(complete_sample_count);
     }
     flush_batch();
+    write_pending_batch();
     if (!tail_samples.empty()) {
         write_native_tail_frame(output, tail_samples, frame_number, options);
         ++frame_number;
     }
 
     if (options.native_stats != nullptr) {
-        const auto ingest_ns = elapsed_ns(ingest_started, Clock::now());
-        const auto nested_ns =
-            (options.native_stats->accelerated_analyzer_ns - analyzer_before) +
-            (options.native_stats->accelerated_selected_write_ns - selected_write_before) +
-            (options.native_stats->accelerated_tail_write_ns - tail_write_before);
-        if (ingest_ns > nested_ns) {
-            options.native_stats->accelerated_scan_ns += ingest_ns - nested_ns;
+        if (frame_is_group_aligned) {
+            options.native_stats->accelerated_scan_ns += explicit_scan_ns;
+        } else {
+            const auto ingest_ns = elapsed_ns(ingest_started, Clock::now());
+            const auto nested_ns =
+                (options.native_stats->accelerated_analyzer_ns - analyzer_before) +
+                (options.native_stats->accelerated_selected_write_ns - selected_write_before) +
+                (options.native_stats->accelerated_tail_write_ns - tail_write_before);
+            if (ingest_ns > nested_ns) {
+                options.native_stats->accelerated_scan_ns += ingest_ns - nested_ns;
+            }
         }
     }
 
