@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <iostream>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -24,6 +25,26 @@ void require_bytes(
 {
     if (actual != expected) {
         throw std::runtime_error(std::string(label) + ": byte vector mismatch");
+    }
+}
+
+std::uint64_t fold_signed_rice_value(std::int64_t value)
+{
+    if (value >= 0) {
+        return static_cast<std::uint64_t>(value) << 1U;
+    }
+    return (static_cast<std::uint64_t>(-(value + 1)) << 1U) + 1U;
+}
+
+void write_scalar_rice_signed(
+    ldcompress::BitWriter& writer,
+    std::int64_t value,
+    unsigned parameter)
+{
+    const auto folded = fold_signed_rice_value(value);
+    writer.write_unary(static_cast<unsigned>(folded >> parameter));
+    if (parameter != 0) {
+        writer.write_bits(folded, parameter);
     }
 }
 
@@ -80,6 +101,73 @@ void test_bit_writer()
     require(threw, "write_bits accepted more than 64 bits");
 }
 
+void test_rice_block_writer()
+{
+    const std::vector<std::int64_t> values {
+        0, -1, 1, -2, 2, 7, -8, 64, -65, 511, -512, 4096, -4097,
+    };
+
+    for (unsigned parameter = 0; parameter <= 14; ++parameter) {
+        ldcompress::BitWriter scalar;
+        ldcompress::BitWriter block;
+        scalar.write_bits(0b101, 3);
+        block.write_bits(0b101, 3);
+        for (const auto value : values) {
+            write_scalar_rice_signed(scalar, value, parameter);
+        }
+        block.write_rice_signed_block(values, parameter);
+        require(scalar.bit_count() == block.bit_count(),
+            "Rice block writer bit count mismatch");
+        require_bytes(block.bytes(), scalar.bytes(), "Rice block writer");
+    }
+
+    ldcompress::BitWriter scalar;
+    ldcompress::BitWriter block;
+    const std::vector<std::int64_t> long_unary {8192, -8193};
+    for (const auto value : long_unary) {
+        write_scalar_rice_signed(scalar, value, 0);
+    }
+    block.write_rice_signed_block(long_unary, 0);
+    require(scalar.bit_count() == block.bit_count(),
+        "long Rice block writer bit count mismatch");
+    require_bytes(block.bytes(), scalar.bytes(), "long Rice block writer");
+
+    scalar.clear();
+    block.clear();
+    const std::vector<std::int64_t> boundary {-32, -33};
+    for (const auto value : boundary) {
+        write_scalar_rice_signed(scalar, value, 0);
+    }
+    block.write_rice_signed_block(boundary, 0);
+    require(scalar.bit_count() == block.bit_count(),
+        "boundary Rice block writer bit count mismatch");
+    require_bytes(block.bytes(), scalar.bytes(), "boundary Rice block writer");
+
+    block.clear();
+    block.write_bits(0b101010, 6);
+    block.write_rice_signed_block(std::span<const std::int64_t> {}, 4);
+    require(block.bit_count() == 6, "empty Rice block changed bit count");
+    require_bytes(block.bytes(), {0xa8}, "empty Rice block changed bytes");
+
+    bool threw = false;
+    const std::vector<std::int64_t> invalid_parameter {0};
+    try {
+        block.write_rice_signed_block(invalid_parameter, 64);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    require(threw, "Rice block writer accepted parameter 64");
+
+    threw = false;
+    const std::vector<std::int64_t> huge_quotient {std::int64_t {1} << 40U};
+    try {
+        block.write_rice_signed_block(huge_quotient, 0);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    require(threw, "Rice block writer accepted huge quotient");
+}
+
 void test_flac_crcs()
 {
     constexpr std::string_view check_input = "123456789";
@@ -124,6 +212,7 @@ int main()
 {
     try {
         test_bit_writer();
+        test_rice_block_writer();
         test_flac_crcs();
     } catch (const std::exception& ex) {
         std::cerr << "test_flac_primitives: " << ex.what() << '\n';

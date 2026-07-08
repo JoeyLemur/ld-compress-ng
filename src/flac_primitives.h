@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace ldcompress {
@@ -11,6 +12,7 @@ public:
     void write_bits(std::uint64_t value, unsigned bit_count);
     void write_signed(std::int64_t value, unsigned bit_count);
     void write_unary(unsigned zero_count);
+    void write_rice_signed_block(std::span<const std::int64_t> values, unsigned parameter);
     void align_zero();
     void clear();
     void reserve_bits(std::size_t bit_count);

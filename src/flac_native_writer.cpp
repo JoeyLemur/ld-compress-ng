@@ -2033,17 +2033,19 @@ void write_subframe_header(BitWriter& output, unsigned type, unsigned wasted_bit
     output.write_unary(wasted_bits - 1U);
 }
 
-void write_rice_signed(BitWriter& output, std::int64_t residual, unsigned parameter)
+void write_rice_signed_block(
+    BitWriter& output,
+    const std::vector<std::int64_t>& residuals,
+    std::size_t offset,
+    std::size_t count,
+    unsigned parameter)
 {
-    const auto folded = fold_signed_residual(residual);
-    const auto quotient = folded >> parameter;
-    if (quotient > std::numeric_limits<unsigned>::max()) {
-        throw std::runtime_error("Rice-coded residual quotient is too large");
+    if (offset > residuals.size() || count > residuals.size() - offset) {
+        throw std::runtime_error("internal FLAC residual block range error");
     }
-    output.write_unary(static_cast<unsigned>(quotient));
-    if (parameter != 0) {
-        output.write_bits(folded, parameter);
-    }
+    output.write_rice_signed_block(
+        std::span<const std::int64_t>(residuals.data() + offset, count),
+        parameter);
 }
 
 void write_frame_with_body(
@@ -2121,10 +2123,9 @@ FlacSubframeDecision write_fixed_rice_frame(
             subframe.partition_order, partition);
         const auto rice_parameter = subframe.rice_parameters.at(partition);
         frame_body.write_bits(rice_parameter, 4);
-        for (std::size_t i = 0; i < residual_count; ++i) {
-            write_rice_signed(frame_body, subframe.residuals.at(residual_offset + i),
-                rice_parameter);
-        }
+        write_rice_signed_block(
+            frame_body, subframe.residuals, residual_offset, residual_count,
+            rice_parameter);
         residual_offset += residual_count;
     }
     if (residual_offset != subframe.residuals.size()) {
@@ -2181,10 +2182,9 @@ FlacSubframeDecision write_lpc_rice_frame(
             subframe.partition_order, partition);
         const auto rice_parameter = subframe.rice_parameters.at(partition);
         frame_body.write_bits(rice_parameter, 4);
-        for (std::size_t i = 0; i < residual_count; ++i) {
-            write_rice_signed(frame_body, subframe.residuals.at(residual_offset + i),
-                rice_parameter);
-        }
+        write_rice_signed_block(
+            frame_body, subframe.residuals, residual_offset, residual_count,
+            rice_parameter);
         residual_offset += residual_count;
     }
     if (residual_offset != subframe.residuals.size()) {

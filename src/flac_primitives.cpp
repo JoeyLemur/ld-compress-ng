@@ -1,9 +1,21 @@
 #include "flac_primitives.h"
 
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 
 namespace ldcompress {
+namespace {
+
+std::uint64_t fold_signed_rice_value(std::int64_t value)
+{
+    if (value >= 0) {
+        return static_cast<std::uint64_t>(value) << 1U;
+    }
+    return (static_cast<std::uint64_t>(-(value + 1)) << 1U) + 1U;
+}
+
+}  // namespace
 
 void BitWriter::write_bits(std::uint64_t value, unsigned bits)
 {
@@ -48,6 +60,33 @@ void BitWriter::write_unary(unsigned zero_count)
 {
     write_zero_bits(zero_count);
     write_bits(1, 1);
+}
+
+void BitWriter::write_rice_signed_block(
+    std::span<const std::int64_t> values,
+    unsigned parameter)
+{
+    if (parameter >= 64) {
+        throw std::runtime_error("Rice parameter must be less than 64");
+    }
+
+    for (const auto value : values) {
+        const auto folded = fold_signed_rice_value(value);
+        const auto quotient = folded >> parameter;
+        if (quotient > std::numeric_limits<unsigned>::max()) {
+            throw std::runtime_error("Rice-coded residual quotient is too large");
+        }
+        const auto remainder_mask = (std::uint64_t {1} << parameter) - 1U;
+        const auto stop_and_remainder =
+            (std::uint64_t {1} << parameter) | (folded & remainder_mask);
+        if (quotient <= 63U - parameter) {
+            write_bits(stop_and_remainder,
+                static_cast<unsigned>(quotient + 1U + parameter));
+        } else {
+            write_zero_bits(static_cast<std::size_t>(quotient));
+            write_bits(stop_and_remainder, parameter + 1U);
+        }
+    }
 }
 
 void BitWriter::align_zero()
