@@ -40,7 +40,7 @@ struct ExactParams {
     std::uint32_t selected_task_count = 0;
     std::uint32_t max_rice_partition_order = 0;
     std::uint32_t analysis_profile = 0;
-    std::uint32_t reserved = 0;
+    std::uint32_t prepared_frame_facts = 0;
 };
 
 struct ChooseParams {
@@ -459,6 +459,8 @@ constant uint kWorkgroupSize = 64u;
 constant uint kMaxOrder = 32u;
 constant uint kMaxRiceParameter = 14u;
 constant uint kMaxRicePartitionCount = 256u;
+constant uint kExactLeafMaxRicePartitionOrder = 6u;
+constant uint kExactLeafRiceParameterCount = 15u;
 constant int kSubframeConstant = 0;
 constant int kSubframeFixed = 8;
 constant int kSubframeLpc = 32;
@@ -492,7 +494,7 @@ struct ExactParams {
     uint selectedTaskCount;
     uint maxRicePartitionOrder;
     uint analysisProfile;
-    uint reserved;
+    uint preparedFrameFacts;
 };
 
 struct ChooseParams {
@@ -821,30 +823,23 @@ kernel void find_wasted_bits(
     device const int* samples [[buffer(0)]],
     device FlacClSubframeTask* tasks [[buffer(1)]],
     constant GeneratedLpcParams& params [[buffer(2)]],
-    uint frame [[thread_position_in_grid]])
+    uint lane [[thread_index_in_threadgroup]],
+    uint frame [[threadgroup_position_in_grid]])
 {
+    threadgroup int reduce_ints[64];
+    threadgroup uint reduce_uints[64];
     if (frame >= params.frameCount) {
         return;
     }
     const uint base = frame * params.tasksPerFrame;
     FlacClSubframeTask first = tasks[base];
     device const int* data = samples + first.data.samplesOffs;
-    int w_or = 0;
-    int a_or = 0;
-    for (int pos = 0; pos < first.data.blocksize; ++pos) {
-        const int sample = data[pos];
-        w_or |= sample;
-        a_or |= sample ^ (sample >> 31);
-    }
+    const int wbits =
+        common_wasted_bits(data, first.data.blocksize, first.data.obits, reduce_ints, lane);
+    const int abits =
+        amplitude_bits(data, first.data.blocksize, wbits, reduce_uints, lane);
 
-    int wbits = first.data.obits - 1;
-    if (w_or != 0) {
-        wbits = sample_trailing_zero_bits(w_or, first.data.obits);
-    }
-    wbits = clamp(wbits, 0, first.data.obits - 1);
-    const int abits = a_or == 0 ? 1 : max(1, 32 - leading_zero_bits_u32(uint(a_or)) - wbits);
-
-    for (uint slot = 0u; slot < params.tasksPerFrame; ++slot) {
+    for (uint slot = lane; slot < params.tasksPerFrame; slot += kWorkgroupSize) {
         FlacClSubframeTask task = tasks[base + slot];
         task.data.wbits = wbits;
         task.data.abits = abits;
@@ -1224,6 +1219,7 @@ kernel void analyze_exact(
     threadgroup int reduce_ints[64];
     threadgroup uint reduce_uints[64];
     threadgroup ulong reduce_ulongs[64];
+    threadgroup ulong exact_rice_leaf_sums[64 * 15];
     threadgroup uint candidate_rice_parameters[256];
     threadgroup uint best_rice_parameters[256];
 
@@ -1249,8 +1245,17 @@ kernel void analyze_exact(
     device const int* data = samples + task.data.samplesOffs;
     const int ro = task.data.residualOrder;
     const int bs = task.data.blocksize;
-    task.data.wbits = common_wasted_bits(data, bs, task.data.obits, reduce_ints, lane);
-    task.data.abits = amplitude_bits(data, bs, task.data.wbits, reduce_uints, lane);
+    if (params.preparedFrameFacts == 0u) {
+        task.data.wbits = common_wasted_bits(data, bs, task.data.obits, reduce_ints, lane);
+        task.data.abits = amplitude_bits(data, bs, task.data.wbits, reduce_uints, lane);
+    } else if (task.data.wbits < 0 || task.data.wbits >= task.data.obits ||
+        task.data.abits <= 0 || task.data.abits > task.data.obits) {
+        if (lane == 0u) {
+            task.data.size = kIntMax;
+            tasks[selected_task] = task;
+        }
+        return;
+    }
     task.data.porder = 0;
     const int wbits = task.data.wbits;
     const int obits = task.data.obits - wbits;
@@ -1304,12 +1309,167 @@ kernel void analyze_exact(
     const int use_mean_rice = profile_uses_mean_rice(params.analysisProfile);
     const int use_mean_estimated_size =
         profile_uses_mean_estimated_size(params.analysisProfile);
+    const int use_leaf_exact_rice =
+        !use_mean_rice &&
+        max_partition_order <= int(kExactLeafMaxRicePartitionOrder) &&
+        valid_partition_order(bs, ro, max_partition_order);
+    const int use_leaf_mean_estimated_rice =
+        use_mean_rice &&
+        use_mean_estimated_size &&
+        max_partition_order <= int(kExactLeafMaxRicePartitionOrder) &&
+        valid_partition_order(bs, ro, max_partition_order);
     const ulong base_bits = task.data.type == kSubframeLpc
         ? 8UL + (wbits == 0 ? 0UL : ulong(wbits)) +
             (ulong(ro) * ulong(obits)) + 4UL + 5UL +
             (ulong(ro) * ulong(task.data.cbits)) + 2UL + 4UL
         : 8UL + (ulong(ro) * ulong(obits)) + 2UL + 4UL +
             (wbits == 0 ? 0UL : ulong(wbits));
+
+    if (use_leaf_exact_rice) {
+        const int leaf_partition_order = max_partition_order;
+        const int leaf_count = 1 << leaf_partition_order;
+        const int leaf_samples = bs >> leaf_partition_order;
+        for (int leaf = int(lane); leaf < leaf_count; leaf += int(kWorkgroupSize)) {
+            ulong sums[15];
+            for (uint parameter = 0u; parameter < kExactLeafRiceParameterCount; ++parameter) {
+                sums[parameter] = 0UL;
+            }
+
+            const int start = leaf == 0 ? ro : leaf * leaf_samples;
+            const int end = (leaf + 1) * leaf_samples;
+            for (int pos = start; pos < end; ++pos) {
+                const ulong folded = fold_residual(residual(data, pos, task));
+                for (uint parameter = 0u; parameter < kExactLeafRiceParameterCount;
+                     ++parameter) {
+                    sums[parameter] += folded >> parameter;
+                }
+            }
+
+            const int output_base = leaf * int(kExactLeafRiceParameterCount);
+            for (uint parameter = 0u; parameter < kExactLeafRiceParameterCount; ++parameter) {
+                exact_rice_leaf_sums[output_base + int(parameter)] = sums[parameter];
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (lane == 0u) {
+            for (int partition_order = 0; partition_order <= leaf_partition_order;
+                 ++partition_order) {
+                if (!valid_partition_order(bs, ro, partition_order)) {
+                    continue;
+                }
+
+                const int partition_count = 1 << partition_order;
+                const int partition_samples = bs >> partition_order;
+                const int leaf_group_size = 1 << (leaf_partition_order - partition_order);
+                ulong bits = base_bits;
+                for (int partition = 0; partition < partition_count; ++partition) {
+                    const int residual_count = partition == 0
+                        ? partition_samples - ro
+                        : partition_samples;
+                    const int leaf_start = partition * leaf_group_size;
+                    ulong best_parameter_bits = 0xffffffffffffffffUL;
+                    uint best_parameter = 0u;
+                    for (uint parameter = 0u; parameter <= kMaxRiceParameter; ++parameter) {
+                        ulong sum = 0UL;
+                        for (int leaf = 0; leaf < leaf_group_size; ++leaf) {
+                            const int index =
+                                ((leaf_start + leaf) * int(kExactLeafRiceParameterCount)) +
+                                int(parameter);
+                            sum += exact_rice_leaf_sums[index];
+                        }
+                        const ulong parameter_bits =
+                            sum + (ulong(residual_count) * ulong(1u + parameter));
+                        if (parameter_bits < best_parameter_bits) {
+                            best_parameter_bits = parameter_bits;
+                            best_parameter = parameter;
+                        }
+                    }
+                    bits += 4UL + best_parameter_bits;
+                    candidate_rice_parameters[partition] = best_parameter;
+                }
+
+                if (bits < best_bits) {
+                    best_bits = bits;
+                    best_partition_order = partition_order;
+                    for (int partition = 0; partition < partition_count; ++partition) {
+                        task_rice_parameters[rice_output_base + partition] =
+                            candidate_rice_parameters[partition];
+                    }
+                }
+            }
+
+            task.data.porder = best_partition_order;
+            task.data.size = best_bits > ulong(kIntMax) ? kIntMax : int(best_bits);
+            tasks[selected_task] = task;
+        }
+        return;
+    }
+
+    if (use_leaf_mean_estimated_rice) {
+        const int leaf_partition_order = max_partition_order;
+        const int leaf_count = 1 << leaf_partition_order;
+        const int leaf_samples = bs >> leaf_partition_order;
+        for (int leaf = int(lane); leaf < leaf_count; leaf += int(kWorkgroupSize)) {
+            ulong abs_sum = 0UL;
+            const int start = leaf == 0 ? ro : leaf * leaf_samples;
+            const int end = (leaf + 1) * leaf_samples;
+            for (int pos = start; pos < end; ++pos) {
+                abs_sum += abs_long(residual(data, pos, task));
+            }
+            exact_rice_leaf_sums[leaf] = abs_sum;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (lane == 0u) {
+            for (int partition_order = leaf_partition_order; partition_order >= 0;
+                 --partition_order) {
+                if (!valid_partition_order(bs, ro, partition_order)) {
+                    continue;
+                }
+
+                const int partition_count = 1 << partition_order;
+                const int partition_samples = bs >> partition_order;
+                const int leaf_group_size = 1 << (leaf_partition_order - partition_order);
+                ulong estimated_bits = 2UL + 4UL;
+                for (int partition = 0; partition < partition_count; ++partition) {
+                    const int residual_count = partition == 0
+                        ? partition_samples - ro
+                        : partition_samples;
+                    const int leaf_start = partition * leaf_group_size;
+                    ulong abs_sum = 0UL;
+                    for (int leaf = 0; leaf < leaf_group_size; ++leaf) {
+                        abs_sum += exact_rice_leaf_sums[leaf_start + leaf];
+                    }
+
+                    const uint parameter = mean_rice_parameter(abs_sum, residual_count);
+                    estimated_bits +=
+                        mean_rice_partition_bits(parameter, residual_count, abs_sum);
+                    candidate_rice_parameters[partition] = parameter;
+                }
+
+                if (estimated_bits < best_estimated_bits) {
+                    best_estimated_bits = estimated_bits;
+                    best_partition_order = partition_order;
+                    const ulong rice_header_bits = 2UL + 4UL;
+                    const ulong estimate_base_bits = base_bits - rice_header_bits;
+                    best_bits = best_estimated_bits >=
+                            0xffffffffffffffffUL - estimate_base_bits
+                        ? 0xffffffffffffffffUL
+                        : estimate_base_bits + best_estimated_bits;
+                    for (int partition = 0; partition < partition_count; ++partition) {
+                        task_rice_parameters[rice_output_base + partition] =
+                            candidate_rice_parameters[partition];
+                    }
+                }
+            }
+
+            task.data.porder = best_partition_order;
+            task.data.size = best_bits > ulong(kIntMax) ? kIntMax : int(best_bits);
+            tasks[selected_task] = task;
+        }
+        return;
+    }
 
     const int partition_start_order = use_mean_rice ? max_partition_order : 0;
     const int partition_end_order = use_mean_rice ? 0 : max_partition_order;
@@ -1716,8 +1876,9 @@ public:
                 [wasted_encoder setBytes:&(*generated_params)
                                       length:sizeof(*generated_params)
                                      atIndex:2];
-                [wasted_encoder dispatchThreads:MTLSizeMake(generated_config->frame_count, 1, 1)
-                           threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+                [wasted_encoder dispatchThreadgroups:MTLSizeMake(
+                                                        generated_config->frame_count, 1, 1)
+                                 threadsPerThreadgroup:MTLSizeMake(kWorkgroupSize, 1, 1)];
                 [wasted_encoder endEncoding];
 
                 id<MTLComputeCommandEncoder> autocor_encoder =
@@ -1733,10 +1894,14 @@ public:
                 [autocor_encoder setBytes:&(*generated_params)
                                      length:sizeof(*generated_params)
                                     atIndex:4];
+                const auto lpc_order_limit =
+                    std::min<std::size_t>(
+                        opencl_detail::kFlacClMaxOrder,
+                        std::max<unsigned>(1U, plan.max_lpc_order));
                 [autocor_encoder dispatchThreadgroups:MTLSizeMake(
                                                         generated_config->frame_count,
                                                         generated_config->window_count,
-                                                        opencl_detail::kFlacClMaxOrder + 1U)
+                                                        lpc_order_limit + 1U)
                                  threadsPerThreadgroup:MTLSizeMake(kWorkgroupSize, 1, 1)];
                 [autocor_encoder endEncoding];
 
@@ -1811,7 +1976,7 @@ public:
                 .selected_task_count = checked_u32(plan.selected_tasks.size(), "selected tasks"),
                 .max_rice_partition_order = max_rice_partition_order,
                 .analysis_profile = metal_analysis_profile_arg(plan.analysis_profile),
-                .reserved = 0,
+                .prepared_frame_facts = populate_lpc ? 1U : 0U,
             };
             ChooseParams choose_params {
                 .frame_count = checked_u32(frame_count, "frame count"),

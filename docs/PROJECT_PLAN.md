@@ -271,6 +271,24 @@ Metal size/speed tuning checkpoint:
   `5,6`, best aggregate rows were native-fixed `79,926,901` bytes in `1.551s`,
   OpenCL `79,946,777` bytes in `1.602s`, and Metal `79,946,831` bytes in
   `4.666s`.
+- 2026-07-09 focused Metal performance follow-up: the Metal generated path now
+  prepares wasted-bit/amplitude facts cooperatively, exact analysis trusts those
+  prepared facts instead of rescanning each selected task, exact/Rice analysis
+  uses the OpenCL-style leaf-sum shortcut for exact and mean-estimated profiles
+  at Rice partition order `<=6`, and Metal generated autocorrelation dispatches
+  only the requested LPC order limit instead of all `33` FLACCL lags. On Apple
+  M5 Pro device `0`, the focused `issue176.lds` speed-profile bench
+  (`threads=8`, `frame=4608`, `lpc=12`, `prec=12`, `rice=6`,
+  `analysis-profile=order-guess-mean-estimate-rice`) improved Metal from
+  `0.281s` to `0.099s` with unchanged `4,293,091` byte output; `metal_exact_s`
+  dropped from about `0.151s` to `0.021s`, and `metal_lpc_s` from about
+  `0.108s` to `0.056s`. A `2048`-frame Metal batch was tested and rejected
+  because the focused row regressed to `0.130s`; keep the `512`-frame batch.
+  Validation passed with `cmake --build build-metal`,
+  `build-metal/test_metal_smoke --device 0`,
+  `build-metal/test_metal_analysis --device 0`,
+  `ctest --test-dir build-metal --output-on-failure`, and a plain Metal
+  `compress` plus `verify --source` on `issue176.lds`.
 
 Current default native tuning values:
 
