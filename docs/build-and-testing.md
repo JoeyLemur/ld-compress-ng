@@ -251,12 +251,13 @@ used by `compress --backend metal --device INDEX` or `--metal-device INDEX`.
 
 Manual diagnostics are not built by default. Configure with
 `-DLDCOMPRESS_BUILD_DIAGNOSTICS=ON` to build tools such as
-`compare_opencl_scalar_frames`:
+`compare_opencl_scalar_frames` and `compare_metal_scalar_frames`:
 
 ```sh
 cmake -S . -B build-diagnostics -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DLDCOMPRESS_BUILD_DIAGNOSTICS=ON
 cmake --build build-diagnostics --target compare_opencl_scalar_frames
+cmake --build build-diagnostics --target compare_metal_scalar_frames
 ```
 
 ## Install Layout
@@ -314,12 +315,12 @@ Metal use the same native tuning options, and `--threads` parallelizes their CPU
 selected-frame writer after GPU analysis. The normal `compress` command uses the
 exact native analysis profile; faster order-guess and mean-Rice profiles are
 available through `bench` and the sweep helper for tuning work.
-Vulkan exact-costs fixed/Rice and GPU-generated LPC candidates in the normal
-compression path. Use `--stats`
-on native/OpenCL/Vulkan/Metal compression when investigating backend behavior;
-accelerated backends also print coarse timing splits for setup, ingest, analyzer,
-selected-frame writing, and accelerator plan/exact-analysis stages. Metal prints
-host-side LPC generation plus exact-analysis/readback timing. Vulkan
+Vulkan and Metal exact-cost fixed/Rice and GPU-generated LPC candidates in the
+normal compression path. Use `--stats` on native/OpenCL/Vulkan/Metal
+compression when investigating backend behavior; accelerated backends also
+print coarse timing splits for setup, ingest, analyzer, selected-frame writing,
+and accelerator plan/exact-analysis stages. Metal prints generated-LPC plus
+exact-analysis/readback timing. Vulkan
 additionally prints GPU queue timestamp splits when the selected compute queue
 supports timestamp queries, which helps separate transfer/readback cost from
 generated-LPC and exact residual/Rice shader work.
@@ -549,6 +550,34 @@ fixtures are present:
 python3 tools/roundtrip_real_fixtures.py --backends metal --metal-device INDEX
 python3 tools/sweep_real_fixtures.py --include-metal --reuse-metal-session --metal-device INDEX
 ```
+
+The current Apple M5 Pro Metal size-parity checkpoint used Metal device `0`.
+The exact six-fixture roundtrip artifact is
+`build/real-fixture-roundtrips/real-fixture-roundtrip-20260708-185327/`:
+
+| Backend | Input bytes | Output bytes | Compress time |
+| --- | ---: | ---: | ---: |
+| Native-fixed | `149,954,560` | `79,867,690` | `9.931s` |
+| Metal | `149,954,560` | `79,892,801` | `166.953s` |
+
+The matching exact OpenCL+Metal sweep artifact is
+`build/real-fixture-sweeps/real-fixture-sweep-20260708-185945.{csv,md}`:
+
+| Backend | Output bytes | Elapsed time |
+| --- | ---: | ---: |
+| Native-fixed | `79,867,690` | `10.188s` |
+| OpenCL | `79,892,332` | `3.887s` |
+| Metal | `79,892,801` | `174.326s` |
+
+The Metal speed-profile checkpoint is
+`build/real-fixture-sweeps/real-fixture-sweep-20260708-191154.{csv,md}` and used
+`--analysis-profile order-guess-mean-estimate-rice --rice-partition-order 5,6`:
+
+| Backend | Rice order | Output bytes | Elapsed time |
+| --- | ---: | ---: | ---: |
+| Native-fixed | `6` | `79,926,901` | `1.551s` |
+| OpenCL | `6` | `79,946,777` | `1.602s` |
+| Metal | `6` | `79,946,831` | `4.666s` |
 
 Scalar native-fixed is useful as a size and decision oracle, but CPU/libFLAC
 remains the recommended CPU-only encoder.

@@ -4,6 +4,7 @@
 #include "opencl_analysis.h"
 #include "opencl_analysis_test_support.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -374,6 +375,112 @@ void require_rice_parameters_match_scalar(
     }
 }
 
+std::vector<std::int32_t> frame_samples_for_task(
+    const std::vector<std::int32_t>& samples,
+    const ldcompress::opencl_detail::FlacClSubframeTask& task)
+{
+    require(task.data.samplesOffs >= 0, "Metal selected task has negative sample offset");
+    require(task.data.blocksize > 0, "Metal selected task has invalid block size");
+    const auto offset = static_cast<std::size_t>(task.data.samplesOffs);
+    const auto count = static_cast<std::size_t>(task.data.blocksize);
+    require(offset <= samples.size() && count <= samples.size() - offset,
+        "Metal selected task sample range is out of bounds");
+    return std::vector<std::int32_t>(
+        samples.begin() + static_cast<std::ptrdiff_t>(offset),
+        samples.begin() + static_cast<std::ptrdiff_t>(offset + count));
+}
+
+ldcompress::FlacFrameInfo frame_info_for_task(
+    const ldcompress::opencl_detail::FlacClSubframeTask& task,
+    unsigned max_lpc_order,
+    unsigned lpc_precision,
+    unsigned max_rice_partition_order)
+{
+    return ldcompress::FlacFrameInfo {
+        .frame_number = 0,
+        .sample_rate = 40000,
+        .bits_per_sample = static_cast<unsigned>(task.data.obits),
+        .max_lpc_order = max_lpc_order,
+        .lpc_coefficient_precision = lpc_precision,
+        .max_rice_partition_order = max_rice_partition_order,
+    };
+}
+
+void require_decision_matches_task(
+    const ldcompress::FlacSubframeDecision& actual,
+    const ldcompress::FlacSubframeDecision& expected,
+    const char* label)
+{
+    require(actual.kind == expected.kind, label);
+    require(actual.fixed_order == expected.fixed_order, label);
+    require(actual.lpc_order == expected.lpc_order, label);
+    require(actual.rice_partition_order == expected.rice_partition_order, label);
+    require(actual.wasted_bits == expected.wasted_bits, label);
+    require(actual.estimated_bits == expected.estimated_bits, label);
+}
+
+void require_selected_writer_recovers_tasks(
+    const std::vector<std::int32_t>& samples,
+    const std::vector<ldcompress::opencl_detail::FlacClSubframeTask>& tasks,
+    const std::vector<ldcompress::opencl_detail::FlacClRiceParameterSet>& rice_parameters,
+    unsigned max_lpc_order,
+    unsigned lpc_precision,
+    unsigned max_rice_partition_order,
+    const char* label)
+{
+    require_rice_parameters_valid(tasks, rice_parameters, label);
+    for (std::size_t i = 0; i < tasks.size(); ++i) {
+        const auto& task = tasks[i];
+        const auto expected = ldcompress::opencl_detail::flaccl_task_to_subframe_decision(task);
+        auto selected = ldcompress::opencl_detail::flaccl_task_to_selected_subframe(task);
+        selected.rice_parameters =
+            ldcompress::opencl_detail::flaccl_task_to_selected_rice_parameters(
+                task, rice_parameters[i]);
+
+        std::ostringstream output;
+        const auto decision = ldcompress::write_mono_selected_frame(
+            output,
+            frame_samples_for_task(samples, task),
+            frame_info_for_task(task, max_lpc_order, lpc_precision, max_rice_partition_order),
+            selected);
+        require(!output.str().empty(), label);
+        require_decision_matches_task(decision, expected, label);
+    }
+}
+
+void require_selected_writer_accepts_tasks(
+    const std::vector<std::int32_t>& samples,
+    const std::vector<ldcompress::opencl_detail::FlacClSubframeTask>& tasks,
+    const std::vector<ldcompress::opencl_detail::FlacClRiceParameterSet>& rice_parameters,
+    unsigned max_lpc_order,
+    unsigned lpc_precision,
+    unsigned max_rice_partition_order,
+    const char* label)
+{
+    require_rice_parameters_valid(tasks, rice_parameters, label);
+    for (std::size_t i = 0; i < tasks.size(); ++i) {
+        const auto& task = tasks[i];
+        const auto expected = ldcompress::opencl_detail::flaccl_task_to_subframe_decision(task);
+        auto selected = ldcompress::opencl_detail::flaccl_task_to_selected_subframe(task);
+        selected.rice_parameters =
+            ldcompress::opencl_detail::flaccl_task_to_selected_rice_parameters(
+                task, rice_parameters[i]);
+
+        std::ostringstream output;
+        const auto decision = ldcompress::write_mono_selected_frame(
+            output,
+            frame_samples_for_task(samples, task),
+            frame_info_for_task(task, max_lpc_order, lpc_precision, max_rice_partition_order),
+            selected);
+        require(!output.str().empty(), label);
+        require(decision.kind == expected.kind, label);
+        require(decision.fixed_order == expected.fixed_order, label);
+        require(decision.lpc_order == expected.lpc_order, label);
+        require(decision.rice_partition_order == expected.rice_partition_order, label);
+        require(decision.wasted_bits == expected.wasted_bits, label);
+    }
+}
+
 std::vector<std::int32_t> make_lpc_friendly_samples()
 {
     std::vector<std::int32_t> samples;
@@ -550,6 +657,14 @@ void test_metal_lpc_analysis(const Options& options)
     require_rice_parameters_match_scalar(
         samples, single_result.best_tasks, single_result.best_rice_parameters,
         "Metal exact LPC Rice sidecar diverged from scalar recompute");
+    require_selected_writer_recovers_tasks(
+        samples,
+        single_result.best_tasks,
+        single_result.best_rice_parameters,
+        task_options.max_lpc_order,
+        12,
+        5,
+        "Metal exact LPC selected writer recost diverged from selected task");
 
     const auto expected_unpartitioned = analyze_mono_lpc_exact_task(
         samples, 0, task_options, best_lpc->order, 12, 0);
@@ -595,6 +710,14 @@ void test_metal_generated_lpc_analysis(const Options& options)
         "Metal generated LPC best task count mismatch");
     require_rice_parameters_match_scalar(samples, result.best_tasks, result.best_rice_parameters,
         "Metal generated LPC Rice sidecar diverged from scalar recompute");
+    require_selected_writer_recovers_tasks(
+        samples,
+        result.best_tasks,
+        result.best_rice_parameters,
+        task_options.max_lpc_order,
+        12,
+        5,
+        "Metal generated LPC selected writer recost diverged from selected task");
 
     ldcompress::metal_detail::MetalMonoAnalysisSession session(device_index);
     const auto best_only = session.run_generated_best_analysis(samples, plan, 12, 5);
@@ -607,6 +730,14 @@ void test_metal_generated_lpc_analysis(const Options& options)
     require_rice_parameters_match_scalar(samples, best_only.best_tasks,
         best_only.best_rice_parameters,
         "Metal generated LPC best-only Rice sidecar diverged from scalar recompute");
+    require_selected_writer_recovers_tasks(
+        samples,
+        best_only.best_tasks,
+        best_only.best_rice_parameters,
+        task_options.max_lpc_order,
+        12,
+        5,
+        "Metal generated LPC best-only selected writer recost diverged from selected task");
 
     for (const auto& task : result.analyzed_tasks) {
         if (task.data.type == kFlacClSubframeLpc) {
@@ -643,6 +774,63 @@ void test_metal_generated_lpc_analysis(const Options& options)
     }
 }
 
+void test_metal_order_guess_mean_rice_profile_smoke(const Options& options)
+{
+    using namespace ldcompress::opencl_detail;
+
+    if (!ldcompress::metal_support_built()) {
+        std::cout << "Metal order-guess mean Rice profile skipped: Metal support was not built\n";
+        return;
+    }
+
+    const auto device_index = first_available_metal_device_index(options.device_index);
+    if (!device_index.has_value()) {
+        std::cout << "Metal order-guess mean Rice profile skipped: no Metal device\n";
+        return;
+    }
+
+    OpenClMonoAnalysisTaskOptions task_options;
+    task_options.frame_samples = 512;
+    task_options.max_lpc_order = 12;
+    task_options.include_constant = true;
+    task_options.min_fixed_order = 0;
+    task_options.max_fixed_order = 4;
+    task_options.use_gpu_fixed_order_guess = true;
+    task_options.analysis_profile =
+        ldcompress::NativeAnalysisProfile::OrderGuessMeanEstimateRice;
+
+    const auto samples = make_generated_mixed_samples();
+    const auto plan = build_mono_analysis_task_plan_for_samples(samples, 3, task_options);
+    require(plan.fixed_order_guess_on_gpu,
+        "Metal speed-profile plan did not request GPU fixed-order guess");
+    require(plan.residual_tasks_per_frame == 9,
+        "unexpected Metal speed-profile task count per frame");
+
+    ldcompress::metal_detail::MetalMonoAnalysisSession session(device_index);
+    const auto result = session.run_generated_best_analysis(samples, plan, 12, 6);
+    require(result.best_tasks.size() == 3,
+        "Metal speed-profile best task count mismatch");
+    require_rice_parameters_valid(
+        result.best_tasks,
+        result.best_rice_parameters,
+        "Metal speed-profile Rice sidecar is invalid");
+    require_selected_writer_accepts_tasks(
+        samples,
+        result.best_tasks,
+        result.best_rice_parameters,
+        task_options.max_lpc_order,
+        12,
+        6,
+        "Metal speed-profile selected writer recost diverged from selected task");
+    for (const auto& task : result.best_tasks) {
+        require(task.data.porder >= 0 && task.data.porder <= 6,
+            "Metal speed-profile selected invalid partition order");
+        require(task.data.size > 0 &&
+                task.data.size < std::numeric_limits<std::int32_t>::max(),
+            "Metal speed-profile selected invalid task size");
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -652,6 +840,7 @@ int main(int argc, char** argv)
         test_metal_fixed_constant_analysis(options);
         test_metal_lpc_analysis(options);
         test_metal_generated_lpc_analysis(options);
+        test_metal_order_guess_mean_rice_profile_smoke(options);
     } catch (const std::exception& ex) {
         std::cerr << "test_metal_analysis: " << ex.what() << '\n';
         return 1;

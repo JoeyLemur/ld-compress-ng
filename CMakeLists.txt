@@ -501,6 +501,15 @@ if(BUILD_TESTING)
             PRIVATE
                 ldcompress_test_support
         )
+
+        add_executable(compare_metal_scalar_frames
+            tests/compare_metal_scalar_frames.cpp
+        )
+
+        target_link_libraries(compare_metal_scalar_frames
+            PRIVATE
+                ldcompress_test_support
+        )
     endif()
 
     add_executable(test_reference_ogg

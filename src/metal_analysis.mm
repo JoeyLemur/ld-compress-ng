@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -30,6 +31,10 @@ using Clock = std::chrono::steady_clock;
 
 constexpr std::uint32_t kWorkgroupSize = 64;
 constexpr std::size_t kMetalMaxBlockSize = 8192;
+constexpr double kPi = 3.14159265358979323846264338327950288;
+constexpr double kGeneratedTukeyTaperFraction = 0.5;
+constexpr double kSubdivideTukey3TaperFraction = 0.375;
+constexpr std::size_t kSubdivideTukey3WindowCount = 6;
 
 struct ExactParams {
     std::uint32_t selected_task_count = 0;
@@ -43,6 +48,31 @@ struct ChooseParams {
     std::uint32_t tasks_per_frame = 0;
     std::uint32_t reserved0 = 0;
     std::uint32_t reserved1 = 0;
+};
+
+struct GeneratedLpcParams {
+    std::uint32_t frame_count = 0;
+    std::uint32_t tasks_per_frame = 0;
+    std::uint32_t lpc_tasks_per_window = 0;
+    std::uint32_t total_lpc_tasks = 0;
+    std::uint32_t window_count = 0;
+    std::uint32_t max_lpc_order = 0;
+    std::uint32_t coefficient_precision = 0;
+    std::uint32_t analysis_profile = 0;
+    std::uint32_t blocksize = 0;
+    std::uint32_t fixed_order_guess_on_gpu = 0;
+    std::uint32_t reserved0 = 0;
+    std::uint32_t reserved1 = 0;
+};
+
+struct GeneratedLpcConfig {
+    std::size_t frame_count = 0;
+    std::size_t tasks_per_frame = 0;
+    std::size_t lpc_tasks_per_window = 0;
+    std::size_t total_lpc_tasks = 0;
+    std::size_t window_count = 0;
+    std::size_t blocksize = 0;
+    unsigned max_lpc_order = 0;
 };
 
 std::uint64_t elapsed_ns(Clock::time_point start, Clock::time_point finish)
@@ -172,99 +202,239 @@ std::uint32_t metal_analysis_profile_arg(NativeAnalysisProfile profile)
     return 0;
 }
 
-FlacFrameInfo frame_info_for_task(
-    const FlacClSubframeTask& task,
-    unsigned lpc_coefficient_precision,
-    unsigned max_rice_partition_order,
-    unsigned max_lpc_order)
+bool generated_profile_uses_subdivide_tukey3(NativeAnalysisProfile profile)
 {
-    return FlacFrameInfo {
-        .frame_number = 0,
-        .sample_rate = 40000,
-        .bits_per_sample = static_cast<unsigned>(task.data.obits),
-        .max_lpc_order = max_lpc_order,
-        .lpc_coefficient_precision = lpc_coefficient_precision,
-        .max_rice_partition_order = max_rice_partition_order,
-    };
+    return profile == NativeAnalysisProfile::SubdivideTukey3MeanRice ||
+        profile == NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice;
 }
 
-std::vector<std::int32_t> frame_samples_for_task(
-    const std::vector<std::int32_t>& samples,
-    const FlacClSubframeTask& task)
+float tukey_weight(std::size_t n, std::size_t blocksize, double taper_fraction)
 {
-    if (task.data.samplesOffs < 0 || task.data.blocksize <= 0) {
-        throw std::runtime_error("Metal generated LPC task has invalid sample range");
+    if (blocksize <= 1 || taper_fraction <= 0.0) {
+        return 1.0F;
     }
-    const auto offset = static_cast<std::size_t>(task.data.samplesOffs);
-    const auto count = static_cast<std::size_t>(task.data.blocksize);
-    if (offset > samples.size() || count > samples.size() - offset) {
-        throw std::runtime_error("Metal generated LPC task samples are out of range");
+    if (taper_fraction >= 1.0) {
+        taper_fraction = 1.0;
     }
-    return std::vector<std::int32_t>(
-        samples.begin() + static_cast<std::ptrdiff_t>(offset),
-        samples.begin() + static_cast<std::ptrdiff_t>(offset + count));
+    const auto edge_width = static_cast<std::size_t>(
+        (taper_fraction / 2.0) * static_cast<double>(blocksize - 1U));
+    if (edge_width == 0) {
+        return 1.0F;
+    }
+    if (n < edge_width) {
+        return static_cast<float>(
+            0.5 - (0.5 * std::cos(kPi * static_cast<double>(n) /
+                static_cast<double>(edge_width))));
+    }
+    if (n > blocksize - edge_width - 1U) {
+        return static_cast<float>(
+            0.5 - (0.5 * std::cos(kPi * static_cast<double>(blocksize - n - 1U) /
+                static_cast<double>(edge_width))));
+    }
+    return 1.0F;
 }
 
-void populate_lpc_task_from_analysis(
-    FlacClSubframeTask& task,
-    const FlacLpcSubframeAnalysis& analysis)
+float partial_tukey_weight(
+    std::size_t n,
+    std::size_t blocksize,
+    double taper_fraction,
+    double start,
+    double end)
 {
-    task.data.residualOrder = static_cast<std::int32_t>(analysis.order);
-    task.data.shift = analysis.quantization_shift;
-    task.data.cbits = static_cast<std::int32_t>(analysis.coefficient_precision);
-    task.data.wbits = static_cast<std::int32_t>(analysis.wasted_bits);
-    task.data.porder = static_cast<std::int32_t>(analysis.rice_partition_order);
-    task.data.size = analysis.estimated_bits >
-            static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())
-        ? std::numeric_limits<std::int32_t>::max()
-        : static_cast<std::int32_t>(analysis.estimated_bits);
-    std::fill(task.coefs.begin(), task.coefs.end(), 0);
-    for (std::size_t i = 0; i < analysis.coefficients.size() && i < task.coefs.size(); ++i) {
-        task.coefs[i] = analysis.coefficients[i];
+    if (blocksize == 0 || end <= start) {
+        return 0.0F;
     }
+
+    const auto start_n = std::min<std::size_t>(
+        blocksize, static_cast<std::size_t>(start * static_cast<double>(blocksize)));
+    const auto end_n = std::min<std::size_t>(
+        blocksize, static_cast<std::size_t>(end * static_cast<double>(blocksize)));
+    const auto width = end_n > start_n ? end_n - start_n : 0;
+    if (width == 0 || n < start_n || n >= end_n) {
+        return 0.0F;
+    }
+
+    const auto taper = std::clamp(taper_fraction, 0.05, 0.95);
+    const auto edge_width = static_cast<std::size_t>(
+        (taper / 2.0) * static_cast<double>(width));
+    double weight = 1.0;
+    if (edge_width != 0 && n < start_n + edge_width) {
+        const auto i = n - start_n + 1U;
+        weight = 0.5 -
+            (0.5 * std::cos(kPi * static_cast<double>(i) / static_cast<double>(edge_width)));
+    } else if (edge_width != 0 && n >= end_n - edge_width) {
+        const auto i = end_n - n;
+        weight = 0.5 -
+            (0.5 * std::cos(kPi * static_cast<double>(i) / static_cast<double>(edge_width)));
+    }
+    return static_cast<float>(weight);
 }
 
-void populate_generated_lpc_tasks_on_host(
-    const std::vector<std::int32_t>& samples,
-    OpenClMonoAnalysisTaskPlan& plan,
-    unsigned lpc_coefficient_precision,
-    unsigned max_rice_partition_order)
+float punchout_tukey_weight(
+    std::size_t n,
+    std::size_t blocksize,
+    double taper_fraction,
+    double start,
+    double end)
 {
-    if (plan.max_lpc_order == 0) {
-        return;
+    if (blocksize == 0 || end <= start) {
+        return 1.0F;
     }
+
+    const auto start_n = std::min<std::size_t>(
+        blocksize, static_cast<std::size_t>(start * static_cast<double>(blocksize)));
+    const auto end_n = std::min<std::size_t>(
+        blocksize, static_cast<std::size_t>(end * static_cast<double>(blocksize)));
+    const auto taper = std::clamp(taper_fraction, 0.05, 0.95);
+    const auto left_edge = static_cast<std::size_t>(
+        (taper / 2.0) * static_cast<double>(start_n));
+    const auto right_span = blocksize > end_n ? blocksize - end_n : 0;
+    const auto right_edge = static_cast<std::size_t>(
+        (taper / 2.0) * static_cast<double>(right_span));
+
+    double weight = 1.0;
+    if (n >= start_n && n < end_n) {
+        weight = 0.0;
+    } else if (left_edge != 0 && n < left_edge) {
+        weight = 0.5 -
+            (0.5 * std::cos(kPi * static_cast<double>(n + 1U) /
+                static_cast<double>(left_edge)));
+    } else if (left_edge != 0 && n >= start_n - left_edge && n < start_n) {
+        const auto i = start_n - n;
+        weight = 0.5 -
+            (0.5 * std::cos(kPi * static_cast<double>(i) /
+                static_cast<double>(left_edge)));
+    } else if (right_edge != 0 && n >= end_n && n < end_n + right_edge) {
+        const auto i = n - end_n + 1U;
+        weight = 0.5 -
+            (0.5 * std::cos(kPi * static_cast<double>(i) /
+                static_cast<double>(right_edge)));
+    } else if (right_edge != 0 && n >= blocksize - right_edge) {
+        const auto i = blocksize - n;
+        weight = 0.5 -
+            (0.5 * std::cos(kPi * static_cast<double>(i) /
+                static_cast<double>(right_edge)));
+    }
+    return static_cast<float>(weight);
+}
+
+std::vector<float> make_generated_lpc_windows(
+    std::size_t blocksize,
+    std::size_t window_count,
+    NativeAnalysisProfile profile)
+{
+    std::vector<float> windows(blocksize * window_count, 1.0F);
+    if (generated_profile_uses_subdivide_tukey3(profile)) {
+        if (window_count != kSubdivideTukey3WindowCount || blocksize == 0) {
+            return windows;
+        }
+
+        for (std::size_t n = 0; n < blocksize; ++n) {
+            windows[n] = tukey_weight(n, blocksize, kSubdivideTukey3TaperFraction);
+        }
+
+        std::size_t window = 1;
+        for (unsigned parts : {2U, 3U}) {
+            for (unsigned part = 0; part < parts; ++part, ++window) {
+                const auto start = static_cast<double>(part) / static_cast<double>(parts);
+                const auto end = static_cast<double>(part + 1U) / static_cast<double>(parts);
+                auto* values = windows.data() + (window * blocksize);
+                for (std::size_t n = 0; n < blocksize; ++n) {
+                    values[n] = partial_tukey_weight(
+                        n, blocksize, kSubdivideTukey3TaperFraction, start, end);
+                }
+            }
+        }
+        for (unsigned part = 0; part < 3; ++part, ++window) {
+            const auto start = static_cast<double>(part) / 3.0;
+            const auto end = static_cast<double>(part + 1U) / 3.0;
+            auto* values = windows.data() + (window * blocksize);
+            for (std::size_t n = 0; n < blocksize; ++n) {
+                values[n] = punchout_tukey_weight(
+                    n, blocksize, kSubdivideTukey3TaperFraction, start, end);
+            }
+        }
+        return windows;
+    }
+
+    if (window_count < 2 || blocksize <= 1) {
+        return windows;
+    }
+
+    auto* tukey = windows.data() + blocksize;
+    for (std::size_t n = 0; n < blocksize; ++n) {
+        tukey[n] = tukey_weight(n, blocksize, kGeneratedTukeyTaperFraction);
+    }
+    if (window_count < 3) {
+        return windows;
+    }
+
+    auto* welch = windows.data() + (2U * blocksize);
+    const auto endpoint = static_cast<double>(blocksize - 1U);
+    const auto midpoint = endpoint / 2.0;
+    for (std::size_t n = 0; n < blocksize; ++n) {
+        const auto k = (static_cast<double>(n) - midpoint) / midpoint;
+        welch[n] = static_cast<float>(1.0 - (k * k));
+    }
+    return windows;
+}
+
+GeneratedLpcConfig generated_lpc_config(const OpenClMonoAnalysisTaskPlan& plan)
+{
     const auto frame_count = mono_plan_frame_count(plan);
+    std::size_t total_lpc_tasks = 0;
+    while (total_lpc_tasks < plan.residual_tasks_per_frame &&
+        plan.residual_tasks[total_lpc_tasks].data.type ==
+            opencl_detail::kFlacClSubframeLpc) {
+        ++total_lpc_tasks;
+    }
+    if (plan.max_lpc_order == 0 || total_lpc_tasks == 0) {
+        throw std::runtime_error("Metal generated LPC analysis requires LPC tasks");
+    }
+
+    std::size_t lpc_tasks_per_window = 0;
+    while (lpc_tasks_per_window < total_lpc_tasks &&
+        plan.residual_tasks[lpc_tasks_per_window].data.residualOrder ==
+            static_cast<std::int32_t>(lpc_tasks_per_window + 1U)) {
+        ++lpc_tasks_per_window;
+    }
+    if (lpc_tasks_per_window == 0) {
+        lpc_tasks_per_window = 1;
+    }
+    if ((total_lpc_tasks + lpc_tasks_per_window - 1U) / lpc_tasks_per_window >
+        std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error("Metal generated LPC window count exceeds uint32");
+    }
+    const auto window_count =
+        (total_lpc_tasks + lpc_tasks_per_window - 1U) / lpc_tasks_per_window;
+
+    const auto blocksize = static_cast<std::size_t>(plan.residual_tasks.front().data.blocksize);
     for (std::size_t frame = 0; frame < frame_count; ++frame) {
         const auto frame_base = frame * plan.residual_tasks_per_frame;
-        const auto first_task = plan.residual_tasks.at(frame_base);
-        const auto frame_samples = frame_samples_for_task(samples, first_task);
-        const auto frame_info = frame_info_for_task(
-            first_task, lpc_coefficient_precision, max_rice_partition_order,
-            plan.max_lpc_order);
-
-        for (std::size_t i = 0; i < plan.residual_tasks_per_frame; ++i) {
-            auto& task = plan.residual_tasks[frame_base + i];
+        for (std::size_t slot = 0; slot < total_lpc_tasks; ++slot) {
+            const auto& task = plan.residual_tasks.at(frame_base + slot);
             if (task.data.type != opencl_detail::kFlacClSubframeLpc) {
-                continue;
+                throw std::runtime_error("Metal generated LPC task prefix is not contiguous");
             }
-            const auto requested_order = task.data.residualOrder <= 0
-                ? plan.max_lpc_order
-                : std::min<unsigned>(
-                    static_cast<unsigned>(task.data.residualOrder), plan.max_lpc_order);
-            const auto candidates =
-                analyze_mono_lpc_order_candidates(frame_samples, frame_info, requested_order);
-            if (candidates.empty()) {
-                task.data.size = std::numeric_limits<std::int32_t>::max();
-                continue;
+            if (task.data.blocksize <= 0 ||
+                static_cast<std::size_t>(task.data.blocksize) != blocksize) {
+                throw std::runtime_error("Metal generated LPC task block sizes differ");
             }
-            const auto best = std::min_element(
-                candidates.begin(), candidates.end(),
-                [](const auto& lhs, const auto& rhs) {
-                    return lhs.estimated_bits < rhs.estimated_bits;
-                });
-            populate_lpc_task_from_analysis(task, *best);
+            if (task.data.obits != 16) {
+                throw std::runtime_error("Metal generated LPC currently supports 16-bit tasks");
+            }
         }
     }
+
+    return GeneratedLpcConfig {
+        .frame_count = frame_count,
+        .tasks_per_frame = plan.residual_tasks_per_frame,
+        .lpc_tasks_per_window = lpc_tasks_per_window,
+        .total_lpc_tasks = total_lpc_tasks,
+        .window_count = window_count,
+        .blocksize = blocksize,
+        .max_lpc_order = plan.max_lpc_order,
+    };
 }
 
 const char* metal_analysis_source()
@@ -332,8 +502,29 @@ struct ChooseParams {
     uint reserved1;
 };
 
+struct GeneratedLpcParams {
+    uint frameCount;
+    uint tasksPerFrame;
+    uint lpcTasksPerWindow;
+    uint totalLpcTasks;
+    uint windowCount;
+    uint maxLpcOrder;
+    uint coefficientPrecision;
+    uint analysisProfile;
+    uint blocksize;
+    uint fixedOrderGuessOnGpu;
+    uint reserved0;
+    uint reserved1;
+};
+
 struct RiceChoice {
     ulong bits;
+    uint parameter;
+};
+
+struct MeanRiceChoice {
+    ulong exactBits;
+    ulong estimatedBits;
     uint parameter;
 };
 
@@ -445,6 +636,19 @@ int all_samples_equal(device const int* data, int blocksize,
     return reduce_or_u32(mismatch, scratch, lane) == 0u;
 }
 
+float reduce_sum_float(float value, threadgroup float* scratch, uint lane)
+{
+    scratch[lane] = value;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint stride = kWorkgroupSize >> 1u; stride > 0u; stride >>= 1u) {
+        if (lane < stride) {
+            scratch[lane] += scratch[lane + stride];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    return scratch[0];
+}
+
 long shifted_sample(device const int* data, int pos, int wbits)
 {
     const long sample = long(data[pos]);
@@ -534,6 +738,428 @@ int valid_partition_order(int blocksize, int predictor_order, int partition_orde
     return (blocksize / partition_count) > predictor_order;
 }
 
+int leading_zero_bits_u32(uint value)
+{
+    int count = 0;
+    for (int bit = 31; bit >= 0; --bit) {
+        if ((value & (1u << uint(bit))) != 0u) {
+            break;
+        }
+        ++count;
+    }
+    return count;
+}
+
+int abs_bits_i32(int value)
+{
+    return value ^ (value >> 31);
+}
+
+int round_to_even_int(float value)
+{
+    return int(rint(value));
+}
+
+int generated_profile_uses_order_guess(uint analysis_profile)
+{
+    return analysis_profile == 1u ||
+        analysis_profile == 2u ||
+        analysis_profile == 3u ||
+        analysis_profile == 4u ||
+        analysis_profile == 5u;
+}
+
+int profile_uses_mean_rice(uint analysis_profile)
+{
+    return analysis_profile == 2u ||
+        analysis_profile == 3u ||
+        analysis_profile == 4u ||
+        analysis_profile == 5u;
+}
+
+int profile_uses_mean_estimated_size(uint analysis_profile)
+{
+    return analysis_profile == 4u ||
+        analysis_profile == 5u;
+}
+
+uint ilog2_ulong(ulong value)
+{
+    uint result = 0u;
+    while (value > 1UL) {
+        value >>= 1u;
+        ++result;
+    }
+    return result;
+}
+
+uint mean_rice_parameter(ulong abs_sum, int sample_count)
+{
+    if (sample_count <= 0) {
+        return 0u;
+    }
+    const ulong divisor = 0x40000UL / ulong(sample_count);
+    const ulong scaled_mean =
+        abs_sum < 2UL || divisor == 0UL ? 0UL : (((abs_sum - 1UL) * divisor) >> 18u);
+    if (scaled_mean == 0UL) {
+        return 0u;
+    }
+    return min(kMaxRiceParameter, ilog2_ulong(scaled_mean) + 1u);
+}
+
+ulong mean_rice_partition_bits(uint rice_parameter, int sample_count, ulong abs_sum)
+{
+    ulong bits = 4UL + (ulong(1u + rice_parameter) * ulong(sample_count));
+    bits += rice_parameter == 0u
+        ? (abs_sum << 1u)
+        : (abs_sum >> (rice_parameter - 1u));
+    const ulong correction = ulong(sample_count >> 1);
+    return bits > correction ? bits - correction : 0UL;
+}
+
+kernel void find_wasted_bits(
+    device const int* samples [[buffer(0)]],
+    device FlacClSubframeTask* tasks [[buffer(1)]],
+    constant GeneratedLpcParams& params [[buffer(2)]],
+    uint frame [[thread_position_in_grid]])
+{
+    if (frame >= params.frameCount) {
+        return;
+    }
+    const uint base = frame * params.tasksPerFrame;
+    FlacClSubframeTask first = tasks[base];
+    device const int* data = samples + first.data.samplesOffs;
+    int w_or = 0;
+    int a_or = 0;
+    for (int pos = 0; pos < first.data.blocksize; ++pos) {
+        const int sample = data[pos];
+        w_or |= sample;
+        a_or |= sample ^ (sample >> 31);
+    }
+
+    int wbits = first.data.obits - 1;
+    if (w_or != 0) {
+        wbits = sample_trailing_zero_bits(w_or, first.data.obits);
+    }
+    wbits = clamp(wbits, 0, first.data.obits - 1);
+    const int abits = a_or == 0 ? 1 : max(1, 32 - leading_zero_bits_u32(uint(a_or)) - wbits);
+
+    for (uint slot = 0u; slot < params.tasksPerFrame; ++slot) {
+        FlacClSubframeTask task = tasks[base + slot];
+        task.data.wbits = wbits;
+        task.data.abits = abits;
+        tasks[base + slot] = task;
+    }
+}
+
+kernel void compute_autocorrelation(
+    device float* output [[buffer(0)]],
+    device const int* samples [[buffer(1)]],
+    device const float* windows [[buffer(2)]],
+    device const FlacClSubframeTask* tasks [[buffer(3)]],
+    constant GeneratedLpcParams& params [[buffer(4)]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint3 group [[threadgroup_position_in_grid]])
+{
+    threadgroup float scratch[64];
+    const uint frame = group.x;
+    const uint window = group.y;
+    const uint lag = group.z;
+    if (frame >= params.frameCount || window >= params.windowCount || lag > kMaxOrder) {
+        return;
+    }
+
+    const FlacClSubframeTask task = tasks[frame * params.tasksPerFrame];
+    device const int* data = samples + task.data.samplesOffs;
+    const uint window_offset = window * params.blocksize;
+    const uint output_offset =
+        ((frame * params.windowCount + window) * (kMaxOrder + 1u)) + lag;
+
+    float sum = 0.0f;
+    for (uint pos = lag + lane; pos < uint(task.data.blocksize); pos += kWorkgroupSize) {
+        const float sample0 =
+            float(shifted_sample(data, int(pos), task.data.wbits)) *
+            windows[window_offset + pos];
+        const float sample1 =
+            float(shifted_sample(data, int(pos - lag), task.data.wbits)) *
+            windows[window_offset + pos - lag];
+        sum += sample0 * sample1;
+    }
+
+    const float total = reduce_sum_float(sum, scratch, lane);
+    if (lane == 0u) {
+        output[output_offset] = total;
+    }
+}
+
+kernel void compute_lpc(
+    device const float* autocor [[buffer(0)]],
+    device float* lpcs [[buffer(1)]],
+    constant GeneratedLpcParams& params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    const uint frame = gid.x;
+    const uint window = gid.y;
+    if (frame >= params.frameCount || window >= params.windowCount) {
+        return;
+    }
+
+    const uint lpc_offset =
+        (frame * params.windowCount + window) * (kMaxOrder + 1u) * kMaxOrder;
+    const uint autocor_offset =
+        (frame * params.windowCount + window) * (kMaxOrder + 1u);
+    device const float* autoc = autocor + autocor_offset;
+
+    float ldr[32];
+    float gen0[32];
+    float gen1[32];
+    float err[32];
+    const int order_limit = clamp(int(params.maxLpcOrder), 1, int(kMaxOrder));
+
+    for (int i = 0; i < order_limit; ++i) {
+        gen0[i] = autoc[i + 1];
+        gen1[i] = autoc[i + 1];
+        ldr[i] = 0.0f;
+        err[i] = 0.0f;
+    }
+
+    float error = autoc[0];
+    for (int order = 0; order < order_limit; ++order) {
+        float reflection = 0.0f;
+        if (error > 0.0f) {
+            reflection = -gen1[0] / error;
+        }
+        if (!isfinite(reflection)) {
+            reflection = 0.0f;
+        }
+
+        error *= 1.0f - (reflection * reflection);
+        if (!isfinite(error) || error < 0.0f) {
+            error = 0.0f;
+        }
+
+        for (int j = 0; j < order_limit - 1 - order; ++j) {
+            const float next_gen1 = gen1[j + 1] + (reflection * gen0[j]);
+            gen0[j] = (gen1[j + 1] * reflection) + gen0[j];
+            gen1[j] = next_gen1;
+        }
+
+        err[order] = error;
+        ldr[order] = reflection;
+        for (int j = 0; j < order / 2; ++j) {
+            const float tmp = ldr[j];
+            ldr[j] += reflection * ldr[order - 1 - j];
+            ldr[order - 1 - j] += reflection * tmp;
+        }
+        if ((order & 1) != 0) {
+            ldr[order / 2] += ldr[order / 2] * reflection;
+        }
+
+        for (int j = 0; j <= order; ++j) {
+            lpcs[lpc_offset + uint(order) * kMaxOrder + uint(j)] =
+                -ldr[order - j];
+        }
+    }
+
+    for (int j = 0; j < order_limit; ++j) {
+        lpcs[lpc_offset + kMaxOrder * kMaxOrder + uint(j)] = err[j];
+    }
+}
+
+kernel void quantize_lpc_orders(
+    device FlacClSubframeTask* tasks [[buffer(0)]],
+    device const float* lpcs [[buffer(1)]],
+    constant GeneratedLpcParams& params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    const uint frame = gid.x;
+    const uint window = gid.y;
+    if (frame >= params.frameCount || window >= params.windowCount) {
+        return;
+    }
+
+    const uint lpc_offset =
+        (frame * params.windowCount + window) * (kMaxOrder + 1u) * kMaxOrder;
+    const uint window_task_offset = window * params.lpcTasksPerWindow;
+    if (window_task_offset >= params.totalLpcTasks) {
+        return;
+    }
+    const uint slots_this_window =
+        min(params.lpcTasksPerWindow, params.totalLpcTasks - window_task_offset);
+
+    int guessed_order = 1;
+    if (generated_profile_uses_order_guess(params.analysisProfile)) {
+        const int max_order = clamp(int(params.maxLpcOrder), 1, int(kMaxOrder));
+        const FlacClSubframeTask first_task = tasks[frame * params.tasksPerFrame];
+        const float error_scale = 0.5f / float(first_task.data.blocksize);
+        float best_bits = 3.402823466e+38f;
+        const int overhead_bits_per_order =
+            max(1, first_task.data.obits - first_task.data.wbits) +
+            clamp(int(params.coefficientPrecision), 1, 15);
+        for (int order = 1; order <= max_order; ++order) {
+            const float error = lpcs[lpc_offset + kMaxOrder * kMaxOrder + uint(order - 1)];
+            float bits_per_residual = 0.0f;
+            if (error > 0.0f) {
+                bits_per_residual = max(0.0f, 0.5f * log2(error_scale * error));
+            } else if (error < 0.0f) {
+                bits_per_residual = 8.507058665e+37f;
+            }
+            const float residual_samples =
+                max(0.0f, float(first_task.data.blocksize - order));
+            const float bits =
+                (bits_per_residual * residual_samples) +
+                float(order * overhead_bits_per_order);
+            if (bits < best_bits) {
+                best_bits = bits;
+                guessed_order = order;
+            }
+        }
+    }
+
+    for (uint slot = 0u; slot < slots_this_window; ++slot) {
+        const uint task_no = frame * params.tasksPerFrame + window_task_offset + slot;
+        FlacClSubframeTask task = tasks[task_no];
+        int order = task.data.residualOrder;
+        if (generated_profile_uses_order_guess(params.analysisProfile)) {
+            if (params.lpcTasksPerWindow == 1u) {
+                order = guessed_order;
+                task.data.residualOrder = guessed_order;
+            } else if (order != guessed_order) {
+                task.data.size = kIntMax;
+                tasks[task_no] = task;
+                continue;
+            }
+        }
+
+        int max_coefficient = 0;
+        for (int i = 0; i < order; ++i) {
+            const float lpc = lpcs[lpc_offset + uint(order - 1) * kMaxOrder + uint(i)];
+            const int coefficient = round_to_even_int(lpc * float(1 << 15));
+            max_coefficient |= abs_bits_i32(coefficient);
+        }
+
+        const int desired_bits = clamp(int(params.coefficientPrecision), 1, 15);
+        int shift = 0;
+        if (max_coefficient != 0) {
+            shift = clamp(
+                leading_zero_bits_u32(uint(max_coefficient)) - 18 + desired_bits,
+                0,
+                15);
+        }
+        const int limit = (1 << (desired_bits - 1)) - 1;
+
+        int actual_max_coefficient = 0;
+        for (uint i = 0u; i < kMaxOrder; ++i) {
+            task.coefs[i] = 0;
+        }
+        for (int i = 0; i < order; ++i) {
+            const float lpc = lpcs[lpc_offset + uint(order - 1) * kMaxOrder + uint(i)];
+            const int coefficient = clamp(
+                round_to_even_int(lpc * float(1 << shift)), -limit, limit);
+            actual_max_coefficient |= abs_bits_i32(coefficient);
+            task.coefs[i] = coefficient;
+        }
+
+        task.data.residualOrder = order;
+        task.data.shift = shift;
+        task.data.cbits = actual_max_coefficient == 0
+            ? 1
+            : 1 + 32 - leading_zero_bits_u32(uint(actual_max_coefficient));
+        tasks[task_no] = task;
+    }
+}
+
+ulong abs_long(long value)
+{
+    return value >= 0L ? ulong(value) : ulong(-(value + 1L)) + 1UL;
+}
+
+kernel void prune_fixed_order_guess(
+    device const int* samples [[buffer(0)]],
+    device const int* selected_tasks [[buffer(1)]],
+    device FlacClSubframeTask* tasks [[buffer(2)]],
+    constant GeneratedLpcParams& params [[buffer(3)]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint frame [[threadgroup_position_in_grid]])
+{
+    threadgroup ulong reduce_scratch[5 * 64];
+    if (frame >= params.frameCount) {
+        return;
+    }
+    const uint base = frame * params.tasksPerFrame;
+    int fixed_task_no[5];
+    for (uint order = 0u; order <= 4u; ++order) {
+        fixed_task_no[order] = -1;
+    }
+
+    for (uint i = 0u; i < params.tasksPerFrame; ++i) {
+        const int task_no = selected_tasks[base + i];
+        FlacClSubframeTask task = tasks[task_no];
+        const int order = task.data.residualOrder;
+        if (task.data.type == kSubframeFixed && order >= 0 && order <= 4) {
+            fixed_task_no[order] = task_no;
+        }
+    }
+
+    FlacClSubframeTask first_task = tasks[selected_tasks[base]];
+    const int bs = first_task.data.blocksize;
+    const int wbits = first_task.data.wbits;
+    device const int* data = samples + first_task.data.samplesOffs;
+
+    ulong local_sums[5];
+    for (uint order = 0u; order <= 4u; ++order) {
+        local_sums[order] = 0UL;
+    }
+
+    for (int pos = int(lane); pos < bs; pos += int(kWorkgroupSize)) {
+        if (fixed_task_no[0] >= 0) {
+            local_sums[0] += abs_long(fixed_residual(data, pos, 0, wbits));
+        }
+        if (fixed_task_no[1] >= 0 && pos >= 1) {
+            local_sums[1] += abs_long(fixed_residual(data, pos, 1, wbits));
+        }
+        if (fixed_task_no[2] >= 0 && pos >= 2) {
+            local_sums[2] += abs_long(fixed_residual(data, pos, 2, wbits));
+        }
+        if (fixed_task_no[3] >= 0 && pos >= 3) {
+            local_sums[3] += abs_long(fixed_residual(data, pos, 3, wbits));
+        }
+        if (fixed_task_no[4] >= 0 && pos >= 4) {
+            local_sums[4] += abs_long(fixed_residual(data, pos, 4, wbits));
+        }
+    }
+
+    ulong sums[5];
+    for (uint order = 0u; order <= 4u; ++order) {
+        sums[order] = reduce_sum_u64(
+            local_sums[order], reduce_scratch + (order * kWorkgroupSize), lane);
+    }
+
+    if (lane != 0u) {
+        return;
+    }
+
+    int best_order = -1;
+    ulong best_sum = 0xffffffffffffffffUL;
+    for (uint order = 0u; order <= 4u; ++order) {
+        if (fixed_task_no[order] >= 0 && sums[order] < best_sum) {
+            best_order = int(order);
+            best_sum = sums[order];
+        }
+    }
+    if (best_order < 0) {
+        return;
+    }
+
+    for (uint order = 0u; order <= 4u; ++order) {
+        if (fixed_task_no[order] >= 0 && int(order) != best_order) {
+            FlacClSubframeTask task = tasks[fixed_task_no[order]];
+            task.data.size = kIntMax;
+            tasks[fixed_task_no[order]] = task;
+        }
+    }
+}
+
 RiceChoice best_rice_for_partition(device const int* data, int partition_start,
     int residual_count, thread const FlacClSubframeTask& task, threadgroup ulong* scratch,
     uint lane)
@@ -554,6 +1180,36 @@ RiceChoice best_rice_for_partition(device const int* data, int partition_start,
         }
     }
     return best;
+}
+
+MeanRiceChoice mean_rice_for_partition(device const int* data, int partition_start,
+    int residual_count, thread const FlacClSubframeTask& task, threadgroup ulong* scratch,
+    uint lane, int include_exact_bits)
+{
+    ulong local_abs_sum = 0UL;
+    for (int i = int(lane); i < residual_count; i += int(kWorkgroupSize)) {
+        local_abs_sum += abs_long(residual(data, partition_start + i, task));
+    }
+
+    const ulong abs_sum = reduce_sum_u64(local_abs_sum, scratch, lane);
+    const uint parameter = mean_rice_parameter(abs_sum, residual_count);
+
+    ulong local_exact_bits = 0UL;
+    if (include_exact_bits) {
+        for (int i = int(lane); i < residual_count; i += int(kWorkgroupSize)) {
+            const ulong folded = fold_residual(residual(data, partition_start + i, task));
+            local_exact_bits += (folded >> parameter) + 1UL + ulong(parameter);
+        }
+    }
+
+    MeanRiceChoice choice;
+    choice.exactBits = include_exact_bits
+        ? reduce_sum_u64(local_exact_bits, scratch, lane)
+        : 0UL;
+    choice.estimatedBits =
+        mean_rice_partition_bits(parameter, residual_count, abs_sum);
+    choice.parameter = parameter;
+    return choice;
 }
 
 kernel void analyze_exact(
@@ -642,8 +1298,12 @@ kernel void analyze_exact(
     }
 
     ulong best_bits = 0xffffffffffffffffUL;
+    ulong best_estimated_bits = 0xffffffffffffffffUL;
     int best_partition_order = 0;
     const int max_partition_order = min(int(params.maxRicePartitionOrder), 8);
+    const int use_mean_rice = profile_uses_mean_rice(params.analysisProfile);
+    const int use_mean_estimated_size =
+        profile_uses_mean_estimated_size(params.analysisProfile);
     const ulong base_bits = task.data.type == kSubframeLpc
         ? 8UL + (wbits == 0 ? 0UL : ulong(wbits)) +
             (ulong(ro) * ulong(obits)) + 4UL + 5UL +
@@ -651,13 +1311,20 @@ kernel void analyze_exact(
         : 8UL + (ulong(ro) * ulong(obits)) + 2UL + 4UL +
             (wbits == 0 ? 0UL : ulong(wbits));
 
-    for (int partition_order = 0; partition_order <= max_partition_order; ++partition_order) {
+    const int partition_start_order = use_mean_rice ? max_partition_order : 0;
+    const int partition_end_order = use_mean_rice ? 0 : max_partition_order;
+    const int partition_step = use_mean_rice ? -1 : 1;
+    for (int partition_order = partition_start_order;
+         use_mean_rice ? partition_order >= partition_end_order
+                       : partition_order <= partition_end_order;
+         partition_order += partition_step) {
         if (!valid_partition_order(bs, ro, partition_order)) {
             continue;
         }
         const int partition_count = 1 << partition_order;
         const int partition_samples = bs >> partition_order;
         ulong bits = base_bits;
+        ulong estimated_bits = 2UL + 4UL;
         for (int partition = 0; partition < partition_count; ++partition) {
             const int residual_count = partition == 0
                 ? partition_samples - ro
@@ -665,17 +1332,29 @@ kernel void analyze_exact(
             const int partition_start = partition == 0
                 ? ro
                 : partition * partition_samples;
-            const RiceChoice choice =
-                best_rice_for_partition(data, partition_start, residual_count,
-                    task, reduce_ulongs, lane);
-            bits += 4UL + choice.bits;
-            if (lane == 0u) {
-                candidate_rice_parameters[partition] = choice.parameter;
+            if (use_mean_rice) {
+                const MeanRiceChoice choice =
+                    mean_rice_for_partition(data, partition_start, residual_count,
+                        task, reduce_ulongs, lane, 0);
+                estimated_bits += choice.estimatedBits;
+                if (lane == 0u) {
+                    candidate_rice_parameters[partition] = choice.parameter;
+                }
+            } else {
+                const RiceChoice choice =
+                    best_rice_for_partition(data, partition_start, residual_count,
+                        task, reduce_ulongs, lane);
+                bits += 4UL + choice.bits;
+                if (lane == 0u) {
+                    candidate_rice_parameters[partition] = choice.parameter;
+                }
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (bits < best_bits) {
+        if ((use_mean_rice && estimated_bits < best_estimated_bits) ||
+            (!use_mean_rice && bits < best_bits)) {
             best_bits = bits;
+            best_estimated_bits = estimated_bits;
             best_partition_order = partition_order;
             for (int partition = int(lane); partition < partition_count;
                  partition += int(kWorkgroupSize)) {
@@ -683,6 +1362,32 @@ kernel void analyze_exact(
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (use_mean_rice) {
+        if (use_mean_estimated_size) {
+            const ulong rice_header_bits = 2UL + 4UL;
+            const ulong estimate_base_bits = base_bits - rice_header_bits;
+            best_bits = best_estimated_bits >= 0xffffffffffffffffUL - estimate_base_bits
+                ? 0xffffffffffffffffUL
+                : estimate_base_bits + best_estimated_bits;
+        } else {
+            best_bits = base_bits;
+            const int partition_count = 1 << best_partition_order;
+            const int partition_samples = bs >> best_partition_order;
+            for (int partition = 0; partition < partition_count; ++partition) {
+                const int residual_count = partition == 0
+                    ? partition_samples - ro
+                    : partition_samples;
+                const int partition_start = partition == 0
+                    ? ro
+                    : partition * partition_samples;
+                const MeanRiceChoice choice =
+                    mean_rice_for_partition(data, partition_start, residual_count,
+                        task, reduce_ulongs, lane, 1);
+                best_bits += 4UL + choice.exactBits;
+            }
+        }
     }
 
     const int best_partition_count = 1 << best_partition_order;
@@ -812,12 +1517,53 @@ public:
                     ns_error_text(error));
             }
 
+            id<MTLFunction> find_wasted_function = [library newFunctionWithName:@"find_wasted_bits"];
+            id<MTLFunction> autocor_function =
+                [library newFunctionWithName:@"compute_autocorrelation"];
+            id<MTLFunction> lpc_function = [library newFunctionWithName:@"compute_lpc"];
+            id<MTLFunction> quantize_function =
+                [library newFunctionWithName:@"quantize_lpc_orders"];
+            id<MTLFunction> fixed_guess_function =
+                [library newFunctionWithName:@"prune_fixed_order_guess"];
             id<MTLFunction> exact_function = [library newFunctionWithName:@"analyze_exact"];
             id<MTLFunction> choose_function = [library newFunctionWithName:@"choose_best"];
-            if (exact_function == nil || choose_function == nil) {
+            if (find_wasted_function == nil || autocor_function == nil ||
+                lpc_function == nil || quantize_function == nil ||
+                fixed_guess_function == nil || exact_function == nil ||
+                choose_function == nil) {
                 throw std::runtime_error("failed to resolve Metal analysis kernel functions");
             }
 
+            find_wasted_pipeline_ =
+                [device_ newComputePipelineStateWithFunction:find_wasted_function error:&error];
+            if (find_wasted_pipeline_ == nil) {
+                throw std::runtime_error("failed to create Metal wasted-bits pipeline: " +
+                    ns_error_text(error));
+            }
+            autocor_pipeline_ =
+                [device_ newComputePipelineStateWithFunction:autocor_function error:&error];
+            if (autocor_pipeline_ == nil) {
+                throw std::runtime_error("failed to create Metal autocorrelation pipeline: " +
+                    ns_error_text(error));
+            }
+            lpc_pipeline_ =
+                [device_ newComputePipelineStateWithFunction:lpc_function error:&error];
+            if (lpc_pipeline_ == nil) {
+                throw std::runtime_error("failed to create Metal LPC pipeline: " +
+                    ns_error_text(error));
+            }
+            quantize_pipeline_ =
+                [device_ newComputePipelineStateWithFunction:quantize_function error:&error];
+            if (quantize_pipeline_ == nil) {
+                throw std::runtime_error("failed to create Metal quantize pipeline: " +
+                    ns_error_text(error));
+            }
+            fixed_guess_pipeline_ =
+                [device_ newComputePipelineStateWithFunction:fixed_guess_function error:&error];
+            if (fixed_guess_pipeline_ == nil) {
+                throw std::runtime_error("failed to create Metal fixed-order pipeline: " +
+                    ns_error_text(error));
+            }
             exact_pipeline_ =
                 [device_ newComputePipelineStateWithFunction:exact_function error:&error];
             if (exact_pipeline_ == nil) {
@@ -850,13 +1596,14 @@ public:
             if (samples.empty()) {
                 throw std::runtime_error("Metal analysis samples are empty");
             }
+            std::optional<GeneratedLpcConfig> generated_config;
+            std::vector<float> generated_windows;
             if (populate_lpc) {
-                const auto lpc_started = Clock::now();
-                populate_generated_lpc_tasks_on_host(
-                    samples, plan, lpc_coefficient_precision, max_rice_partition_order);
-                if (timings != nullptr) {
-                    add_elapsed_ns(timings->lpc_generation_ns, lpc_started);
-                }
+                generated_config = generated_lpc_config(plan);
+                generated_windows = make_generated_lpc_windows(
+                    generated_config->blocksize,
+                    generated_config->window_count,
+                    plan.analysis_profile);
             }
 
             const auto samples_bytes =
@@ -865,6 +1612,26 @@ public:
                 plan.residual_tasks.size(), sizeof(FlacClSubframeTask), "tasks");
             const auto selected_bytes = checked_buffer_bytes(
                 plan.selected_tasks.size(), sizeof(std::int32_t), "selectedTasks");
+            const auto windows_bytes = populate_lpc
+                ? checked_buffer_bytes(generated_windows.size(), sizeof(float), "windows")
+                : 0;
+            const auto autocor_bytes = populate_lpc
+                ? checked_buffer_bytes(
+                    generated_config->frame_count *
+                        generated_config->window_count *
+                        (opencl_detail::kFlacClMaxOrder + 1U),
+                    sizeof(float),
+                    "autocorrelations")
+                : 0;
+            const auto lpcs_bytes = populate_lpc
+                ? checked_buffer_bytes(
+                    generated_config->frame_count *
+                        generated_config->window_count *
+                        (opencl_detail::kFlacClMaxOrder + 1U) *
+                        opencl_detail::kFlacClMaxOrder,
+                    sizeof(float),
+                    "LPC coefficients")
+                : 0;
             const auto task_rice_bytes = checked_buffer_bytes(
                 plan.residual_tasks.size(),
                 sizeof(FlacClRiceParameterSet),
@@ -881,6 +1648,14 @@ public:
                 tasks_bytes, "tasks");
             selected_buffer_ = ensure_buffer(device_, selected_buffer_, selected_buffer_bytes_,
                 selected_bytes, "selectedTasks");
+            if (populate_lpc) {
+                windows_buffer_ = ensure_buffer(device_, windows_buffer_, windows_buffer_bytes_,
+                    windows_bytes, "windows");
+                autocor_buffer_ = ensure_buffer(device_, autocor_buffer_, autocor_buffer_bytes_,
+                    autocor_bytes, "autocorrelations");
+                lpcs_buffer_ = ensure_buffer(device_, lpcs_buffer_, lpcs_buffer_bytes_,
+                    lpcs_bytes, "LPC coefficients");
+            }
             task_rice_parameters_buffer_ = ensure_buffer(device_, task_rice_parameters_buffer_,
                 task_rice_parameters_buffer_bytes_, task_rice_bytes,
                 "taskRiceParameters");
@@ -894,8 +1669,142 @@ public:
             copy_to_buffer(samples_buffer_, samples.data(), samples_bytes);
             copy_to_buffer(tasks_buffer_, plan.residual_tasks.data(), tasks_bytes);
             copy_to_buffer(selected_buffer_, plan.selected_tasks.data(), selected_bytes);
+            if (populate_lpc) {
+                copy_to_buffer(windows_buffer_, generated_windows.data(), windows_bytes);
+            }
             if (timings != nullptr) {
                 add_elapsed_ns(timings->upload_ns, upload_started);
+            }
+
+            std::optional<GeneratedLpcParams> generated_params;
+            if (populate_lpc) {
+                generated_params = GeneratedLpcParams {
+                    .frame_count = checked_u32(generated_config->frame_count, "frame count"),
+                    .tasks_per_frame =
+                        checked_u32(generated_config->tasks_per_frame, "tasks per frame"),
+                    .lpc_tasks_per_window = checked_u32(
+                        generated_config->lpc_tasks_per_window, "LPC tasks per window"),
+                    .total_lpc_tasks =
+                        checked_u32(generated_config->total_lpc_tasks, "total LPC tasks"),
+                    .window_count =
+                        checked_u32(generated_config->window_count, "generated LPC windows"),
+                    .max_lpc_order =
+                        checked_u32(generated_config->max_lpc_order, "max LPC order"),
+                    .coefficient_precision =
+                        checked_u32(lpc_coefficient_precision, "LPC coefficient precision"),
+                    .analysis_profile = metal_analysis_profile_arg(plan.analysis_profile),
+                    .blocksize = checked_u32(generated_config->blocksize, "block size"),
+                    .fixed_order_guess_on_gpu = plan.fixed_order_guess_on_gpu ? 1U : 0U,
+                    .reserved0 = 0,
+                    .reserved1 = 0,
+                };
+
+                id<MTLCommandBuffer> generated_command = [queue_ commandBuffer];
+                if (generated_command == nil) {
+                    throw std::runtime_error("failed to create Metal generated-LPC command buffer");
+                }
+                const auto lpc_started = Clock::now();
+
+                id<MTLComputeCommandEncoder> wasted_encoder =
+                    [generated_command computeCommandEncoder];
+                if (wasted_encoder == nil) {
+                    throw std::runtime_error("failed to create Metal wasted-bits encoder");
+                }
+                [wasted_encoder setComputePipelineState:find_wasted_pipeline_];
+                [wasted_encoder setBuffer:samples_buffer_ offset:0 atIndex:0];
+                [wasted_encoder setBuffer:tasks_buffer_ offset:0 atIndex:1];
+                [wasted_encoder setBytes:&(*generated_params)
+                                      length:sizeof(*generated_params)
+                                     atIndex:2];
+                [wasted_encoder dispatchThreads:MTLSizeMake(generated_config->frame_count, 1, 1)
+                           threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+                [wasted_encoder endEncoding];
+
+                id<MTLComputeCommandEncoder> autocor_encoder =
+                    [generated_command computeCommandEncoder];
+                if (autocor_encoder == nil) {
+                    throw std::runtime_error("failed to create Metal autocorrelation encoder");
+                }
+                [autocor_encoder setComputePipelineState:autocor_pipeline_];
+                [autocor_encoder setBuffer:autocor_buffer_ offset:0 atIndex:0];
+                [autocor_encoder setBuffer:samples_buffer_ offset:0 atIndex:1];
+                [autocor_encoder setBuffer:windows_buffer_ offset:0 atIndex:2];
+                [autocor_encoder setBuffer:tasks_buffer_ offset:0 atIndex:3];
+                [autocor_encoder setBytes:&(*generated_params)
+                                     length:sizeof(*generated_params)
+                                    atIndex:4];
+                [autocor_encoder dispatchThreadgroups:MTLSizeMake(
+                                                        generated_config->frame_count,
+                                                        generated_config->window_count,
+                                                        opencl_detail::kFlacClMaxOrder + 1U)
+                                 threadsPerThreadgroup:MTLSizeMake(kWorkgroupSize, 1, 1)];
+                [autocor_encoder endEncoding];
+
+                id<MTLComputeCommandEncoder> lpc_encoder =
+                    [generated_command computeCommandEncoder];
+                if (lpc_encoder == nil) {
+                    throw std::runtime_error("failed to create Metal LPC encoder");
+                }
+                [lpc_encoder setComputePipelineState:lpc_pipeline_];
+                [lpc_encoder setBuffer:autocor_buffer_ offset:0 atIndex:0];
+                [lpc_encoder setBuffer:lpcs_buffer_ offset:0 atIndex:1];
+                [lpc_encoder setBytes:&(*generated_params)
+                                length:sizeof(*generated_params)
+                               atIndex:2];
+                [lpc_encoder dispatchThreads:MTLSizeMake(
+                                                generated_config->frame_count,
+                                                generated_config->window_count,
+                                                1)
+                         threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+                [lpc_encoder endEncoding];
+
+                id<MTLComputeCommandEncoder> quantize_encoder =
+                    [generated_command computeCommandEncoder];
+                if (quantize_encoder == nil) {
+                    throw std::runtime_error("failed to create Metal quantize encoder");
+                }
+                [quantize_encoder setComputePipelineState:quantize_pipeline_];
+                [quantize_encoder setBuffer:tasks_buffer_ offset:0 atIndex:0];
+                [quantize_encoder setBuffer:lpcs_buffer_ offset:0 atIndex:1];
+                [quantize_encoder setBytes:&(*generated_params)
+                                     length:sizeof(*generated_params)
+                                    atIndex:2];
+                [quantize_encoder dispatchThreads:MTLSizeMake(
+                                                     generated_config->frame_count,
+                                                     generated_config->window_count,
+                                                     1)
+                              threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+                [quantize_encoder endEncoding];
+
+                if (plan.fixed_order_guess_on_gpu) {
+                    id<MTLComputeCommandEncoder> fixed_encoder =
+                        [generated_command computeCommandEncoder];
+                    if (fixed_encoder == nil) {
+                        throw std::runtime_error(
+                            "failed to create Metal fixed-order guess encoder");
+                    }
+                    [fixed_encoder setComputePipelineState:fixed_guess_pipeline_];
+                    [fixed_encoder setBuffer:samples_buffer_ offset:0 atIndex:0];
+                    [fixed_encoder setBuffer:selected_buffer_ offset:0 atIndex:1];
+                    [fixed_encoder setBuffer:tasks_buffer_ offset:0 atIndex:2];
+                    [fixed_encoder setBytes:&(*generated_params)
+                                      length:sizeof(*generated_params)
+                                     atIndex:3];
+                    [fixed_encoder dispatchThreadgroups:MTLSizeMake(
+                                                            generated_config->frame_count, 1, 1)
+                                     threadsPerThreadgroup:MTLSizeMake(kWorkgroupSize, 1, 1)];
+                    [fixed_encoder endEncoding];
+                }
+
+                [generated_command commit];
+                [generated_command waitUntilCompleted];
+                if ([generated_command status] != MTLCommandBufferStatusCompleted) {
+                    throw std::runtime_error("Metal generated LPC command failed: " +
+                        ns_error_text([generated_command error]));
+                }
+                if (timings != nullptr) {
+                    add_elapsed_ns(timings->lpc_generation_ns, lpc_started);
+                }
             }
 
             ExactParams exact_params {
@@ -984,17 +1893,28 @@ public:
 private:
     id<MTLDevice> device_ = nil;
     id<MTLCommandQueue> queue_ = nil;
+    id<MTLComputePipelineState> find_wasted_pipeline_ = nil;
+    id<MTLComputePipelineState> autocor_pipeline_ = nil;
+    id<MTLComputePipelineState> lpc_pipeline_ = nil;
+    id<MTLComputePipelineState> quantize_pipeline_ = nil;
+    id<MTLComputePipelineState> fixed_guess_pipeline_ = nil;
     id<MTLComputePipelineState> exact_pipeline_ = nil;
     id<MTLComputePipelineState> choose_pipeline_ = nil;
     id<MTLBuffer> samples_buffer_ = nil;
     id<MTLBuffer> tasks_buffer_ = nil;
     id<MTLBuffer> selected_buffer_ = nil;
+    id<MTLBuffer> windows_buffer_ = nil;
+    id<MTLBuffer> autocor_buffer_ = nil;
+    id<MTLBuffer> lpcs_buffer_ = nil;
     id<MTLBuffer> task_rice_parameters_buffer_ = nil;
     id<MTLBuffer> best_buffer_ = nil;
     id<MTLBuffer> best_rice_parameters_buffer_ = nil;
     std::size_t samples_buffer_bytes_ = 0;
     std::size_t tasks_buffer_bytes_ = 0;
     std::size_t selected_buffer_bytes_ = 0;
+    std::size_t windows_buffer_bytes_ = 0;
+    std::size_t autocor_buffer_bytes_ = 0;
+    std::size_t lpcs_buffer_bytes_ = 0;
     std::size_t task_rice_parameters_buffer_bytes_ = 0;
     std::size_t best_buffer_bytes_ = 0;
     std::size_t best_rice_parameters_buffer_bytes_ = 0;

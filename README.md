@@ -12,8 +12,9 @@ scalar native backends remain available as reference/debug paths for analysis
 parity, writer coverage, and tuning experiments, not as recommended CPU
 compression choices. Vulkan has been validated locally on NVIDIA hardware for
 compatible native FLAC output; AMD is intended through standard Vulkan compute
-but not yet hardware-validated. Metal is macOS-only and uses Apple Command Line
-Tools plus runtime Metal source compilation; no Xcode project or offline
+but not yet hardware-validated. Metal is macOS-only, uses Apple Command Line
+Tools plus runtime Metal source compilation, and has been validated locally on
+Apple M5 Pro for compatible native FLAC output; no Xcode project or offline
 `.metallib` is required.
 
 `ld-compress-ng` does not depend at runtime on Qt, ffmpeg, `.NET`, Mono, FlaLDF,
@@ -153,7 +154,7 @@ build/ld-compress-ng decompress --overwrite capture.ldf capture.lds
 | `cpu` | Ogg FLAC `.ldf` by default | Default, portable, uses system `libFLAC`/`libogg`; supports `--level` and can write native FLAC with `--container flac`. |
 | `opencl` | Native FLAC `.flac.ldf` | GPU-assisted native encoder; list devices with `devices`, select one with `--device INDEX` or `--opencl-device INDEX`. |
 | `vulkan` | Native FLAC `.flac.ldf` | Linux-first acceleration backend with Vulkan exact costing for fixed/Rice and GPU-generated LPC candidates; validated locally on NVIDIA and intended for standard Vulkan compute devices; select one with `--device INDEX` or `--vulkan-device INDEX`. |
-| `metal` | Native FLAC `.flac.ldf` | macOS acceleration backend using Apple Metal runtime source compilation; select one with `--device INDEX` or `--metal-device INDEX`. |
+| `metal` | Native FLAC `.flac.ldf` | macOS acceleration backend using Apple Metal runtime source compilation for generated LPC and exact costing; select one with `--device INDEX` or `--metal-device INDEX`. |
 | `native-fixed` | Native FLAC `.flac.ldf` | Reference/debug scalar encoder for analysis parity, native writer coverage, and tuning sweeps. |
 | `native-verbatim` | Native FLAC `.flac.ldf` | Reference/debug path using verbatim FLAC frames. |
 

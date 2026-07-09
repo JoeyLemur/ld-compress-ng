@@ -1,7 +1,7 @@
 # Handoff Notes
 
-Last updated: 2026-07-08, after M5 Metal real-fixture correctness and baseline
-metrics validation.
+Last updated: 2026-07-08, after M5 Metal size-parity and GPU generated-LPC
+tuning validation.
 
 This file is for maintainer/agent continuity. It is intentionally not installed
 by CMake; release-facing installed docs are listed explicitly in
@@ -16,6 +16,11 @@ by CMake; release-facing installed docs are listed explicitly in
   Command Line Tools, `Metal.framework`, `Foundation.framework`, and runtime
   Metal source compilation. There is no Xcode project and no required offline
   `.metallib`.
+- Metal exact compression now runs generated-LPC candidate population on the
+  GPU before exact costing and selected-writer handoff. The previous
+  `119.8 MB` six-fixture Metal baseline is obsolete; the current exact
+  six-fixture output is within `0.032%` of native-fixed on Apple M5 Pro device
+  `0`.
 - The managed Codex sandbox on macOS may hide `MTLCreateSystemDefaultDevice()`;
   sandboxed Metal tests should skip cleanly. Hardware validation should be run
   from a GPU-visible shell with:
@@ -38,7 +43,84 @@ by CMake; release-facing installed docs are listed explicitly in
   ctest --test-dir build-no-metal --output-on-failure
   ```
 
-## 1.2 Metal M5 Correctness And Baseline Checkpoint
+## 1.2 Metal M6 Size-Parity And Speed Checkpoint
+
+GPU-visible validation on Apple M5 Pro device index `0` passed after fixing the
+Metal LPC task coefficient ordering and moving generated LPC onto the Metal
+shader path:
+
+- `build-metal/ld-compress-ng devices` saw Metal `[0] Apple M5 Pro` and OpenCL
+  `[0] Apple M5 Pro`.
+- `build-metal/test_metal_smoke --device 0` passed.
+- `build-metal/test_metal_analysis --device 0` passed.
+- `cmake --build build-metal --parallel` passed.
+- `ctest --test-dir build-metal -L metal --output-on-failure` passed `3/3`.
+- `ctest --test-dir build-metal --output-on-failure` passed `19/19`, with the
+  expected optional Python/reference-loader skips.
+- `compare_metal_scalar_frames` built under `build-metal-diagnostics` and on
+  the first four `ggv-ntsc-mb-v2800` frames reported exact selected-writer
+  recost parity for Metal-selected tasks
+  (`metal_recost_delta_bits=0`, `metal_recost_mismatches=0`).
+
+Full six-fixture `native-fixed,metal` roundtrip passed:
+
+- Artifact:
+  `build/real-fixture-roundtrips/real-fixture-roundtrip-20260708-185327/`.
+- Each row ran `compress`, `verify --source`, `decompress`, and decoded
+  size/MD5 comparison.
+
+| Backend | Output bytes | Ratio | Aggregate compress time |
+| --- | ---: | ---: | ---: |
+| Native-fixed | `79,867,690` | `0.532613` | `9.931s` |
+| Metal | `79,892,801` | `0.532780` | `166.953s` |
+
+Exact OpenCL+Metal sweep artifact:
+`build/real-fixture-sweeps/real-fixture-sweep-20260708-185945.{csv,md}`.
+
+| Backend | Output bytes | Ratio | Aggregate elapsed |
+| --- | ---: | ---: | ---: |
+| Native-fixed | `79,867,690` | `0.532613` | `10.188s` |
+| OpenCL | `79,892,332` | `0.532778` | `3.887s` |
+| Metal | `79,892,801` | `0.532780` | `174.326s` |
+
+Metal is now `+25,111` bytes (`+0.0314%`) versus native-fixed in the
+six-fixture exact roundtrip and `+469` bytes versus OpenCL in the exact sweep.
+Exact Metal remains much slower than OpenCL, but it is no longer the old
+compression-size outlier.
+
+Speed-profile sweep artifact:
+`build/real-fixture-sweeps/real-fixture-sweep-20260708-191154.{csv,md}`.
+
+Command shape:
+
+```sh
+python3 tools/sweep_real_fixtures.py \
+    --binary build-metal/ld-compress-ng \
+    --include-opencl \
+    --include-metal \
+    --reuse-opencl-session \
+    --reuse-metal-session \
+    --opencl-device 0 \
+    --metal-device 0 \
+    --analysis-profile order-guess-mean-estimate-rice \
+    --rice-partition-order 5,6
+```
+
+| Backend | Rice order | Output bytes | Aggregate elapsed |
+| --- | ---: | ---: | ---: |
+| Native-fixed | `6` | `79,926,901` | `1.551s` |
+| OpenCL | `6` | `79,946,777` | `1.602s` |
+| Metal | `6` | `79,946,831` | `4.666s` |
+
+Keep future Metal work focused on closing the remaining exact-speed gap with
+OpenCL and reducing overhead in the generated-LPC/exact phases; size parity is
+now good enough for the current six-fixture target.
+
+## 1.2 Metal M5 Initial Correctness And Baseline Checkpoint
+
+This was the first functional Metal checkpoint before the coefficient-ordering
+and GPU generated-LPC fixes. Keep it only as historical evidence for the size
+bug that the M6 checkpoint above replaces.
 
 GPU-visible validation on Apple M5 Pro device index `0` passed:
 
@@ -98,9 +180,8 @@ Metal best rows were about `+49.56%` larger than CPU/libFLAC, `+50.01%`
 larger than native-fixed, and `+49.95%` larger than OpenCL. OpenCL was
 `+0.0405%` larger than native-fixed in the same sweep. Metal elapsed time was
 dominated by `metal_lpc_s` plus `metal_exact_s`; `metal_choose_s` and
-`metal_read_s` were effectively negligible. Treat the current Metal backend as
-functionally correct on these fixtures but not yet compression- or
-performance-competitive.
+`metal_read_s` were effectively negligible. This baseline is now obsolete and
+should not be used as the current Metal size/performance expectation.
 
 ## 1.1 Release Context
 
@@ -346,5 +427,6 @@ Reasonable next tasks:
 - Revisit accelerator performance only at the architecture level. The next
   promising direction is reusable per-frame ingest facts or writer-ready
   residual/Rice state, not shader micro-tuning.
-- For Metal follow-up, prioritize GPU-visible macOS validation and parity/size
-  measurements before broad performance tuning.
+- For Metal follow-up, prioritize exact-speed work and overhead reduction; size
+  parity against native-fixed/OpenCL is already within the current acceptance
+  target on the six local fixtures.

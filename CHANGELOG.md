@@ -10,12 +10,25 @@
 - Metal follows the existing accelerator contract: GPU full-frame analysis,
   shared native FLAC writer output, scalar handling for short final tails, and
   native `.flac.ldf` output only.
+- Moved Metal generated-LPC candidate analysis onto the GPU, including
+  windowed autocorrelation, Levinson-Durbin, coefficient quantization,
+  optional fixed-order pruning, and mean-Rice speed-profile support.
+- Fixed Metal LPC task coefficient ordering against the native selected writer
+  and added selected-writer recost regressions so Metal task decisions cannot
+  silently write a different predictor.
+- Added the `compare_metal_scalar_frames` diagnostic for first-mismatch
+  analysis against scalar native decisions, coefficients, Rice shape,
+  estimated bits, and selected-writer recosts.
 - Added Metal device, smoke, analysis, CLI, benchmark, real-fixture helper, and
   no-Metal build coverage. Hardware-visible Metal tests skip cleanly when no
   Metal device is visible to the process.
 - Documented CLT-only macOS setup and validation; runtime Metal source
   compilation is used, so full Xcode and offline `.metallib` artifacts are not
   required.
+- Restored Metal real-fixture size parity on Apple M5 Pro device `0`: the
+  six-fixture exact roundtrip now writes `79,892,801` bytes versus
+  `79,867,690` for native-fixed, and the speed-profile sweep writes
+  `79,946,831` bytes in `4.666s`.
 
 ## 1.1.1 - 2026-07-08
 

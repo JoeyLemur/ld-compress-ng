@@ -215,10 +215,17 @@ Implemented:
 - A Metal exact-analysis kernel using one 64-lane threadgroup per selected task,
   64-bit reductions, exact fixed/Rice and LPC/Rice costing, best-task selection,
   and selected Rice-parameter sidecar output for the native writer.
-- Host-side generated-LPC candidate population for the first Metal release,
-  followed by Metal exact costing and best selection. This keeps the writer and
-  CLI contract aligned while leaving broad Metal LPC-generation tuning for later
-  performance work.
+- Metal generated-LPC candidate population on the GPU, including wasted-bit
+  propagation, rectangular/Tukey/Welch windowed autocorrelation,
+  Levinson-Durbin, FLACCL-order coefficient quantization, optional fixed-order
+  pruning, and OpenCL-style mean-Rice speed-profile handling.
+- Selected-writer recost regressions that convert selected Metal tasks back to
+  `FlacSelectedSubframe` and require exact-profile Metal decisions to recost
+  through the native writer with unchanged bits and coefficients.
+- A `compare_metal_scalar_frames` diagnostic modeled on
+  `compare_opencl_scalar_frames` for first-mismatch reporting across decision
+  shape, LPC coefficients, Rice partition/order, estimated bits, and native
+  selected-writer recost.
 - `CompressionBackend::MetalNativeFlac`, `--backend metal`, `--metal-device`,
   backend-local `--device`, `bench --include-metal`,
   `bench --reuse-metal-session`, Metal timing columns, and a Metal section in
@@ -232,6 +239,38 @@ Implemented:
   run `ctest -L metal` from a GPU-visible shell for hardware validation.
 - CLI, fixture-helper, local-matrix, external decode, README, build/testing,
   release checklist, changelog, and handoff updates for the Metal backend.
+
+Metal size/speed tuning checkpoint:
+
+- The initial Metal release was functionally correct but used the wrong LPC
+  coefficient ordering when host-populated scalar LPC tasks were converted into
+  FLACCL task layout. That made selected Metal tasks cheap to cost but different
+  from the predictor eventually written by the native selected writer.
+- The Metal task layout now keeps LPC coefficients in FLACCL order and maps
+  them back to native selected-subframe order only at writer handoff. Exact
+  Metal task decisions are guarded by native selected-writer recost tests.
+- Generated LPC now runs on the Metal shader path before exact costing and best
+  selection. The external CLI and `bench` column set are unchanged; the existing
+  `metal_lpc_s` timing split now measures Metal generated-LPC work.
+- GPU-visible Apple M5 Pro validation on device `0` passed focused Metal tests,
+  the full build-metal CTest suite, six-fixture `native-fixed,metal` roundtrip,
+  exact OpenCL+Metal sweep, and the speed-profile sweep.
+- The six-fixture exact roundtrip artifact is
+  `build/real-fixture-roundtrips/real-fixture-roundtrip-20260708-185327/`.
+  Aggregate output was native-fixed `79,867,690` bytes and Metal `79,892,801`
+  bytes, a `+0.0314%` Metal delta while preserving verify/decompress/MD5
+  roundtrip coverage.
+- The exact sweep artifact is
+  `build/real-fixture-sweeps/real-fixture-sweep-20260708-185945.{csv,md}`.
+  Best aggregate rows were native-fixed `79,867,690` bytes in `10.188s`,
+  OpenCL `79,892,332` bytes in `3.887s`, and Metal `79,892,801` bytes in
+  `174.326s`.
+- The speed-profile sweep artifact is
+  `build/real-fixture-sweeps/real-fixture-sweep-20260708-191154.{csv,md}`.
+  With `analysis-profile=order-guess-mean-estimate-rice` and Rice orders
+  `5,6`, best aggregate rows were native-fixed `79,926,901` bytes in `1.551s`,
+  OpenCL `79,946,777` bytes in `1.602s`, and Metal `79,946,831` bytes in
+  `4.666s`.
 
 Current default native tuning values:
 
