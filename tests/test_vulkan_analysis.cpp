@@ -6,8 +6,10 @@
 #include "vulkan_devices.h"
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <optional>
@@ -40,8 +42,49 @@ std::size_t parse_device_index(std::string_view text)
     return value;
 }
 
+enum class TestCase {
+    FixedConstant,
+    Lpc,
+    GeneratedLpc,
+    MeanRiceProfiles,
+};
+
+std::string_view test_case_name(TestCase test_case)
+{
+    switch (test_case) {
+    case TestCase::FixedConstant:
+        return "fixed-constant";
+    case TestCase::Lpc:
+        return "lpc";
+    case TestCase::GeneratedLpc:
+        return "generated-lpc";
+    case TestCase::MeanRiceProfiles:
+        return "mean-rice-profiles";
+    }
+    throw std::runtime_error("unknown Vulkan analysis test case");
+}
+
+TestCase parse_test_case(std::string_view text)
+{
+    if (text == "fixed-constant") {
+        return TestCase::FixedConstant;
+    }
+    if (text == "lpc") {
+        return TestCase::Lpc;
+    }
+    if (text == "generated-lpc") {
+        return TestCase::GeneratedLpc;
+    }
+    if (text == "mean-rice-profiles") {
+        return TestCase::MeanRiceProfiles;
+    }
+    throw std::runtime_error(
+        "unknown Vulkan analysis test case: " + std::string(text));
+}
+
 struct Options {
     std::optional<std::size_t> device_index;
+    std::optional<TestCase> selected_case;
 };
 
 Options parse_args(int argc, char** argv)
@@ -54,12 +97,43 @@ Options parse_args(int argc, char** argv)
                 throw std::runtime_error("--device requires a value");
             }
             options.device_index = parse_device_index(argv[i]);
+        } else if (arg == "--case") {
+            if (++i >= argc) {
+                throw std::runtime_error("--case requires a value");
+            }
+            options.selected_case = parse_test_case(argv[i]);
         } else {
             throw std::runtime_error("unknown option: " + std::string(arg));
         }
     }
     return options;
 }
+
+class ProgressSpan {
+public:
+    explicit ProgressSpan(std::string_view label)
+        : label_(label),
+          start_(std::chrono::steady_clock::now())
+    {
+        std::cout << "Vulkan analysis progress: start " << label_ << '\n' << std::flush;
+    }
+
+    ~ProgressSpan()
+    {
+        const auto elapsed = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - start_);
+        std::cout << "Vulkan analysis progress: done " << label_ << " ("
+                  << std::fixed << std::setprecision(3) << elapsed.count()
+                  << "s)\n" << std::flush;
+    }
+
+    ProgressSpan(const ProgressSpan&) = delete;
+    ProgressSpan& operator=(const ProgressSpan&) = delete;
+
+private:
+    std::string_view label_;
+    std::chrono::steady_clock::time_point start_;
+};
 
 std::optional<std::size_t> first_available_vulkan_analysis_device_index(
     std::optional<std::size_t> requested_index)
@@ -983,16 +1057,40 @@ void test_vulkan_order_guess_mean_rice_profile_smoke(const Options& options)
         "Vulkan subdivide mean-estimate Rice profile still returned exact-recost predictive sizes");
 }
 
+void run_test_case(TestCase test_case, const Options& options)
+{
+    const ProgressSpan progress(test_case_name(test_case));
+    switch (test_case) {
+    case TestCase::FixedConstant:
+        test_vulkan_fixed_constant_analysis(options);
+        return;
+    case TestCase::Lpc:
+        test_vulkan_lpc_analysis(options);
+        return;
+    case TestCase::GeneratedLpc:
+        test_vulkan_generated_lpc_analysis(options);
+        return;
+    case TestCase::MeanRiceProfiles:
+        test_vulkan_order_guess_mean_rice_profile_smoke(options);
+        return;
+    }
+    throw std::runtime_error("unknown Vulkan analysis test case");
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
 {
     try {
         const auto options = parse_args(argc, argv);
-        test_vulkan_fixed_constant_analysis(options);
-        test_vulkan_lpc_analysis(options);
-        test_vulkan_generated_lpc_analysis(options);
-        test_vulkan_order_guess_mean_rice_profile_smoke(options);
+        if (options.selected_case.has_value()) {
+            run_test_case(*options.selected_case, options);
+        } else {
+            run_test_case(TestCase::FixedConstant, options);
+            run_test_case(TestCase::Lpc, options);
+            run_test_case(TestCase::GeneratedLpc, options);
+            run_test_case(TestCase::MeanRiceProfiles, options);
+        }
     } catch (const std::exception& ex) {
         std::cerr << "test_vulkan_analysis: " << ex.what() << '\n';
         return 1;
