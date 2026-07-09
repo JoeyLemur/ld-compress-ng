@@ -2,39 +2,48 @@
 
 ## 1.2.0 - 2026-07-09
 
-- Added the macOS-only Metal native FLAC acceleration backend using Apple
-  Command Line Tools, `Metal.framework`, and `Foundation.framework`.
-- Added `compress --backend metal`, `--metal-device INDEX`,
-  `bench --include-metal`, `bench --reuse-metal-session`, and Metal device
-  reporting in `ld-compress-ng devices`.
-- Metal follows the existing accelerator contract: GPU full-frame analysis,
-  shared native FLAC writer output, scalar handling for short final tails, and
-  native `.flac.ldf` output only.
-- Moved Metal generated-LPC candidate analysis onto the GPU, including
-  windowed autocorrelation, Levinson-Durbin, coefficient quantization,
-  optional fixed-order pruning, and mean-Rice speed-profile support.
-- Fixed Metal LPC task coefficient ordering against the native selected writer
-  and added selected-writer recost regressions so Metal task decisions cannot
-  silently write a different predictor.
-- Added the `compare_metal_scalar_frames` diagnostic for first-mismatch
-  analysis against scalar native decisions, coefficients, Rice shape,
-  estimated bits, and selected-writer recosts.
+1.2.0 adds a macOS Metal accelerator for writing native FLAC `.flac.ldf`
+captures. The normal CPU/libFLAC path is unchanged; Metal is an optional
+backend for Apple systems with a visible Metal device.
+
+User-facing changes:
+
+- New `compress --backend metal` support on macOS. Metal builds use Apple
+  Command Line Tools plus `Metal.framework` and `Foundation.framework`; a full
+  Xcode project and prebuilt `.metallib` files are not required.
+- `ld-compress-ng devices` now reports Metal devices, and `bench` can include
+  Metal rows with `--include-metal`, `--metal-device INDEX`, and
+  `--reuse-metal-session`.
+- Metal follows the same output contract as the OpenCL and Vulkan accelerators:
+  it writes native FLAC `.flac.ldf` files, uses the shared native FLAC writer,
+  and falls back to the scalar path for short final frame tails.
+- Explicit device selection is supported with `--metal-device INDEX`; for a
+  single Metal `compress` run, backend-local `--device INDEX` also works.
+
+Reliability and validation:
+
+- Fixed an early Metal LPC coefficient-ordering issue that could make GPU
+  analysis choose one predictor while the native writer encoded another. New
+  selected-writer recost tests now guard that handoff so Metal-selected
+  predictors are written with the same bits and coefficients measured during
+  analysis.
 - Added Metal device, smoke, analysis, CLI, benchmark, real-fixture helper, and
   no-Metal build coverage. Hardware-visible Metal tests skip cleanly when no
-  Metal device is visible to the process.
-- Documented CLT-only macOS setup and validation; runtime Metal source
-  compilation is used, so full Xcode and offline `.metallib` artifacts are not
-  required.
-- Restored Metal real-fixture size parity and closed the initial speed gap on
-  Apple M5 Pro device `0`: the six-fixture exact roundtrip writes
-  `79,892,801` bytes versus `79,867,690` for native-fixed, and the final
-  speed-profile sweep writes `79,946,831` bytes in `0.626s`.
-- Improved the Metal speed-profile path with an Apple CommonCrypto MD5 backend,
-  pre-shifted autocorrelation input, and pre-shifted exact-analysis input while
-  keeping the compressed format, CLI, and output-size class unchanged.
-- The final Metal speed-profile checkpoint is currently faster than the
-  documented Linux RTX 5070 Ti OpenCL/Vulkan rows for the same six-fixture
-  rice6 class (`0.626s` Metal versus `0.814s` OpenCL and `0.813s` Vulkan).
+  Metal device is visible to the process, which is expected in some sandboxed
+  shells.
+- Added `compare_metal_scalar_frames`, a maintainer diagnostic for finding the
+  first frame where Metal and scalar native analysis diverge.
+
+Performance notes:
+
+- On Apple M5 Pro device `0`, the six-fixture exact roundtrip writes
+  `79,892,801` bytes with Metal versus `79,867,690` bytes with `native-fixed`,
+  keeping Metal within `0.032%` of the scalar native output size on that
+  fixture set.
+- The final Metal speed-profile checkpoint writes `79,946,831` bytes in
+  `0.626s` across the same six real capture fixtures. Hardware differs, but
+  for scale, the documented Linux RTX 5070 Ti rice6 rows for the same
+  benchmark class are `0.814s` OpenCL and `0.813s` Vulkan.
 
 ## 1.1.1 - 2026-07-08
 
