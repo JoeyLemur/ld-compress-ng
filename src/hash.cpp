@@ -5,12 +5,14 @@
 #include <cstring>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
 namespace ldcompress {
 namespace {
 
+#if !LDCOMPRESS_MD5_USE_COMMONCRYPTO
 constexpr std::array<std::uint32_t, 64> kMd5RoundConstants {
     0xd76aa478U, 0xe8c7b756U, 0x242070dbU, 0xc1bdceeeU,
     0xf57c0fafU, 0x4787c62aU, 0xa8304613U, 0xfd469501U,
@@ -68,8 +70,21 @@ void write_le64(std::uint8_t* data, std::uint64_t value)
         data[i] = static_cast<std::uint8_t>((value >> (i * 8U)) & 0xffU);
     }
 }
+#endif
 
 }  // namespace
+
+#if LDCOMPRESS_MD5_USE_COMMONCRYPTO && defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
+
+Md5::Md5()
+{
+#if LDCOMPRESS_MD5_USE_COMMONCRYPTO
+    CC_MD5_Init(&context_);
+#endif
+}
 
 void Md5::update(const void* data, std::uint64_t size)
 {
@@ -81,6 +96,17 @@ void Md5::update(const void* data, std::uint64_t size)
     }
 
     const auto* input = static_cast<const std::uint8_t*>(data);
+
+#if LDCOMPRESS_MD5_USE_COMMONCRYPTO
+    while (size != 0) {
+        const auto chunk = std::min<std::uint64_t>(
+            size, static_cast<std::uint64_t>(std::numeric_limits<CC_LONG>::max()));
+        CC_MD5_Update(&context_, input, static_cast<CC_LONG>(chunk));
+        input += chunk;
+        size -= chunk;
+    }
+    return;
+#else
     bytes_ += size;
 
     std::uint64_t offset = 0;
@@ -107,6 +133,7 @@ void Md5::update(const void* data, std::uint64_t size)
         std::memcpy(buffer_.data(), input + offset, remaining);
         buffer_size_ = remaining;
     }
+#endif
 }
 
 std::array<std::uint8_t, 16> Md5::digest() const
@@ -114,11 +141,15 @@ std::array<std::uint8_t, 16> Md5::digest() const
     Md5 copy(*this);
     copy.finish();
 
+#if LDCOMPRESS_MD5_USE_COMMONCRYPTO
+    return copy.digest_;
+#else
     std::array<std::uint8_t, 16> result {};
     for (std::size_t i = 0; i < copy.state_.size(); ++i) {
         write_le32(result.data() + (i * 4), copy.state_[i]);
     }
     return result;
+#endif
 }
 
 std::string Md5::hex() const
@@ -132,6 +163,9 @@ std::string Md5::hex() const
     return out.str();
 }
 
+#if LDCOMPRESS_MD5_USE_COMMONCRYPTO
+static_assert(sizeof(CC_LONG) <= sizeof(std::uint64_t));
+#else
 void Md5::transform(const std::uint8_t* block)
 {
     std::array<std::uint32_t, 16> words {};
@@ -175,6 +209,7 @@ void Md5::transform(const std::uint8_t* block)
     state_[2] += c;
     state_[3] += d;
 }
+#endif
 
 void Md5::finish()
 {
@@ -182,6 +217,10 @@ void Md5::finish()
         return;
     }
 
+#if LDCOMPRESS_MD5_USE_COMMONCRYPTO
+    CC_MD5_Final(digest_.data(), &context_);
+    finalized_ = true;
+#else
     const auto original_bits = bytes_ * 8U;
 
     std::array<std::uint8_t, 64> padding {};
@@ -195,7 +234,12 @@ void Md5::finish()
     update(length_bytes.data(), length_bytes.size());
 
     finalized_ = true;
+#endif
 }
+
+#if LDCOMPRESS_MD5_USE_COMMONCRYPTO && defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 
 FileDigest md5_file(const std::string& path)
 {

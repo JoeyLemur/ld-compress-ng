@@ -356,6 +356,26 @@ Metal size/speed tuning checkpoint:
   `0.099656s`, and MD5 `0.577405s`. Because MD5 dominated rather than
   decode/append, no ingest cleanup was attempted; prior larger scan chunking
   was already rejected, and this pass retains only the timing split.
+- Trace-gated Metal MD5 pass: focused Time Profiler and Metal System Trace
+  captures were written to `/tmp/ld-compress-ng-metal-time.trace` and
+  `/tmp/ld-compress-ng-metal-system.trace`. The focused Time Profiler export
+  was too sparse to provide a useful symbolic MD5 call tree, but the captured
+  bench rows and six-fixture timing split still confirmed MD5 as the largest
+  byte-stable host scan bucket. The refreshed pre-edit six-fixture baseline
+  was `build/real-fixture-sweeps/real-fixture-sweep-20260709-091755.{csv,md}`:
+  Metal Rice order `6` stayed at `79,946,831` bytes and measured `1.266s`
+  elapsed, scan `0.695166s`, MD5 `0.574960s`, Metal autocorrelation
+  `0.606476s`, and writer `0.228973s`. The accepted change uses Apple's
+  CommonCrypto MD5 implementation behind the existing `ldcompress::Md5` API on
+  Apple platforms, with the previous C++ MD5 kept as the portable fallback. The
+  focused `issue176.lds` row stayed at `4,293,091` bytes and improved from
+  `0.096s` elapsed, MD5 `0.031648s` to `0.091s` elapsed, MD5 `0.016211s`.
+  The accepted six-fixture sweep is
+  `build/real-fixture-sweeps/real-fixture-sweep-20260709-093255.{csv,md}`:
+  Metal Rice order `6` stayed at `79,946,831` bytes and improved to `1.210s`
+  elapsed, scan `0.418993s`, MD5 `0.287798s`, Metal autocorrelation
+  `0.589549s`, and writer `0.236225s`. No Metal math, writer logic, batch size,
+  scan chunk size, CLI behavior, or compressed format changed.
 
 Current default native tuning values:
 
