@@ -37,6 +37,9 @@ struct NativeCompressionStats {
     std::uint64_t accelerated_total_ns = 0;
     std::uint64_t accelerated_setup_ns = 0;
     std::uint64_t accelerated_scan_ns = 0;
+    std::uint64_t accelerated_scan_read_ns = 0;
+    std::uint64_t accelerated_scan_decode_ns = 0;
+    std::uint64_t accelerated_scan_md5_ns = 0;
     std::uint64_t accelerated_analyzer_ns = 0;
     std::uint64_t accelerated_selected_write_ns = 0;
     std::uint64_t accelerated_tail_write_ns = 0;

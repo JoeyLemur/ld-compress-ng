@@ -344,6 +344,18 @@ Metal size/speed tuning checkpoint:
   the code was reverted and the six-fixture aggregate was not rerun; keep the
   accepted six-fixture baseline at
   `build/real-fixture-sweeps/real-fixture-sweep-20260708-221715.{csv,md}`.
+- The next Metal scan pass split `accel_scan_s` into read, decode/append, and
+  MD5 buckets in bench/sweep output while keeping `accel_scan_s` as the
+  aggregate parent. The focused `issue176.lds` Metal speed-profile row stayed at
+  `4,293,091` bytes and measured `0.097s` elapsed with scan `0.039759s`:
+  read `0.001289s`, decode/append `0.006794s`, and MD5 `0.031676s`. The
+  six-fixture instrumentation sweep is
+  `build/real-fixture-sweeps/real-fixture-sweep-20260709-003705.{csv,md}`.
+  Its Metal Rice order `6` aggregate stayed at `79,946,831` bytes and measured
+  `1.315s` elapsed, scan `0.698405s`, read `0.021343s`, decode/append
+  `0.099656s`, and MD5 `0.577405s`. Because MD5 dominated rather than
+  decode/append, no ingest cleanup was attempted; prior larger scan chunking
+  was already rejected, and this pass retains only the timing split.
 
 Current default native tuning values:
 

@@ -1085,6 +1085,22 @@ void print_native_stats(const ldcompress::NativeCompressionStats& stats)
                   << seconds_from_ns(stats.accelerated_selected_write_ns) << "s"
                   << " tail-write=" << seconds_from_ns(stats.accelerated_tail_write_ns) << "s"
                   << '\n';
+        const auto scan_detail_ns =
+            stats.accelerated_scan_read_ns +
+            stats.accelerated_scan_decode_ns +
+            stats.accelerated_scan_md5_ns;
+        if (scan_detail_ns != 0) {
+            const auto scan_other_ns = stats.accelerated_scan_ns > scan_detail_ns
+                ? stats.accelerated_scan_ns - scan_detail_ns
+                : 0;
+            std::cerr << "accelerated scan timings: read="
+                      << seconds_from_ns(stats.accelerated_scan_read_ns) << "s"
+                      << " decode=" << seconds_from_ns(stats.accelerated_scan_decode_ns)
+                      << "s"
+                      << " md5=" << seconds_from_ns(stats.accelerated_scan_md5_ns) << "s"
+                      << " other=" << seconds_from_ns(scan_other_ns) << "s"
+                      << '\n';
+        }
         const auto opencl_setup_detail_ns =
             stats.opencl_setup_device_ns +
             stats.opencl_setup_context_ns +
@@ -1591,6 +1607,9 @@ void print_bench_result(const BenchResult& result)
     print_seconds_field(result.native_stats.accelerated_total_ns);
     print_seconds_field(result.native_stats.accelerated_setup_ns);
     print_seconds_field(result.native_stats.accelerated_scan_ns);
+    print_seconds_field(result.native_stats.accelerated_scan_read_ns);
+    print_seconds_field(result.native_stats.accelerated_scan_decode_ns);
+    print_seconds_field(result.native_stats.accelerated_scan_md5_ns);
     print_seconds_field(result.native_stats.accelerated_analyzer_ns);
     print_seconds_field(result.native_stats.accelerated_task_plan_ns);
     print_seconds_field(result.native_stats.accelerated_exact_analysis_ns);
@@ -1886,6 +1905,9 @@ int run_bench(const Options& options)
               << std::setw(18) << "accel_total_s"
               << std::setw(18) << "accel_setup_s"
               << std::setw(18) << "accel_scan_s"
+              << std::setw(20) << "accel_scan_read_s"
+              << std::setw(20) << "accel_scan_decode_s"
+              << std::setw(20) << "accel_scan_md5_s"
               << std::setw(18) << "accel_analyze_s"
               << std::setw(18) << "accel_plan_s"
               << std::setw(18) << "accel_exact_s"

@@ -590,6 +590,9 @@ ConversionStats compress_lds_to_accelerated_native_flac(
         ? options.native_stats->accelerated_tail_write_ns
         : 0;
     std::uint64_t explicit_scan_ns = 0;
+    std::uint64_t scan_read_ns = 0;
+    std::uint64_t scan_decode_ns = 0;
+    std::uint64_t scan_md5_ns = 0;
 
     const auto append_sample = [&](std::int16_t sample) {
         batch_samples.push_back(sample);
@@ -630,12 +633,16 @@ ConversionStats compress_lds_to_accelerated_native_flac(
     std::vector<std::uint8_t> input_buffer(5 * kGroupsPerChunk);
     std::vector<std::uint8_t> pcm_md5_buffer(8 * kGroupsPerChunk);
     while (lds_input) {
-        auto scan_segment_started = Clock::now();
+        const auto read_started = Clock::now();
         lds_input.read(reinterpret_cast<char*>(input_buffer.data()),
             static_cast<std::streamsize>(input_buffer.size()));
+        const auto read_finished = Clock::now();
         const auto got = lds_input.gcount();
         if (got == 0) {
             break;
+        }
+        if (options.native_stats != nullptr && frame_is_group_aligned) {
+            scan_read_ns += elapsed_ns(read_started, read_finished);
         }
         if ((got % 5) != 0) {
             throw std::runtime_error("truncated LDS input: byte count is not divisible by 5");
@@ -643,6 +650,7 @@ ConversionStats compress_lds_to_accelerated_native_flac(
 
         const auto groups = static_cast<std::size_t>(got / 5);
         std::size_t md5_segment_start_group = 0;
+        auto decode_segment_started = Clock::now();
         for (std::size_t group = 0; group < groups; ++group) {
             const auto samples = unpack_group_bytes(input_buffer.data() + (group * 5U));
             auto* pcm = pcm_md5_buffer.data() + (group * 8U);
@@ -651,24 +659,35 @@ ConversionStats compress_lds_to_accelerated_native_flac(
             }
             const bool batch_full = append_sample_group(samples);
             if (frame_is_group_aligned && batch_full) {
+                const auto decode_segment_finished = Clock::now();
+                if (options.native_stats != nullptr) {
+                    scan_decode_ns += elapsed_ns(
+                        decode_segment_started, decode_segment_finished);
+                }
+                const auto md5_started = Clock::now();
                 pcm_md5.update(
                     pcm_md5_buffer.data() + (md5_segment_start_group * 8U),
                     ((group + 1U) - md5_segment_start_group) * 8U);
                 if (options.native_stats != nullptr) {
-                    explicit_scan_ns += elapsed_ns(scan_segment_started, Clock::now());
+                    scan_md5_ns += elapsed_ns(md5_started, Clock::now());
                 }
                 flush_batch();
                 md5_segment_start_group = group + 1U;
-                scan_segment_started = Clock::now();
+                decode_segment_started = Clock::now();
             }
         }
+        const auto decode_segment_finished = Clock::now();
+        if (options.native_stats != nullptr && frame_is_group_aligned) {
+            scan_decode_ns += elapsed_ns(decode_segment_started, decode_segment_finished);
+        }
         if (md5_segment_start_group < groups) {
+            const auto md5_started = Clock::now();
             pcm_md5.update(
                 pcm_md5_buffer.data() + (md5_segment_start_group * 8U),
                 (groups - md5_segment_start_group) * 8U);
-        }
-        if (options.native_stats != nullptr && frame_is_group_aligned) {
-            explicit_scan_ns += elapsed_ns(scan_segment_started, Clock::now());
+            if (options.native_stats != nullptr && frame_is_group_aligned) {
+                scan_md5_ns += elapsed_ns(md5_started, Clock::now());
+            }
         }
         stats.input_bytes += static_cast<std::uint64_t>(got);
         stats.samples += groups * 4U;
@@ -696,7 +715,11 @@ ConversionStats compress_lds_to_accelerated_native_flac(
 
     if (options.native_stats != nullptr) {
         if (frame_is_group_aligned) {
+            explicit_scan_ns = scan_read_ns + scan_decode_ns + scan_md5_ns;
             options.native_stats->accelerated_scan_ns += explicit_scan_ns;
+            options.native_stats->accelerated_scan_read_ns += scan_read_ns;
+            options.native_stats->accelerated_scan_decode_ns += scan_decode_ns;
+            options.native_stats->accelerated_scan_md5_ns += scan_md5_ns;
         } else {
             const auto ingest_ns = elapsed_ns(ingest_started, Clock::now());
             const auto nested_ns =
