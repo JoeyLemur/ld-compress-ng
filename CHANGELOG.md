@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.2.0 - 2026-07-08
+## 1.2.0 - 2026-07-09
 
 - Added the macOS-only Metal native FLAC acceleration backend using Apple
   Command Line Tools, `Metal.framework`, and `Foundation.framework`.
@@ -25,10 +25,16 @@
 - Documented CLT-only macOS setup and validation; runtime Metal source
   compilation is used, so full Xcode and offline `.metallib` artifacts are not
   required.
-- Restored Metal real-fixture size parity on Apple M5 Pro device `0`: the
-  six-fixture exact roundtrip now writes `79,892,801` bytes versus
-  `79,867,690` for native-fixed, and the speed-profile sweep writes
-  `79,946,831` bytes in `4.666s`.
+- Restored Metal real-fixture size parity and closed the initial speed gap on
+  Apple M5 Pro device `0`: the six-fixture exact roundtrip writes
+  `79,892,801` bytes versus `79,867,690` for native-fixed, and the final
+  speed-profile sweep writes `79,946,831` bytes in `0.626s`.
+- Improved the Metal speed-profile path with an Apple CommonCrypto MD5 backend,
+  pre-shifted autocorrelation input, and pre-shifted exact-analysis input while
+  keeping the compressed format, CLI, and output-size class unchanged.
+- The final Metal speed-profile checkpoint is currently faster than the
+  documented Linux RTX 5070 Ti OpenCL/Vulkan rows for the same six-fixture
+  rice6 class (`0.626s` Metal versus `0.814s` OpenCL and `0.813s` Vulkan).
 
 ## 1.1.1 - 2026-07-08
 

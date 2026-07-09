@@ -521,7 +521,7 @@ compression. In the pinned exact sweep, raw LDS inputs total `149,954,560`
 bytes, CPU/libFLAC outputs total `80,086,984` bytes, scalar native-fixed outputs
 total `79,867,690` bytes, and OpenCL outputs total `79,952,087` bytes.
 
-The current speed-focused sweep is
+The current Linux OpenCL/Vulkan speed-focused sweep reference is
 `build/real-fixture-sweeps/real-fixture-sweep-20260708-145656.{csv,md}`. It used
 `threads=8`, `frame=4608`, `lpc=12`, `prec=12`, Rice orders `5,6`,
 `analysis-profile=order-guess-mean-estimate-rice`, and OpenCL/Vulkan session
@@ -551,8 +551,10 @@ python3 tools/roundtrip_real_fixtures.py --backends metal --metal-device INDEX
 python3 tools/sweep_real_fixtures.py --include-metal --reuse-metal-session --metal-device INDEX
 ```
 
-The current Apple M5 Pro Metal size-parity checkpoint used Metal device `0`.
-The exact six-fixture roundtrip artifact is
+The Apple M5 Pro Metal exact size-parity checkpoint used Metal device `0`.
+This exact-output compatibility artifact is retained as historical context; it
+is not the current Metal speed-profile baseline. The exact six-fixture
+roundtrip artifact is
 `build/real-fixture-roundtrips/real-fixture-roundtrip-20260708-185327/`:
 
 | Backend | Input bytes | Output bytes | Compress time |
@@ -569,15 +571,18 @@ The matching exact OpenCL+Metal sweep artifact is
 | OpenCL | `79,892,332` | `3.887s` |
 | Metal | `79,892,801` | `174.326s` |
 
-The Metal speed-profile checkpoint is
-`build/real-fixture-sweeps/real-fixture-sweep-20260708-191154.{csv,md}` and used
-`--analysis-profile order-guess-mean-estimate-rice --rice-partition-order 5,6`:
+The current Apple M5 Pro Metal speed-profile checkpoint is
+`build/real-fixture-sweeps/real-fixture-sweep-20260709-103103.{csv,md}` and used
+Metal device `0`, session reuse, `threads=8`, and
+`--analysis-profile order-guess-mean-estimate-rice --rice-partition-order 5,6`.
+It is in the same output-size class as the Linux OpenCL/Vulkan speed rows and is
+currently faster in the documented six-fixture rice6 comparison:
 
 | Backend | Rice order | Output bytes | Elapsed time |
 | --- | ---: | ---: | ---: |
-| Native-fixed | `6` | `79,926,901` | `1.551s` |
-| OpenCL | `6` | `79,946,777` | `1.602s` |
-| Metal | `6` | `79,946,831` | `4.666s` |
+| Metal | `6` | `79,946,831` | `0.626s` |
+| OpenCL Linux reference | `6` | `79,946,987` | `0.814s` |
+| Vulkan Linux reference | `6` | `79,946,934` | `0.813s` |
 
 Scalar native-fixed is useful as a size and decision oracle, but CPU/libFLAC
 remains the recommended CPU-only encoder.

@@ -14,8 +14,9 @@ compression choices. Vulkan has been validated locally on NVIDIA hardware for
 compatible native FLAC output; AMD is intended through standard Vulkan compute
 but not yet hardware-validated. Metal is macOS-only, uses Apple Command Line
 Tools plus runtime Metal source compilation, and has been validated locally on
-Apple M5 Pro for compatible native FLAC output; no Xcode project or offline
-`.metallib` is required.
+Apple M5 Pro for compatible native FLAC output and speed-profile throughput in
+the same class as the Linux OpenCL/Vulkan accelerators; no Xcode project or
+offline `.metallib` is required.
 
 `ld-compress-ng` does not depend at runtime on Qt, ffmpeg, `.NET`, Mono, FlaLDF,
 OpenSSL, or `ld-lds-converter`.

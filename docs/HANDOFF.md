@@ -1,7 +1,6 @@
 # Handoff Notes
 
-Last updated: 2026-07-08, after M5 Metal size-parity and GPU generated-LPC
-tuning validation.
+Last updated: 2026-07-09, after the final Metal 1.2.0 performance wrap-up.
 
 This file is for maintainer/agent continuity. It is intentionally not installed
 by CMake; release-facing installed docs are listed explicitly in
@@ -21,6 +20,10 @@ by CMake; release-facing installed docs are listed explicitly in
   `119.8 MB` six-fixture Metal baseline is obsolete; the current exact
   six-fixture output is within `0.032%` of native-fixed on Apple M5 Pro device
   `0`.
+- The current Metal speed-profile checkpoint on Apple M5 Pro device `0` is
+  `79,946,831` bytes in `0.626s` across the six local real fixtures, using
+  `threads=8`, `frame=4608`, `lpc=12`, `prec=12`, Rice order `6`, and
+  `analysis-profile=order-guess-mean-estimate-rice`.
 - The managed Codex sandbox on macOS may hide `MTLCreateSystemDefaultDevice()`;
   sandboxed Metal tests should skip cleanly. Hardware validation should be run
   from a GPU-visible shell with:
@@ -43,7 +46,48 @@ by CMake; release-facing installed docs are listed explicitly in
   ctest --test-dir build-no-metal --output-on-failure
   ```
 
-## 1.2 Metal M6 Size-Parity And Speed Checkpoint
+## 1.2 Final Metal Performance Checkpoint
+
+This is the current 1.2.0 Metal performance baseline. It supersedes the older
+M5/M6 Metal sections below, which are retained only as historical debugging
+context.
+
+Final speed-profile sweep artifact:
+`build/real-fixture-sweeps/real-fixture-sweep-20260709-103103.{csv,md}`.
+
+Command shape:
+
+```sh
+python3 tools/sweep_real_fixtures.py \
+    --binary build-metal/ld-compress-ng \
+    --threads 8 \
+    --frame-samples 4608 \
+    --lpc-order 12 \
+    --lpc-precision 12 \
+    --rice-partition-order 5,6 \
+    --analysis-profile order-guess-mean-estimate-rice \
+    --include-metal \
+    --reuse-metal-session \
+    --metal-device 0
+```
+
+| Backend | Rice order | Output bytes | Aggregate elapsed |
+| --- | ---: | ---: | ---: |
+| Metal | `6` | `79,946,831` | `0.626s` |
+| Linux OpenCL reference | `6` | `79,946,987` | `0.814s` |
+| Linux Vulkan reference | `6` | `79,946,934` | `0.813s` |
+
+The final Metal speed-profile path is byte-stable in the same output-size class
+and is currently faster than the documented Linux OpenCL/Vulkan rice6 rows.
+Accepted performance changes since the first Metal size-parity checkpoint
+included Apple CommonCrypto MD5, pre-shifted autocorrelation input, and
+pre-shifted exact-analysis input. The remaining obvious buckets are host scan,
+selected-frame writing, fixed-order guess, and generated-path overhead; further
+wins are architectural and are not required for 1.2.0.
+
+## Historical 1.2 Metal M6 Size-Parity And Speed Checkpoint
+
+This checkpoint is superseded by the final performance checkpoint above.
 
 GPU-visible validation on Apple M5 Pro device index `0` passed after fixing the
 Metal LPC task coefficient ordering and moving generated LPC onto the Metal
@@ -83,9 +127,9 @@ Exact OpenCL+Metal sweep artifact:
 | OpenCL | `79,892,332` | `0.532778` | `3.887s` |
 | Metal | `79,892,801` | `0.532780` | `174.326s` |
 
-Metal is now `+25,111` bytes (`+0.0314%`) versus native-fixed in the
+At this checkpoint, Metal was `+25,111` bytes (`+0.0314%`) versus native-fixed in the
 six-fixture exact roundtrip and `+469` bytes versus OpenCL in the exact sweep.
-Exact Metal remains much slower than OpenCL, but it is no longer the old
+Exact Metal remained much slower than OpenCL, but it was no longer the old
 compression-size outlier.
 
 Speed-profile sweep artifact:
@@ -112,15 +156,14 @@ python3 tools/sweep_real_fixtures.py \
 | OpenCL | `6` | `79,946,777` | `1.602s` |
 | Metal | `6` | `79,946,831` | `4.666s` |
 
-Keep future Metal work focused on closing the remaining exact-speed gap with
-OpenCL and reducing overhead in the generated-LPC/exact phases; size parity is
-now good enough for the current six-fixture target.
+This speed-profile row is obsolete; use the final Metal performance checkpoint
+above for current performance expectations.
 
-## 1.2 Metal M5 Initial Correctness And Baseline Checkpoint
+## Historical 1.2 Metal M5 Initial Correctness And Baseline Checkpoint
 
 This was the first functional Metal checkpoint before the coefficient-ordering
 and GPU generated-LPC fixes. Keep it only as historical evidence for the size
-bug that the M6 checkpoint above replaces.
+bug that the later checkpoints replaced.
 
 GPU-visible validation on Apple M5 Pro device index `0` passed:
 
