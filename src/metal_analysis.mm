@@ -35,6 +35,7 @@ constexpr double kPi = 3.14159265358979323846264338327950288;
 constexpr double kGeneratedTukeyTaperFraction = 0.5;
 constexpr double kSubdivideTukey3TaperFraction = 0.375;
 constexpr std::size_t kSubdivideTukey3WindowCount = 6;
+constexpr unsigned kMetalExactLeafMaxRicePartitionOrder = 6;
 
 struct ExactParams {
     std::uint32_t selected_task_count = 0;
@@ -1632,6 +1633,184 @@ kernel void analyze_exact(
     }
 }
 
+kernel void analyze_exact_shifted(
+    device const int* samples [[buffer(0)]],
+    device const int* selected_tasks [[buffer(1)]],
+    device FlacClSubframeTask* tasks [[buffer(2)]],
+    device uint* task_rice_parameters [[buffer(3)]],
+    constant ExactParams& params [[buffer(4)]],
+    device const int* shifted_samples [[buffer(5)]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint group [[threadgroup_position_in_grid]])
+{
+    threadgroup uint reduce_uints[64];
+    threadgroup ulong exact_rice_leaf_sums[64 * 15];
+    threadgroup uint candidate_rice_parameters[256];
+
+    if (group >= params.selectedTaskCount) {
+        return;
+    }
+
+    const int selected_task = selected_tasks[group];
+    FlacClSubframeTask task = tasks[selected_task];
+    const int rice_output_base = selected_task * int(kMaxRicePartitionCount);
+    for (int i = int(lane); i < int(kMaxRicePartitionCount); i += int(kWorkgroupSize)) {
+        task_rice_parameters[rice_output_base + i] = 0u;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (task.data.size == kIntMax) {
+        if (lane == 0u) {
+            tasks[selected_task] = task;
+        }
+        return;
+    }
+
+    device const int* original_data = samples + task.data.samplesOffs;
+    device const int* data = shifted_samples + task.data.samplesOffs;
+    const int ro = task.data.residualOrder;
+    const int bs = task.data.blocksize;
+    if (params.preparedFrameFacts == 0u ||
+        task.data.wbits < 0 || task.data.wbits >= task.data.obits ||
+        task.data.abits <= 0 || task.data.abits > task.data.obits ||
+        !profile_uses_mean_estimated_size(params.analysisProfile)) {
+        if (lane == 0u) {
+            task.data.size = kIntMax;
+            tasks[selected_task] = task;
+        }
+        return;
+    }
+    task.data.porder = 0;
+    const int wbits = task.data.wbits;
+    const int obits = task.data.obits - wbits;
+
+    if (task.data.type == kSubframeConstant) {
+        const int equal = all_samples_equal(original_data, bs, reduce_uints, lane);
+        if (lane == 0u) {
+            task.data.size = equal
+                ? 8 + obits + (wbits == 0 ? 0 : wbits)
+                : kIntMax;
+            tasks[selected_task] = task;
+        }
+        return;
+    }
+
+    if ((task.data.type != kSubframeFixed && task.data.type != kSubframeLpc) ||
+        ro < 0 ||
+        ro >= bs ||
+        (task.data.type == kSubframeFixed && ro > 4) ||
+        (task.data.type == kSubframeLpc &&
+            (ro == 0 || ro > int(kMaxOrder) || task.data.shift < 0 ||
+                task.data.shift > 15 || task.data.cbits <= 0 ||
+                task.data.cbits > 15))) {
+        if (lane == 0u) {
+            task.data.size = kIntMax;
+            tasks[selected_task] = task;
+        }
+        return;
+    }
+
+    if (task.data.type == kSubframeLpc) {
+        int valid = 1;
+        for (int i = 0; i < ro; ++i) {
+            if (!signed_value_fits_bits(task.coefs[i], task.data.cbits)) {
+                valid = 0;
+            }
+        }
+        if (!valid) {
+            if (lane == 0u) {
+                task.data.size = kIntMax;
+                tasks[selected_task] = task;
+            }
+            return;
+        }
+    }
+
+    const int max_partition_order = min(int(params.maxRicePartitionOrder), 8);
+    if (max_partition_order > int(kExactLeafMaxRicePartitionOrder) ||
+        !valid_partition_order(bs, ro, max_partition_order)) {
+        if (lane == 0u) {
+            task.data.size = kIntMax;
+            tasks[selected_task] = task;
+        }
+        return;
+    }
+
+    FlacClSubframeTask residual_task = task;
+    residual_task.data.wbits = 0;
+    const ulong base_bits = task.data.type == kSubframeLpc
+        ? 8UL + (wbits == 0 ? 0UL : ulong(wbits)) +
+            (ulong(ro) * ulong(obits)) + 4UL + 5UL +
+            (ulong(ro) * ulong(task.data.cbits)) + 2UL + 4UL
+        : 8UL + (ulong(ro) * ulong(obits)) + 2UL + 4UL +
+            (wbits == 0 ? 0UL : ulong(wbits));
+
+    const int leaf_partition_order = max_partition_order;
+    const int leaf_count = 1 << leaf_partition_order;
+    const int leaf_samples = bs >> leaf_partition_order;
+    for (int leaf = int(lane); leaf < leaf_count; leaf += int(kWorkgroupSize)) {
+        ulong abs_sum = 0UL;
+        const int start = leaf == 0 ? ro : leaf * leaf_samples;
+        const int end = (leaf + 1) * leaf_samples;
+        for (int pos = start; pos < end; ++pos) {
+            abs_sum += abs_long(residual(data, pos, residual_task));
+        }
+        exact_rice_leaf_sums[leaf] = abs_sum;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (lane == 0u) {
+        ulong best_bits = 0xffffffffffffffffUL;
+        ulong best_estimated_bits = 0xffffffffffffffffUL;
+        int best_partition_order = 0;
+        for (int partition_order = leaf_partition_order; partition_order >= 0;
+             --partition_order) {
+            if (!valid_partition_order(bs, ro, partition_order)) {
+                continue;
+            }
+
+            const int partition_count = 1 << partition_order;
+            const int partition_samples = bs >> partition_order;
+            const int leaf_group_size = 1 << (leaf_partition_order - partition_order);
+            ulong estimated_bits = 2UL + 4UL;
+            for (int partition = 0; partition < partition_count; ++partition) {
+                const int residual_count = partition == 0
+                    ? partition_samples - ro
+                    : partition_samples;
+                const int leaf_start = partition * leaf_group_size;
+                ulong abs_sum = 0UL;
+                for (int leaf = 0; leaf < leaf_group_size; ++leaf) {
+                    abs_sum += exact_rice_leaf_sums[leaf_start + leaf];
+                }
+
+                const uint parameter = mean_rice_parameter(abs_sum, residual_count);
+                estimated_bits +=
+                    mean_rice_partition_bits(parameter, residual_count, abs_sum);
+                candidate_rice_parameters[partition] = parameter;
+            }
+
+            if (estimated_bits < best_estimated_bits) {
+                best_estimated_bits = estimated_bits;
+                best_partition_order = partition_order;
+                const ulong rice_header_bits = 2UL + 4UL;
+                const ulong estimate_base_bits = base_bits - rice_header_bits;
+                best_bits = best_estimated_bits >=
+                        0xffffffffffffffffUL - estimate_base_bits
+                    ? 0xffffffffffffffffUL
+                    : estimate_base_bits + best_estimated_bits;
+                for (int partition = 0; partition < partition_count; ++partition) {
+                    task_rice_parameters[rice_output_base + partition] =
+                        candidate_rice_parameters[partition];
+                }
+            }
+        }
+
+        task.data.porder = best_partition_order;
+        task.data.size = best_bits > ulong(kIntMax) ? kIntMax : int(best_bits);
+        tasks[selected_task] = task;
+    }
+}
+
 kernel void choose_best(
     device const int* selected_tasks [[buffer(0)]],
     device const FlacClSubframeTask* tasks [[buffer(1)]],
@@ -1759,11 +1938,14 @@ public:
             id<MTLFunction> fixed_guess_function =
                 [library newFunctionWithName:@"prune_fixed_order_guess"];
             id<MTLFunction> exact_function = [library newFunctionWithName:@"analyze_exact"];
+            id<MTLFunction> exact_shifted_function =
+                [library newFunctionWithName:@"analyze_exact_shifted"];
             id<MTLFunction> choose_function = [library newFunctionWithName:@"choose_best"];
             if (find_wasted_function == nil || prepare_shifted_function == nil ||
                 autocor_function == nil || autocor_shifted_function == nil ||
                 lpc_function == nil || quantize_function == nil ||
                 fixed_guess_function == nil || exact_function == nil ||
+                exact_shifted_function == nil ||
                 choose_function == nil) {
                 throw std::runtime_error("failed to resolve Metal analysis kernel functions");
             }
@@ -1820,6 +2002,14 @@ public:
                 throw std::runtime_error("failed to create Metal exact-analysis pipeline: " +
                     ns_error_text(error));
             }
+            exact_shifted_pipeline_ =
+                [device_ newComputePipelineStateWithFunction:exact_shifted_function
+                                                       error:&error];
+            if (exact_shifted_pipeline_ == nil) {
+                throw std::runtime_error(
+                    "failed to create Metal shifted exact-analysis pipeline: " +
+                    ns_error_text(error));
+            }
             choose_pipeline_ =
                 [device_ newComputePipelineStateWithFunction:choose_function error:&error];
             if (choose_pipeline_ == nil) {
@@ -1866,6 +2056,13 @@ public:
                 generated_config->window_count == 3U &&
                 generated_config->lpc_tasks_per_window == 1U &&
                 generated_config->max_lpc_order <= 12U;
+            const bool use_shifted_exact =
+                use_shifted_autocor &&
+                max_rice_partition_order <= kMetalExactLeafMaxRicePartitionOrder &&
+                (generated_config->blocksize %
+                    (std::size_t {1} << max_rice_partition_order)) == 0U &&
+                (generated_config->blocksize >> max_rice_partition_order) >
+                    generated_config->max_lpc_order;
 
             const auto samples_bytes =
                 checked_buffer_bytes(samples.size(), sizeof(std::int32_t), "samples");
@@ -2188,12 +2385,17 @@ public:
             if (exact_encoder == nil) {
                 throw std::runtime_error("failed to create Metal exact-analysis encoder");
             }
-            [exact_encoder setComputePipelineState:exact_pipeline_];
+            [exact_encoder setComputePipelineState:use_shifted_exact
+                    ? exact_shifted_pipeline_
+                    : exact_pipeline_];
             [exact_encoder setBuffer:samples_buffer_ offset:0 atIndex:0];
             [exact_encoder setBuffer:selected_buffer_ offset:0 atIndex:1];
             [exact_encoder setBuffer:tasks_buffer_ offset:0 atIndex:2];
             [exact_encoder setBuffer:task_rice_parameters_buffer_ offset:0 atIndex:3];
             [exact_encoder setBytes:&exact_params length:sizeof(exact_params) atIndex:4];
+            if (use_shifted_exact) {
+                [exact_encoder setBuffer:shifted_samples_buffer_ offset:0 atIndex:5];
+            }
             [exact_encoder dispatchThreadgroups:MTLSizeMake(plan.selected_tasks.size(), 1, 1)
                           threadsPerThreadgroup:MTLSizeMake(kWorkgroupSize, 1, 1)];
             [exact_encoder endEncoding];
@@ -2259,6 +2461,7 @@ private:
     id<MTLComputePipelineState> quantize_pipeline_ = nil;
     id<MTLComputePipelineState> fixed_guess_pipeline_ = nil;
     id<MTLComputePipelineState> exact_pipeline_ = nil;
+    id<MTLComputePipelineState> exact_shifted_pipeline_ = nil;
     id<MTLComputePipelineState> choose_pipeline_ = nil;
     id<MTLBuffer> samples_buffer_ = nil;
     id<MTLBuffer> shifted_samples_buffer_ = nil;

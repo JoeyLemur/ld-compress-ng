@@ -413,6 +413,41 @@ Metal size/speed tuning checkpoint:
   `ctest --test-dir build-metal --output-on-failure`, a plain Metal
   `compress --backend metal` on `issue176.lds`, `verify --source` against the
   original LDS, and `git diff --check`.
+- Pre-shifted exact-analysis input pass: the refreshed pre-edit focused
+  `issue176.lds` speed-profile Metal row stayed at `4,293,091` bytes and
+  measured `0.061s` elapsed, `metal_gen_s=0.022840s`,
+  `metal_exact_s=0.022872s`, `metal_fguess_s=0.013921s`,
+  `accel_scan_md5_s=0.014405s`, and writer `0.012604s`. The refreshed
+  pre-edit six-fixture sweep was
+  `build/real-fixture-sweeps/real-fixture-sweep-20260709-102544.{csv,md}`:
+  Metal Rice order `6` stayed at `79,946,831` bytes and measured `0.684s`
+  elapsed, `metal_gen_s=0.205203s`, `metal_exact_s=0.379111s`,
+  `metal_fguess_s=0.126646s`, `accel_scan_md5_s=0.259073s`, and writer
+  `0.224068s`. The retained change adds a shifted-input exact-analysis Metal
+  kernel only for the current speed-profile generated-LPC path when the
+  max-Rice leaf partition shape is valid. It keeps the generic exact kernel as
+  fallback, uses original samples for constant checks, and uses the prepared
+  shifted sample buffer only for fixed/LPC residual costing. The focused
+  after-change row stayed byte-identical at `4,293,091` bytes and improved to
+  `0.052s` elapsed, with `metal_gen_s=0.027918s`,
+  `metal_exact_s=0.005265s`, `metal_fguess_s=0.015541s`,
+  `accel_scan_md5_s=0.014403s`, and writer `0.012524s`. The accepted
+  six-fixture sweep is
+  `build/real-fixture-sweeps/real-fixture-sweep-20260709-103103.{csv,md}`:
+  Metal Rice order `6` stayed at `79,946,831` bytes and improved to `0.626s`
+  elapsed, `metal_gen_s=0.223932s`, `metal_exact_s=0.063757s`,
+  `metal_fguess_s=0.131905s`, `accel_scan_md5_s=0.264206s`, and writer
+  `0.223735s`. This clears the `0.697s` accepted-baseline gate by `0.071s`
+  and the refreshed pre-edit aggregate by `0.058s`; the exact-analysis drop
+  more than pays for the small generated-path timing increase. No writer logic,
+  scan/MD5, fixed-order guess, autocorrelation math, Metal batch size, CLI
+  behavior, timing columns, or compressed format changed. Validation passed
+  with `cmake --build build-metal`, `build-metal/test_hash`,
+  `build-metal/test_metal_smoke --device 0`,
+  `build-metal/test_metal_analysis --device 0`,
+  `ctest --test-dir build-metal --output-on-failure`, a plain Metal
+  `compress --backend metal` on `issue176.lds`, `verify --source` against the
+  original LDS, and `git diff --check`.
 
 Current default native tuning values:
 
