@@ -417,15 +417,30 @@ if(BUILD_TESTING)
             ldcompress_test_support
     )
 
-    set(vulkan_analysis_command test_vulkan_analysis)
-    if(LDCOMPRESS_HAVE_VULKAN AND NOT "${LDCOMPRESS_VULKAN_TEST_DEVICE}" STREQUAL "")
-        list(APPEND vulkan_analysis_command
-            --device "${LDCOMPRESS_VULKAN_TEST_DEVICE}"
+    set(vulkan_analysis_cases
+        fixed-constant
+        lpc
+        generated-lpc
+        mean-rice-profiles
+    )
+    foreach(vulkan_analysis_case IN LISTS vulkan_analysis_cases)
+        set(vulkan_analysis_command
+            test_vulkan_analysis
+            --case "${vulkan_analysis_case}"
         )
-    endif()
+        if(LDCOMPRESS_HAVE_VULKAN AND NOT "${LDCOMPRESS_VULKAN_TEST_DEVICE}" STREQUAL "")
+            list(APPEND vulkan_analysis_command
+                --device "${LDCOMPRESS_VULKAN_TEST_DEVICE}"
+            )
+        endif()
 
-    add_test(NAME vulkan_analysis COMMAND ${vulkan_analysis_command})
-    set_tests_properties(vulkan_analysis PROPERTIES LABELS vulkan)
+        add_test(
+            NAME "vulkan_analysis.${vulkan_analysis_case}"
+            COMMAND ${vulkan_analysis_command}
+        )
+        set_tests_properties("vulkan_analysis.${vulkan_analysis_case}"
+            PROPERTIES LABELS vulkan)
+    endforeach()
 
     add_executable(test_metal_devices
         tests/test_metal_devices.cpp
