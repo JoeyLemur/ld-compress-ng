@@ -332,6 +332,18 @@ Metal size/speed tuning checkpoint:
   lag-level parallelism; a combined autocorrelation/LPC/order-guess kernel or a
   per-frame facts ingest pass should be measured against the split columns
   before changing defaults.
+- A follow-up three-window Metal autocorrelation specialization was attempted
+  for `order-guess-mean-estimate-rice`: one `64`-lane workgroup per
+  `(frame, lag)` computed rectangular, Tukey, and Welch autocorrelation rows
+  into the existing three-window buffer layout. It preserved lag-level
+  parallelism and improved the focused `issue176.lds` diagnostic row from the
+  accepted `4,293,091` bytes in about `0.101s` (`metal_ac_s` about `0.045s`)
+  to `0.077s` (`metal_ac_s=0.020021s`), but changed output to `4,293,220`
+  bytes. A stricter arithmetic variant that shared only shifted integer
+  samples produced the same byte change. Because the focused byte gate failed,
+  the code was reverted and the six-fixture aggregate was not rerun; keep the
+  accepted six-fixture baseline at
+  `build/real-fixture-sweeps/real-fixture-sweep-20260708-221715.{csv,md}`.
 
 Current default native tuning values:
 
