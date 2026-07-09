@@ -376,6 +376,43 @@ Metal size/speed tuning checkpoint:
   elapsed, scan `0.418993s`, MD5 `0.287798s`, Metal autocorrelation
   `0.589549s`, and writer `0.236225s`. No Metal math, writer logic, batch size,
   scan chunk size, CLI behavior, or compressed format changed.
+- Byte-stable pre-shifted autocorrelation input pass: the pre-edit focused
+  `issue176.lds` speed-profile Metal row stayed at `4,293,091` bytes and
+  measured `0.094s` elapsed, `metal_gen_s=0.057721s`,
+  `metal_waste_s=0.002758s`, `metal_ac_s=0.046173s`,
+  `metal_fguess_s=0.007205s`, `metal_exact_s=0.021148s`,
+  `accel_scan_md5_s=0.014673s`, and writer `0.012444s`. The refreshed
+  pre-edit six-fixture sweep was
+  `build/real-fixture-sweeps/real-fixture-sweep-20260709-094334.{csv,md}`:
+  Metal Rice order `6` stayed at `79,946,831` bytes and measured `1.279s`
+  elapsed, `metal_gen_s=0.793841s`, `metal_waste_s=0.014974s`,
+  `metal_ac_s=0.631443s`, `metal_fguess_s=0.126841s`,
+  `metal_exact_s=0.382390s`, `accel_scan_md5_s=0.288435s`, and writer
+  `0.235775s`. The retained change adds a speed-profile-only Metal path that
+  computes wasted-bit facts and pre-shifted integer samples once per frame, then
+  runs the existing one-workgroup-per-`(frame, window, lag)` autocorrelation
+  shape against those shifted samples. Exact/default and non-speed-profile
+  generated-LPC shapes continue to use the generic kernels. The focused
+  after-change row stayed byte-identical at `4,293,091` bytes and improved to
+  `0.059s` elapsed, with `metal_gen_s=0.020763s`,
+  `metal_waste_s=0.005183s`, `metal_ac_s=0.003860s`,
+  `metal_fguess_s=0.010070s`, `metal_exact_s=0.022430s`,
+  `accel_scan_md5_s=0.015345s`, and writer `0.012689s`. The accepted
+  six-fixture sweep is
+  `build/real-fixture-sweeps/real-fixture-sweep-20260709-094747.{csv,md}`:
+  Metal Rice order `6` stayed at `79,946,831` bytes and improved to `0.697s`
+  elapsed, `metal_gen_s=0.207799s`, `metal_waste_s=0.021164s`,
+  `metal_ac_s=0.040253s`, `metal_fguess_s=0.127173s`,
+  `metal_exact_s=0.378268s`, `accel_scan_md5_s=0.273838s`, and writer
+  `0.225539s`. This clears the `1.210s` accepted-baseline gate by `0.513s`;
+  the added wasted-bit work is repaid by the autocorrelation drop, and no
+  writer logic, scan chunking, Metal batch size, CLI behavior, or compressed
+  format changed. Validation passed with `cmake --build build-metal`,
+  `build-metal/test_hash`, `build-metal/test_metal_smoke --device 0`,
+  `build-metal/test_metal_analysis --device 0`,
+  `ctest --test-dir build-metal --output-on-failure`, a plain Metal
+  `compress --backend metal` on `issue176.lds`, `verify --source` against the
+  original LDS, and `git diff --check`.
 
 Current default native tuning values:
 

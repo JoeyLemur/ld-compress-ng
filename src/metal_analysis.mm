@@ -847,6 +847,39 @@ kernel void find_wasted_bits(
     }
 }
 
+kernel void prepare_shifted_samples_for_autocorrelation(
+    device const int* samples [[buffer(0)]],
+    device FlacClSubframeTask* tasks [[buffer(1)]],
+    constant GeneratedLpcParams& params [[buffer(2)]],
+    device int* shifted_samples [[buffer(3)]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint frame [[threadgroup_position_in_grid]])
+{
+    threadgroup int reduce_ints[64];
+    threadgroup uint reduce_uints[64];
+    if (frame >= params.frameCount) {
+        return;
+    }
+    const uint base = frame * params.tasksPerFrame;
+    FlacClSubframeTask first = tasks[base];
+    device const int* data = samples + first.data.samplesOffs;
+    const int wbits =
+        common_wasted_bits(data, first.data.blocksize, first.data.obits, reduce_ints, lane);
+    const int abits =
+        amplitude_bits(data, first.data.blocksize, wbits, reduce_uints, lane);
+
+    for (uint slot = lane; slot < params.tasksPerFrame; slot += kWorkgroupSize) {
+        FlacClSubframeTask task = tasks[base + slot];
+        task.data.wbits = wbits;
+        task.data.abits = abits;
+        tasks[base + slot] = task;
+    }
+    for (uint pos = lane; pos < uint(first.data.blocksize); pos += kWorkgroupSize) {
+        shifted_samples[first.data.samplesOffs + pos] =
+            int(shifted_sample(data, int(pos), wbits));
+    }
+}
+
 kernel void compute_autocorrelation(
     device float* output [[buffer(0)]],
     device const int* samples [[buffer(1)]],
@@ -878,6 +911,42 @@ kernel void compute_autocorrelation(
         const float sample1 =
             float(shifted_sample(data, int(pos - lag), task.data.wbits)) *
             windows[window_offset + pos - lag];
+        sum += sample0 * sample1;
+    }
+
+    const float total = reduce_sum_float(sum, scratch, lane);
+    if (lane == 0u) {
+        output[output_offset] = total;
+    }
+}
+
+kernel void compute_autocorrelation_shifted(
+    device float* output [[buffer(0)]],
+    device const int* shifted_samples [[buffer(1)]],
+    device const float* windows [[buffer(2)]],
+    device const FlacClSubframeTask* tasks [[buffer(3)]],
+    constant GeneratedLpcParams& params [[buffer(4)]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint3 group [[threadgroup_position_in_grid]])
+{
+    threadgroup float scratch[64];
+    const uint frame = group.x;
+    const uint window = group.y;
+    const uint lag = group.z;
+    if (frame >= params.frameCount || window >= params.windowCount || lag > kMaxOrder) {
+        return;
+    }
+
+    const FlacClSubframeTask task = tasks[frame * params.tasksPerFrame];
+    device const int* data = shifted_samples + task.data.samplesOffs;
+    const uint window_offset = window * params.blocksize;
+    const uint output_offset =
+        ((frame * params.windowCount + window) * (kMaxOrder + 1u)) + lag;
+
+    float sum = 0.0f;
+    for (uint pos = lag + lane; pos < uint(task.data.blocksize); pos += kWorkgroupSize) {
+        const float sample0 = float(data[pos]) * windows[window_offset + pos];
+        const float sample1 = float(data[pos - lag]) * windows[window_offset + pos - lag];
         sum += sample0 * sample1;
     }
 
@@ -1678,8 +1747,12 @@ public:
             }
 
             id<MTLFunction> find_wasted_function = [library newFunctionWithName:@"find_wasted_bits"];
+            id<MTLFunction> prepare_shifted_function =
+                [library newFunctionWithName:@"prepare_shifted_samples_for_autocorrelation"];
             id<MTLFunction> autocor_function =
                 [library newFunctionWithName:@"compute_autocorrelation"];
+            id<MTLFunction> autocor_shifted_function =
+                [library newFunctionWithName:@"compute_autocorrelation_shifted"];
             id<MTLFunction> lpc_function = [library newFunctionWithName:@"compute_lpc"];
             id<MTLFunction> quantize_function =
                 [library newFunctionWithName:@"quantize_lpc_orders"];
@@ -1687,7 +1760,8 @@ public:
                 [library newFunctionWithName:@"prune_fixed_order_guess"];
             id<MTLFunction> exact_function = [library newFunctionWithName:@"analyze_exact"];
             id<MTLFunction> choose_function = [library newFunctionWithName:@"choose_best"];
-            if (find_wasted_function == nil || autocor_function == nil ||
+            if (find_wasted_function == nil || prepare_shifted_function == nil ||
+                autocor_function == nil || autocor_shifted_function == nil ||
                 lpc_function == nil || quantize_function == nil ||
                 fixed_guess_function == nil || exact_function == nil ||
                 choose_function == nil) {
@@ -1700,10 +1774,26 @@ public:
                 throw std::runtime_error("failed to create Metal wasted-bits pipeline: " +
                     ns_error_text(error));
             }
+            prepare_shifted_pipeline_ =
+                [device_ newComputePipelineStateWithFunction:prepare_shifted_function
+                                                       error:&error];
+            if (prepare_shifted_pipeline_ == nil) {
+                throw std::runtime_error(
+                    "failed to create Metal shifted-sample prepare pipeline: " +
+                    ns_error_text(error));
+            }
             autocor_pipeline_ =
                 [device_ newComputePipelineStateWithFunction:autocor_function error:&error];
             if (autocor_pipeline_ == nil) {
                 throw std::runtime_error("failed to create Metal autocorrelation pipeline: " +
+                    ns_error_text(error));
+            }
+            autocor_shifted_pipeline_ =
+                [device_ newComputePipelineStateWithFunction:autocor_shifted_function
+                                                       error:&error];
+            if (autocor_shifted_pipeline_ == nil) {
+                throw std::runtime_error(
+                    "failed to create Metal shifted autocorrelation pipeline: " +
                     ns_error_text(error));
             }
             lpc_pipeline_ =
@@ -1770,6 +1860,12 @@ public:
                     opencl_detail::kFlacClMaxOrder,
                     std::max<unsigned>(1U, plan.max_lpc_order))
                 : 0U;
+            const bool use_shifted_autocor =
+                populate_lpc &&
+                plan.analysis_profile == NativeAnalysisProfile::OrderGuessMeanEstimateRice &&
+                generated_config->window_count == 3U &&
+                generated_config->lpc_tasks_per_window == 1U &&
+                generated_config->max_lpc_order <= 12U;
 
             const auto samples_bytes =
                 checked_buffer_bytes(samples.size(), sizeof(std::int32_t), "samples");
@@ -1820,6 +1916,14 @@ public:
                     autocor_bytes, "autocorrelations");
                 lpcs_buffer_ = ensure_buffer(device_, lpcs_buffer_, lpcs_buffer_bytes_,
                     lpcs_bytes, "LPC coefficients");
+                if (use_shifted_autocor) {
+                    shifted_samples_buffer_ = ensure_buffer(
+                        device_,
+                        shifted_samples_buffer_,
+                        shifted_samples_buffer_bytes_,
+                        samples_bytes,
+                        "shifted samples");
+                }
             }
             task_rice_parameters_buffer_ = ensure_buffer(device_, task_rice_parameters_buffer_,
                 task_rice_parameters_buffer_bytes_, task_rice_bytes,
@@ -1894,12 +1998,17 @@ public:
                     if (wasted_encoder == nil) {
                         throw std::runtime_error("failed to create Metal wasted-bits encoder");
                     }
-                    [wasted_encoder setComputePipelineState:find_wasted_pipeline_];
+                    [wasted_encoder setComputePipelineState:use_shifted_autocor
+                            ? prepare_shifted_pipeline_
+                            : find_wasted_pipeline_];
                     [wasted_encoder setBuffer:samples_buffer_ offset:0 atIndex:0];
                     [wasted_encoder setBuffer:tasks_buffer_ offset:0 atIndex:1];
                     [wasted_encoder setBytes:&(*generated_params)
                                       length:sizeof(*generated_params)
                                      atIndex:2];
+                    if (use_shifted_autocor) {
+                        [wasted_encoder setBuffer:shifted_samples_buffer_ offset:0 atIndex:3];
+                    }
                     [wasted_encoder dispatchThreadgroups:MTLSizeMake(
                                                             generated_config->frame_count, 1, 1)
                                      threadsPerThreadgroup:MTLSizeMake(kWorkgroupSize, 1, 1)];
@@ -1912,9 +2021,13 @@ public:
                         throw std::runtime_error(
                             "failed to create Metal autocorrelation encoder");
                     }
-                    [autocor_encoder setComputePipelineState:autocor_pipeline_];
+                    [autocor_encoder setComputePipelineState:use_shifted_autocor
+                            ? autocor_shifted_pipeline_
+                            : autocor_pipeline_];
                     [autocor_encoder setBuffer:autocor_buffer_ offset:0 atIndex:0];
-                    [autocor_encoder setBuffer:samples_buffer_ offset:0 atIndex:1];
+                    id<MTLBuffer> autocor_samples_buffer =
+                        use_shifted_autocor ? shifted_samples_buffer_ : samples_buffer_;
+                    [autocor_encoder setBuffer:autocor_samples_buffer offset:0 atIndex:1];
                     [autocor_encoder setBuffer:windows_buffer_ offset:0 atIndex:2];
                     [autocor_encoder setBuffer:tasks_buffer_ offset:0 atIndex:3];
                     [autocor_encoder setBytes:&(*generated_params)
@@ -2139,13 +2252,16 @@ private:
     id<MTLDevice> device_ = nil;
     id<MTLCommandQueue> queue_ = nil;
     id<MTLComputePipelineState> find_wasted_pipeline_ = nil;
+    id<MTLComputePipelineState> prepare_shifted_pipeline_ = nil;
     id<MTLComputePipelineState> autocor_pipeline_ = nil;
+    id<MTLComputePipelineState> autocor_shifted_pipeline_ = nil;
     id<MTLComputePipelineState> lpc_pipeline_ = nil;
     id<MTLComputePipelineState> quantize_pipeline_ = nil;
     id<MTLComputePipelineState> fixed_guess_pipeline_ = nil;
     id<MTLComputePipelineState> exact_pipeline_ = nil;
     id<MTLComputePipelineState> choose_pipeline_ = nil;
     id<MTLBuffer> samples_buffer_ = nil;
+    id<MTLBuffer> shifted_samples_buffer_ = nil;
     id<MTLBuffer> tasks_buffer_ = nil;
     id<MTLBuffer> selected_buffer_ = nil;
     id<MTLBuffer> windows_buffer_ = nil;
@@ -2155,6 +2271,7 @@ private:
     id<MTLBuffer> best_buffer_ = nil;
     id<MTLBuffer> best_rice_parameters_buffer_ = nil;
     std::size_t samples_buffer_bytes_ = 0;
+    std::size_t shifted_samples_buffer_bytes_ = 0;
     std::size_t tasks_buffer_bytes_ = 0;
     std::size_t selected_buffer_bytes_ = 0;
     std::size_t windows_buffer_bytes_ = 0;
