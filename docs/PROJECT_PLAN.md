@@ -289,6 +289,49 @@ Metal size/speed tuning checkpoint:
   `build-metal/test_metal_analysis --device 0`,
   `ctest --test-dir build-metal --output-on-failure`, and a plain Metal
   `compress` plus `verify --source` on `issue176.lds`.
+- Follow-up Metal measurement pass: `bench` and
+  `tools/sweep_real_fixtures.py` now split the previous Metal generated-LPC
+  timing bucket into `metal_gen_s`, `metal_waste_s`, `metal_ac_s`,
+  `metal_lpc_s`, `metal_quant_s`, and `metal_fguess_s`. The no-stats
+  compression path still submits generated LPC as one Metal command buffer; the
+  stats/bench path submits generated substages separately so the diagnostic
+  columns include command-boundary overhead.
+- The pre-split six-fixture speed-profile baseline was
+  `build/real-fixture-sweeps/real-fixture-sweep-20260708-214428.{csv,md}`:
+  with `threads=8`, `frame=4608`, `lpc=12`, `prec=12`, Rice orders `5,6`,
+  `analysis-profile=order-guess-mean-estimate-rice`, Metal device `0`, and
+  Metal session reuse, the best Metal row was Rice order `6` at `79,946,831`
+  bytes in `1.288s`. The old aggregate `metal_lpc_s` bucket was `0.764193s`.
+- The accepted split-timing sweep is
+  `build/real-fixture-sweeps/real-fixture-sweep-20260708-221715.{csv,md}`.
+  The best Metal row is still Rice order `6` at `79,946,831` bytes, with
+  diagnostic elapsed time `1.309s`, scan `0.716104s`, generated total
+  `0.792128s`, exact `0.380391s`, readback `0.001764s`, and writer
+  `0.224914s`. Inside generated LPC, autocorrelation is the dominant GPU
+  substage at `0.630961s`; wasted-bit propagation is `0.015005s`, LPC solve
+  `0.010844s`, quantization `0.008244s`, and fixed-order guess `0.126460s`.
+  Writer time is below both scan and generated LPC, so this pass did not touch
+  writer logic.
+- A fused order-12 autocorrelation kernel was tested and rejected. It preserved
+  the focused `issue176.lds` Metal output size (`4,293,091` bytes), but the
+  repeated six-fixture sweeps
+  `build/real-fixture-sweeps/real-fixture-sweep-20260708-221404.{csv,md}` and
+  `build/real-fixture-sweeps/real-fixture-sweep-20260708-221500.{csv,md}`
+  regressed the Rice order `6` diagnostic aggregate to `1.320s` and `1.325s`.
+  The likely issue is that the fused kernel reduced dispatch count by
+  serializing all `0..12` lags inside each frame/window workgroup, losing too
+  much lag-level parallelism.
+- A compact autocorrelation/LPC scratch-buffer layout was also tested and
+  rejected in
+  `build/real-fixture-sweeps/real-fixture-sweep-20260708-221134.{csv,md}`. It
+  preserved aggregate bytes but did not improve elapsed time (`1.320s` for the
+  Rice order `6` Metal aggregate). Keep the fixed FLACCL-style scratch layout
+  until a later pass has a stronger combined LPC/quantization design.
+- No Metal default tuning change was retained from this pass. The next credible
+  target remains Metal generated autocorrelation, but it should avoid reducing
+  lag-level parallelism; a combined autocorrelation/LPC/order-guess kernel or a
+  per-frame facts ingest pass should be measured against the split columns
+  before changing defaults.
 
 Current default native tuning values:
 

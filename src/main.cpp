@@ -1219,8 +1219,18 @@ void print_native_stats(const ldcompress::NativeCompressionStats& stats)
         if (stats.metal_timed_batches != 0) {
             std::cerr << "metal timings: batches=" << stats.metal_timed_batches
                       << " upload=" << seconds_from_ns(stats.metal_upload_ns) << "s"
-                      << " lpc-generation="
-                      << seconds_from_ns(stats.metal_lpc_generation_ns) << "s"
+                      << " generated="
+                      << seconds_from_ns(stats.metal_generated_total_ns) << "s"
+                      << " wasted=" << seconds_from_ns(stats.metal_wasted_bits_ns)
+                      << "s"
+                      << " autocor="
+                      << seconds_from_ns(stats.metal_generated_autocorrelation_ns)
+                      << "s"
+                      << " lpc=" << seconds_from_ns(stats.metal_generated_lpc_ns) << "s"
+                      << " quantize="
+                      << seconds_from_ns(stats.metal_generated_quantize_ns) << "s"
+                      << " fixed-guess="
+                      << seconds_from_ns(stats.metal_fixed_order_guess_ns) << "s"
                       << " exact=" << seconds_from_ns(stats.metal_exact_analysis_ns)
                       << "s"
                       << " choose=" << seconds_from_ns(stats.metal_choose_best_ns) << "s"
@@ -1620,7 +1630,12 @@ void print_bench_result(const BenchResult& result)
     print_seconds_field(result.native_stats.vulkan_gpu_choose_best_ns);
     print_seconds_field(result.native_stats.vulkan_gpu_readback_ns);
     print_seconds_field(result.native_stats.metal_upload_ns);
-    print_seconds_field(result.native_stats.metal_lpc_generation_ns);
+    print_seconds_field(result.native_stats.metal_generated_total_ns);
+    print_seconds_field(result.native_stats.metal_wasted_bits_ns);
+    print_seconds_field(result.native_stats.metal_generated_autocorrelation_ns);
+    print_seconds_field(result.native_stats.metal_generated_lpc_ns);
+    print_seconds_field(result.native_stats.metal_generated_quantize_ns);
+    print_seconds_field(result.native_stats.metal_fixed_order_guess_ns);
     print_seconds_field(result.native_stats.metal_exact_analysis_ns);
     print_seconds_field(result.native_stats.metal_choose_best_ns);
     print_seconds_field(result.native_stats.metal_readback_ns);
@@ -1910,7 +1925,12 @@ int run_bench(const Options& options)
               << std::setw(18) << "vk_gpu_choose_s"
               << std::setw(18) << "vk_gpu_read_s"
               << std::setw(18) << "metal_up_s"
+              << std::setw(18) << "metal_gen_s"
+              << std::setw(18) << "metal_waste_s"
+              << std::setw(18) << "metal_ac_s"
               << std::setw(18) << "metal_lpc_s"
+              << std::setw(18) << "metal_quant_s"
+              << std::setw(18) << "metal_fguess_s"
               << std::setw(18) << "metal_exact_s"
               << std::setw(18) << "metal_choose_s"
               << std::setw(18) << "metal_read_s"

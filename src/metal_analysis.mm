@@ -1765,6 +1765,11 @@ public:
                     generated_config->window_count,
                     plan.analysis_profile);
             }
+            const auto lpc_order_limit = populate_lpc
+                ? std::min<std::size_t>(
+                    opencl_detail::kFlacClMaxOrder,
+                    std::max<unsigned>(1U, plan.max_lpc_order))
+                : 0U;
 
             const auto samples_bytes =
                 checked_buffer_bytes(samples.size(), sizeof(std::int32_t), "samples");
@@ -1859,91 +1864,111 @@ public:
                     .reserved1 = 0,
                 };
 
-                id<MTLCommandBuffer> generated_command = [queue_ commandBuffer];
-                if (generated_command == nil) {
-                    throw std::runtime_error("failed to create Metal generated-LPC command buffer");
-                }
-                const auto lpc_started = Clock::now();
-
-                id<MTLComputeCommandEncoder> wasted_encoder =
-                    [generated_command computeCommandEncoder];
-                if (wasted_encoder == nil) {
-                    throw std::runtime_error("failed to create Metal wasted-bits encoder");
-                }
-                [wasted_encoder setComputePipelineState:find_wasted_pipeline_];
-                [wasted_encoder setBuffer:samples_buffer_ offset:0 atIndex:0];
-                [wasted_encoder setBuffer:tasks_buffer_ offset:0 atIndex:1];
-                [wasted_encoder setBytes:&(*generated_params)
+                auto make_generated_command = [&]() {
+                    id<MTLCommandBuffer> command = [queue_ commandBuffer];
+                    if (command == nil) {
+                        throw std::runtime_error(
+                            "failed to create Metal generated-LPC command buffer");
+                    }
+                    return command;
+                };
+                auto finish_generated_command =
+                    [&](id<MTLCommandBuffer> command,
+                        const char* label,
+                        Clock::time_point started,
+                        std::uint64_t MetalGpuTimingStats::*counter) {
+                        [command commit];
+                        [command waitUntilCompleted];
+                        if ([command status] != MTLCommandBufferStatusCompleted) {
+                            throw std::runtime_error(
+                                std::string(label) + " failed: " +
+                                ns_error_text([command error]));
+                        }
+                        if (timings != nullptr && counter != nullptr) {
+                            add_elapsed_ns(timings->*counter, started);
+                        }
+                    };
+                auto encode_wasted = [&](id<MTLCommandBuffer> command) {
+                    id<MTLComputeCommandEncoder> wasted_encoder =
+                        [command computeCommandEncoder];
+                    if (wasted_encoder == nil) {
+                        throw std::runtime_error("failed to create Metal wasted-bits encoder");
+                    }
+                    [wasted_encoder setComputePipelineState:find_wasted_pipeline_];
+                    [wasted_encoder setBuffer:samples_buffer_ offset:0 atIndex:0];
+                    [wasted_encoder setBuffer:tasks_buffer_ offset:0 atIndex:1];
+                    [wasted_encoder setBytes:&(*generated_params)
                                       length:sizeof(*generated_params)
                                      atIndex:2];
-                [wasted_encoder dispatchThreadgroups:MTLSizeMake(
-                                                        generated_config->frame_count, 1, 1)
-                                 threadsPerThreadgroup:MTLSizeMake(kWorkgroupSize, 1, 1)];
-                [wasted_encoder endEncoding];
-
-                id<MTLComputeCommandEncoder> autocor_encoder =
-                    [generated_command computeCommandEncoder];
-                if (autocor_encoder == nil) {
-                    throw std::runtime_error("failed to create Metal autocorrelation encoder");
-                }
-                [autocor_encoder setComputePipelineState:autocor_pipeline_];
-                [autocor_encoder setBuffer:autocor_buffer_ offset:0 atIndex:0];
-                [autocor_encoder setBuffer:samples_buffer_ offset:0 atIndex:1];
-                [autocor_encoder setBuffer:windows_buffer_ offset:0 atIndex:2];
-                [autocor_encoder setBuffer:tasks_buffer_ offset:0 atIndex:3];
-                [autocor_encoder setBytes:&(*generated_params)
-                                     length:sizeof(*generated_params)
-                                    atIndex:4];
-                const auto lpc_order_limit =
-                    std::min<std::size_t>(
-                        opencl_detail::kFlacClMaxOrder,
-                        std::max<unsigned>(1U, plan.max_lpc_order));
-                [autocor_encoder dispatchThreadgroups:MTLSizeMake(
-                                                        generated_config->frame_count,
-                                                        generated_config->window_count,
-                                                        lpc_order_limit + 1U)
-                                 threadsPerThreadgroup:MTLSizeMake(kWorkgroupSize, 1, 1)];
-                [autocor_encoder endEncoding];
-
-                id<MTLComputeCommandEncoder> lpc_encoder =
-                    [generated_command computeCommandEncoder];
-                if (lpc_encoder == nil) {
-                    throw std::runtime_error("failed to create Metal LPC encoder");
-                }
-                [lpc_encoder setComputePipelineState:lpc_pipeline_];
-                [lpc_encoder setBuffer:autocor_buffer_ offset:0 atIndex:0];
-                [lpc_encoder setBuffer:lpcs_buffer_ offset:0 atIndex:1];
-                [lpc_encoder setBytes:&(*generated_params)
-                                length:sizeof(*generated_params)
-                               atIndex:2];
-                [lpc_encoder dispatchThreads:MTLSizeMake(
-                                                generated_config->frame_count,
-                                                generated_config->window_count,
-                                                1)
-                         threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
-                [lpc_encoder endEncoding];
-
-                id<MTLComputeCommandEncoder> quantize_encoder =
-                    [generated_command computeCommandEncoder];
-                if (quantize_encoder == nil) {
-                    throw std::runtime_error("failed to create Metal quantize encoder");
-                }
-                [quantize_encoder setComputePipelineState:quantize_pipeline_];
-                [quantize_encoder setBuffer:tasks_buffer_ offset:0 atIndex:0];
-                [quantize_encoder setBuffer:lpcs_buffer_ offset:0 atIndex:1];
-                [quantize_encoder setBytes:&(*generated_params)
-                                     length:sizeof(*generated_params)
-                                    atIndex:2];
-                [quantize_encoder dispatchThreads:MTLSizeMake(
-                                                     generated_config->frame_count,
-                                                     generated_config->window_count,
-                                                     1)
-                              threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
-                [quantize_encoder endEncoding];
-
-                if (plan.fixed_order_guess_on_gpu) {
+                    [wasted_encoder dispatchThreadgroups:MTLSizeMake(
+                                                            generated_config->frame_count, 1, 1)
+                                     threadsPerThreadgroup:MTLSizeMake(kWorkgroupSize, 1, 1)];
+                    [wasted_encoder endEncoding];
+                };
+                auto encode_autocor = [&](id<MTLCommandBuffer> command) {
+                    id<MTLComputeCommandEncoder> autocor_encoder =
+                        [command computeCommandEncoder];
+                    if (autocor_encoder == nil) {
+                        throw std::runtime_error(
+                            "failed to create Metal autocorrelation encoder");
+                    }
+                    [autocor_encoder setComputePipelineState:autocor_pipeline_];
+                    [autocor_encoder setBuffer:autocor_buffer_ offset:0 atIndex:0];
+                    [autocor_encoder setBuffer:samples_buffer_ offset:0 atIndex:1];
+                    [autocor_encoder setBuffer:windows_buffer_ offset:0 atIndex:2];
+                    [autocor_encoder setBuffer:tasks_buffer_ offset:0 atIndex:3];
+                    [autocor_encoder setBytes:&(*generated_params)
+                                       length:sizeof(*generated_params)
+                                      atIndex:4];
+                    [autocor_encoder dispatchThreadgroups:MTLSizeMake(
+                                                            generated_config->frame_count,
+                                                            generated_config->window_count,
+                                                            lpc_order_limit + 1U)
+                                     threadsPerThreadgroup:MTLSizeMake(
+                                                                kWorkgroupSize, 1, 1)];
+                    [autocor_encoder endEncoding];
+                };
+                auto encode_lpc = [&](id<MTLCommandBuffer> command) {
+                    id<MTLComputeCommandEncoder> lpc_encoder =
+                        [command computeCommandEncoder];
+                    if (lpc_encoder == nil) {
+                        throw std::runtime_error("failed to create Metal LPC encoder");
+                    }
+                    [lpc_encoder setComputePipelineState:lpc_pipeline_];
+                    [lpc_encoder setBuffer:autocor_buffer_ offset:0 atIndex:0];
+                    [lpc_encoder setBuffer:lpcs_buffer_ offset:0 atIndex:1];
+                    [lpc_encoder setBytes:&(*generated_params)
+                                    length:sizeof(*generated_params)
+                                   atIndex:2];
+                    [lpc_encoder dispatchThreads:MTLSizeMake(
+                                                    generated_config->frame_count,
+                                                    generated_config->window_count,
+                                                    1)
+                             threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+                    [lpc_encoder endEncoding];
+                };
+                auto encode_quantize = [&](id<MTLCommandBuffer> command) {
+                    id<MTLComputeCommandEncoder> quantize_encoder =
+                        [command computeCommandEncoder];
+                    if (quantize_encoder == nil) {
+                        throw std::runtime_error("failed to create Metal quantize encoder");
+                    }
+                    [quantize_encoder setComputePipelineState:quantize_pipeline_];
+                    [quantize_encoder setBuffer:tasks_buffer_ offset:0 atIndex:0];
+                    [quantize_encoder setBuffer:lpcs_buffer_ offset:0 atIndex:1];
+                    [quantize_encoder setBytes:&(*generated_params)
+                                        length:sizeof(*generated_params)
+                                       atIndex:2];
+                    [quantize_encoder dispatchThreads:MTLSizeMake(
+                                                         generated_config->frame_count,
+                                                         generated_config->window_count,
+                                                         1)
+                                  threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+                    [quantize_encoder endEncoding];
+                };
+                auto encode_fixed_guess = [&](id<MTLCommandBuffer> command) {
                     id<MTLComputeCommandEncoder> fixed_encoder =
-                        [generated_command computeCommandEncoder];
+                        [command computeCommandEncoder];
                     if (fixed_encoder == nil) {
                         throw std::runtime_error(
                             "failed to create Metal fixed-order guess encoder");
@@ -1959,16 +1984,71 @@ public:
                                                             generated_config->frame_count, 1, 1)
                                      threadsPerThreadgroup:MTLSizeMake(kWorkgroupSize, 1, 1)];
                     [fixed_encoder endEncoding];
-                }
+                };
 
-                [generated_command commit];
-                [generated_command waitUntilCompleted];
-                if ([generated_command status] != MTLCommandBufferStatusCompleted) {
-                    throw std::runtime_error("Metal generated LPC command failed: " +
-                        ns_error_text([generated_command error]));
-                }
-                if (timings != nullptr) {
-                    add_elapsed_ns(timings->lpc_generation_ns, lpc_started);
+                const auto generated_started = Clock::now();
+                if (timings == nullptr) {
+                    id<MTLCommandBuffer> generated_command = make_generated_command();
+                    encode_wasted(generated_command);
+                    encode_autocor(generated_command);
+                    encode_lpc(generated_command);
+                    encode_quantize(generated_command);
+                    if (plan.fixed_order_guess_on_gpu) {
+                        encode_fixed_guess(generated_command);
+                    }
+                    finish_generated_command(
+                        generated_command,
+                        "Metal generated LPC command",
+                        generated_started,
+                        nullptr);
+                } else {
+                    auto command = make_generated_command();
+                    auto started = Clock::now();
+                    encode_wasted(command);
+                    finish_generated_command(
+                        command,
+                        "Metal wasted-bits command",
+                        started,
+                        &MetalGpuTimingStats::wasted_bits_ns);
+
+                    command = make_generated_command();
+                    started = Clock::now();
+                    encode_autocor(command);
+                    finish_generated_command(
+                        command,
+                        "Metal autocorrelation command",
+                        started,
+                        &MetalGpuTimingStats::generated_autocorrelation_ns);
+
+                    command = make_generated_command();
+                    started = Clock::now();
+                    encode_lpc(command);
+                    finish_generated_command(
+                        command,
+                        "Metal LPC command",
+                        started,
+                        &MetalGpuTimingStats::generated_lpc_ns);
+
+                    command = make_generated_command();
+                    started = Clock::now();
+                    encode_quantize(command);
+                    finish_generated_command(
+                        command,
+                        "Metal quantize command",
+                        started,
+                        &MetalGpuTimingStats::generated_quantize_ns);
+
+                    if (plan.fixed_order_guess_on_gpu) {
+                        command = make_generated_command();
+                        started = Clock::now();
+                        encode_fixed_guess(command);
+                        finish_generated_command(
+                            command,
+                            "Metal fixed-order guess command",
+                            started,
+                            &MetalGpuTimingStats::fixed_order_guess_ns);
+                    }
+                    add_elapsed_ns(timings->generated_total_ns, generated_started);
                 }
             }
 

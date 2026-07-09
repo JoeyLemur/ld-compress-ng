@@ -79,7 +79,12 @@ struct NativeCompressionStats {
     std::uint64_t vulkan_gpu_readback_ns = 0;
     std::uint64_t metal_timed_batches = 0;
     std::uint64_t metal_upload_ns = 0;
-    std::uint64_t metal_lpc_generation_ns = 0;
+    std::uint64_t metal_generated_total_ns = 0;
+    std::uint64_t metal_wasted_bits_ns = 0;
+    std::uint64_t metal_generated_autocorrelation_ns = 0;
+    std::uint64_t metal_generated_lpc_ns = 0;
+    std::uint64_t metal_generated_quantize_ns = 0;
+    std::uint64_t metal_fixed_order_guess_ns = 0;
     std::uint64_t metal_exact_analysis_ns = 0;
     std::uint64_t metal_choose_best_ns = 0;
     std::uint64_t metal_readback_ns = 0;

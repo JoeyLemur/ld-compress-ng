@@ -40,7 +40,12 @@ void add_metal_timings(
 {
     stats.metal_timed_batches += timings.batches;
     stats.metal_upload_ns += timings.upload_ns;
-    stats.metal_lpc_generation_ns += timings.lpc_generation_ns;
+    stats.metal_generated_total_ns += timings.generated_total_ns;
+    stats.metal_wasted_bits_ns += timings.wasted_bits_ns;
+    stats.metal_generated_autocorrelation_ns += timings.generated_autocorrelation_ns;
+    stats.metal_generated_lpc_ns += timings.generated_lpc_ns;
+    stats.metal_generated_quantize_ns += timings.generated_quantize_ns;
+    stats.metal_fixed_order_guess_ns += timings.fixed_order_guess_ns;
     stats.metal_exact_analysis_ns += timings.exact_analysis_ns;
     stats.metal_choose_best_ns += timings.choose_best_ns;
     stats.metal_readback_ns += timings.readback_ns;
