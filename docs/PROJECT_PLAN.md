@@ -156,6 +156,10 @@ Implemented:
 - Native/OpenCL FLAC encoders now keep STREAMINFO min/max block sizes in the
   RFC-required `16..65535` range and exclude short final LDS tails from the
   minimum block-size bound.
+- Native scalar and accelerated FLAC encoders now store an unknown (`0`)
+  STREAMINFO total-sample count once an LDS capture reaches 80 GiB and its
+  sample count no longer fits the FLAC 36-bit field. This matches libFLAC's
+  existing CPU-backend behavior while retaining the full-stream PCM MD5.
 - Native FLAC STREAMINFO/frame-header contract tests.
 - Opt-in FLAC decoder testbench regression coverage for rejecting non-RF-shaped
   and malformed FLAC inputs cleanly.

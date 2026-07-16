@@ -23,6 +23,11 @@ struct FlacStreamInfo {
     std::array<std::uint8_t, 16> md5 {};
 };
 
+// FLAC STREAMINFO has a 36-bit total-samples field. Zero means unknown and is
+// required when the actual sample count does not fit in that field.
+std::uint64_t flac_streaminfo_total_samples_or_unknown(
+    std::uint64_t actual_total_samples) noexcept;
+
 struct FlacFrameInfo {
     std::uint64_t frame_number = 0;
     unsigned sample_rate = 0;

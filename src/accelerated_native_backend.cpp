@@ -108,7 +108,7 @@ FlacStreamInfo make_streaminfo(
         .sample_rate = sample_rate,
         .channels = 1,
         .bits_per_sample = 16,
-        .total_samples = stats.samples,
+        .total_samples = flac_streaminfo_total_samples_or_unknown(stats.samples),
         .md5 = md5,
     };
 }

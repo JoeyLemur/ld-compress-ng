@@ -1,6 +1,6 @@
 # Handoff Notes
 
-Last updated: 2026-07-09, after the final Metal 1.2.0 performance wrap-up.
+Last updated: 2026-07-16, after the large-capture STREAMINFO boundary fix.
 
 This file is for maintainer/agent continuity. It is intentionally not installed
 by CMake; release-facing installed docs are listed explicitly in
@@ -45,6 +45,22 @@ by CMake; release-facing installed docs are listed explicitly in
   cmake --build build-no-metal --parallel
   ctest --test-dir build-no-metal --output-on-failure
   ```
+
+## Large-Capture STREAMINFO Follow-Up
+
+The shared native FLAC writer now records an unknown (`0`) STREAMINFO
+total-sample count when the actual count exceeds the 36-bit FLAC field. This
+fix covers native-verbatim, native-fixed, OpenCL, Vulkan, and Metal; the
+CPU/libFLAC backend already uses the same convention. Exactly 80 GiB of LDS
+input is the first LDS-aligned count over the field limit. The decoder accepts
+the unknown count and still validates the complete PCM MD5.
+
+Boundary regression coverage and the macOS Metal/no-Metal suites are the local
+validation baseline. A real capture over 80 GiB should still be exercised on a
+GPU-visible Linux host through CPU, native-fixed, OpenCL, and Vulkan. The exact
+commands, scratch-space warning, expected STREAMINFO value, and end-to-end
+verification steps are in `docs/build-and-testing.md` under "Linux
+Large-Capture STREAMINFO Validation".
 
 ## 1.2 Final Metal Performance Checkpoint
 

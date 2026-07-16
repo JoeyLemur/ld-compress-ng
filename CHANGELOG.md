@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Fixed native FLAC compression failing during its final STREAMINFO rewrite for
+  LDS captures at or above 80 GiB. Native-verbatim, native-fixed, OpenCL,
+  Vulkan, and Metal now write the FLAC-defined `0` (unknown) total-sample count
+  when the real count exceeds the 36-bit field, matching the existing
+  CPU/libFLAC behavior. The STREAMINFO PCM MD5 remains populated and end-to-end
+  `verify --source` still checks the complete decoded capture.
+
 ## 1.2.0 - 2026-07-09
 
 1.2.0 adds a macOS Metal accelerator for writing native FLAC `.flac.ldf`

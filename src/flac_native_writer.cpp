@@ -19,6 +19,7 @@ namespace {
 constexpr unsigned kMaxRicePartitionOrder = 8;
 constexpr unsigned kMaxRiceParameter = 14;
 constexpr unsigned kMaxLpcOrder = 12;
+constexpr std::uint64_t kMaxStreamInfoTotalSamples = 0xfffffffffULL;
 constexpr unsigned kWelchLpcCandidateTargetCount = 2;
 constexpr unsigned kMinLpcBlockSize = 256;
 constexpr double kPi = 3.14159265358979323846264338327950288;
@@ -86,9 +87,6 @@ void validate_streaminfo(const FlacStreamInfo& info)
     }
     if (info.bits_per_sample < 4 || info.bits_per_sample > 32) {
         throw std::runtime_error("invalid FLAC STREAMINFO bits per sample");
-    }
-    if (info.total_samples > 0xfffffffffULL) {
-        throw std::runtime_error("invalid FLAC STREAMINFO total sample count");
     }
 }
 
@@ -2589,6 +2587,14 @@ FlacSubframeDecision write_mono_selected_frame_impl(
 
 }  // namespace
 
+std::uint64_t flac_streaminfo_total_samples_or_unknown(
+    std::uint64_t actual_total_samples) noexcept
+{
+    return actual_total_samples <= kMaxStreamInfoTotalSamples
+        ? actual_total_samples
+        : 0;
+}
+
 void write_native_flac_streaminfo(std::ostream& output, const FlacStreamInfo& info)
 {
     validate_streaminfo(info);
@@ -2609,7 +2615,8 @@ void write_native_flac_streaminfo(std::ostream& output, const FlacStreamInfo& in
     streaminfo_bits.write_bits(info.sample_rate, 20);
     streaminfo_bits.write_bits(info.channels - 1U, 3);
     streaminfo_bits.write_bits(info.bits_per_sample - 1U, 5);
-    streaminfo_bits.write_bits(info.total_samples, 36);
+    streaminfo_bits.write_bits(
+        flac_streaminfo_total_samples_or_unknown(info.total_samples), 36);
     streaminfo_bits.align_zero();
     write_bytes(output, streaminfo_bits.bytes());
 

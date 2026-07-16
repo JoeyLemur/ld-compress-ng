@@ -1166,6 +1166,66 @@ void test_native_streaminfo_and_frame_header_contract()
     std::filesystem::remove_all(temp_dir);
 }
 
+void test_native_streaminfo_large_total_samples_are_unknown()
+{
+    constexpr std::uint64_t kMaxEncodedTotalSamples = (1ULL << 36U) - 1U;
+    constexpr std::uint64_t kSamplesAt80GiBLds = 1ULL << 36U;
+
+    require(ldcompress::flac_streaminfo_total_samples_or_unknown(0) == 0,
+        "empty native STREAMINFO sample count was not unknown");
+    require(ldcompress::flac_streaminfo_total_samples_or_unknown(kMaxEncodedTotalSamples) ==
+            kMaxEncodedTotalSamples,
+        "largest encodable native STREAMINFO sample count changed");
+    require(ldcompress::flac_streaminfo_total_samples_or_unknown(kSamplesAt80GiBLds) == 0,
+        "80 GiB LDS sample count was not converted to unknown STREAMINFO length");
+    require(ldcompress::flac_streaminfo_total_samples_or_unknown(UINT64_MAX) == 0,
+        "oversized native STREAMINFO sample count was not converted to unknown");
+
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+        ("ld-compress-ng-native-large-streaminfo-test-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directory(temp_dir);
+
+    const auto flac_path = temp_dir / "large-count.flac";
+    const auto samples = make_samples();
+    std::ofstream output(flac_path, std::ios::binary);
+    if (!output) {
+        throw std::runtime_error("could not create large-count test FLAC file");
+    }
+    const ldcompress::FlacStreamInfo stream_info {
+        .min_block_size = static_cast<unsigned>(samples.size()),
+        .max_block_size = static_cast<unsigned>(samples.size()),
+        .min_frame_size = 0,
+        .max_frame_size = 0,
+        .sample_rate = 40000,
+        .channels = 1,
+        .bits_per_sample = 16,
+        .total_samples = kSamplesAt80GiBLds,
+        .md5 = md5_samples_s16le(samples),
+    };
+    ldcompress::write_native_flac_streaminfo(output, stream_info);
+    const ldcompress::FlacFrameInfo frame_info {
+        .frame_number = 0,
+        .sample_rate = 40000,
+        .bits_per_sample = 16,
+    };
+    ldcompress::write_mono_verbatim_frame(output, samples, frame_info);
+    output.close();
+
+    const auto streaminfo = native_streaminfo(flac_path);
+    require(streaminfo.total_samples == 0,
+        "large-count native STREAMINFO did not serialize an unknown sample count");
+
+    std::ostringstream decoded;
+    const auto decode_stats = ldcompress::decompress_flac_to_lds(flac_path.string(), decoded);
+    require(decode_stats.samples == samples.size(),
+        "unknown-count native FLAC decoded sample count mismatch");
+    require(decoded.str() == pack_expected_lds(samples),
+        "unknown-count native FLAC did not round-trip to expected LDS");
+
+    std::filesystem::remove_all(temp_dir);
+}
+
 std::vector<std::int32_t> make_counted_samples(std::size_t count)
 {
     std::vector<std::int32_t> samples;
@@ -1381,6 +1441,7 @@ int main()
         test_native_lpc_analysis_surface();
         test_native_mean_estimate_profiles();
         test_native_streaminfo_and_frame_header_contract();
+        test_native_streaminfo_large_total_samples_are_unknown();
         test_native_encoder_streaminfo_block_bounds_for_short_tail();
         test_native_streaminfo_md5_mismatch_is_rejected();
         test_native_streaminfo_total_samples_mismatch_is_rejected();

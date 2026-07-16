@@ -203,6 +203,66 @@ also passed on the AMD integrated GPU plus both NVIDIA GPUs. Sandboxed runs may
 expose only llvmpipe; use a GPU-visible context for NVIDIA/AMD runtime
 validation.
 
+### Linux Large-Capture STREAMINFO Validation
+
+FLAC STREAMINFO can represent at most `(2^36)-1` samples. An LDS file stores
+four samples in five bytes, so an 80 GiB LDS capture (`85,899,345,920` bytes)
+is the first valid LDS size whose sample count does not fit. At that boundary
+and above, every backend must write `0` (unknown) in STREAMINFO rather than
+failing at finalization. The PCM MD5 remains the full-stream integrity value.
+
+The boundary is unit-tested without creating an 80 GiB fixture. When a real
+large capture and enough scratch space are available on Linux, use this as the
+hardware/runtime validation breadcrumb. Run one output at a time if scratch
+capacity cannot hold all four compressed files:
+
+```sh
+large_capture=/path/to/capture-over-80-GiB.lds
+large_scratch=/path/to/large/scratch
+test "$(stat -c %s "$large_capture")" -ge 85899345920
+mkdir -p "$large_scratch"
+
+cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DLDCOMPRESS_ENABLE_OPENCL=ON \
+    -DLDCOMPRESS_ENABLE_VULKAN=ON
+cmake --build build --parallel
+build/ld-compress-ng devices
+ctest --test-dir build --output-on-failure
+
+build/ld-compress-ng compress --backend cpu --container flac \
+    "$large_capture" "$large_scratch/cpu.flac.ldf"
+metaflac --show-total-samples "$large_scratch/cpu.flac.ldf"
+build/ld-compress-ng verify --source "$large_capture" \
+    "$large_scratch/cpu.flac.ldf"
+
+build/ld-compress-ng compress --backend native-fixed --threads 8 \
+    "$large_capture" "$large_scratch/native-fixed.flac.ldf"
+metaflac --show-total-samples "$large_scratch/native-fixed.flac.ldf"
+build/ld-compress-ng verify --source "$large_capture" \
+    "$large_scratch/native-fixed.flac.ldf"
+
+build/ld-compress-ng compress --backend opencl --device OPENCL_INDEX --threads 8 \
+    "$large_capture" "$large_scratch/opencl.flac.ldf"
+metaflac --show-total-samples "$large_scratch/opencl.flac.ldf"
+build/ld-compress-ng verify --source "$large_capture" \
+    "$large_scratch/opencl.flac.ldf"
+
+build/ld-compress-ng compress --backend vulkan --device VULKAN_INDEX --threads 8 \
+    "$large_capture" "$large_scratch/vulkan.flac.ldf"
+metaflac --show-total-samples "$large_scratch/vulkan.flac.ldf"
+build/ld-compress-ng verify --source "$large_capture" \
+    "$large_scratch/vulkan.flac.ldf"
+```
+
+Each `metaflac` command must print `0`, and every `verify --source` command must
+succeed. Replace the backend-local device indexes with values printed by
+`ld-compress-ng devices`. The CPU row explicitly selects native FLAC so the
+same STREAMINFO field is directly inspectable; CPU/libFLAC already applies the
+unknown-length convention internally. On macOS, use the same procedure for
+`cpu`, `native-fixed`, and `metal`, replacing the final backend with
+`--backend metal --device METAL_INDEX` and using `stat -f %z` for the size
+check.
+
 CPU-only configure on Linux is the same as macOS:
 
 ```sh
