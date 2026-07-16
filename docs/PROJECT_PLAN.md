@@ -153,6 +153,9 @@ Implemented:
 - The `decompress` CLI writes to a same-directory temporary output and renames
   it into place only after decode and late FLAC validations succeed, so bad
   STREAMINFO MD5/sample-count inputs do not replace an existing `.lds` output.
+- The `compress` CLI uses the same publish-on-success model for every backend,
+  so encoder, input, device, and finalization failures leave an existing output
+  untouched even with `--overwrite` and remove the incomplete temporary file.
 - Native/OpenCL FLAC encoders now keep STREAMINFO min/max block sizes in the
   RFC-required `16..65535` range and exclude short final LDS tails from the
   minimum block-size bound.

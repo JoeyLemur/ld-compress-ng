@@ -1283,7 +1283,25 @@ int run_compress(const Options& options)
         .vulkan_device_index = effective_vulkan_device_index(options),
         .metal_device_index = effective_metal_device_index(options),
     };
-    const auto stats = ldcompress::compress_lds(input, options.output, compress_options);
+    // Backend writers open their path destructively, so give them a disposable
+    // same-directory sibling and publish it only after compression succeeds.
+    const auto temp_output = make_temporary_output_path(options.output);
+    bool renamed = false;
+    ldcompress::ConversionStats stats;
+    try {
+        stats = ldcompress::compress_lds(input, temp_output.string(), compress_options);
+
+        ensure_output_allowed(options.output, options.overwrite);
+        std::filesystem::rename(temp_output, options.output);
+        renamed = true;
+    } catch (...) {
+        if (!renamed) {
+            std::error_code ec;
+            std::filesystem::remove(temp_output, ec);
+        }
+        throw;
+    }
+
     std::cerr << "compressed " << stats.input_bytes << " bytes to "
               << stats.output_bytes << " bytes (" << stats.samples
               << " samples, " << ldcompress::backend_name(options.backend)

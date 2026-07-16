@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Compression now writes to a same-directory temporary file and renames it into
+  place only after the selected backend finishes successfully. Failed CPU,
+  native-verbatim, native-fixed, OpenCL, Vulkan, or Metal compression therefore
+  leaves an existing destination unchanged even with `--overwrite`, and removes
+  the incomplete temporary output.
 - Fixed native FLAC compression failing during its final STREAMINFO rewrite for
   LDS captures at or above 80 GiB. Native-verbatim, native-fixed, OpenCL,
   Vulkan, and Metal now write the FLAC-defined `0` (unknown) total-sample count

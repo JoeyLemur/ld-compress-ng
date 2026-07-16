@@ -96,6 +96,20 @@ void write_file(const std::filesystem::path& path, std::string_view data)
     output.write(data.data(), static_cast<std::streamsize>(data.size()));
 }
 
+bool has_temporary_output_sibling(const std::filesystem::path& output_path)
+{
+    const auto directory = output_path.parent_path().empty()
+        ? std::filesystem::current_path()
+        : output_path.parent_path();
+    const auto prefix = "." + output_path.filename().string() + ".tmp-";
+    for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+        if (entry.path().filename().string().starts_with(prefix)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::string corrupt_native_streaminfo_md5(std::string data)
 {
     require(data.size() > 42, "native FLAC test file is too small to corrupt STREAMINFO MD5");
@@ -189,9 +203,12 @@ void test_cli(const std::filesystem::path& exe)
     const auto default_lds = temp_dir / "default-name.lds";
     const auto alias_lds = temp_dir / "alias-name.lds";
     const auto opencl_default_lds = temp_dir / "opencl-default.lds";
+    const auto truncated_lds = temp_dir / "truncated.lds";
     const auto pcm = temp_dir / "fixture.s16";
     const auto repacked = temp_dir / "fixture.repacked.lds";
     const auto compressed = temp_dir / "fixture.ldf";
+    const auto protected_cpu_compress_output = temp_dir / "protected-cpu.ldf";
+    const auto protected_native_compress_output = temp_dir / "protected-native.flac.ldf";
     const auto cpu_level = temp_dir / "fixture.cpu-level.ldf";
     const auto decompressed = temp_dir / "fixture.out.lds";
     const auto native = temp_dir / "fixture.flac.ldf";
@@ -303,10 +320,16 @@ void test_cli(const std::filesystem::path& exe)
     const auto command_stderr = temp_dir / "command.stderr";
 
     const std::string fixture = make_lds_fixture();
+    std::string truncated_fixture;
+    while (truncated_fixture.size() <= (5U * 8192U)) {
+        truncated_fixture += fixture;
+    }
+    truncated_fixture.push_back('\0');
     write_file(lds, fixture);
     write_file(default_lds, fixture);
     write_file(alias_lds, fixture);
     write_file(opencl_default_lds, fixture);
+    write_file(truncated_lds, truncated_fixture);
     write_file(empty_lds, "");
 
     run_ok(shell_quote(exe) + " --help > " + shell_quote(help_output));
@@ -344,6 +367,35 @@ void test_cli(const std::filesystem::path& exe)
     run_fails(shell_quote(exe) + " compress " + shell_quote(lds) + " " + shell_quote(compressed));
     run_fails(shell_quote(exe) + " compress --overwrite " + shell_quote(lds) + " " + shell_quote(lds));
     require(read_file(lds) == fixture, "same-path compress guard changed LDS bytes");
+
+    write_file(protected_cpu_compress_output, "keep this CPU output");
+    run_fails(shell_quote(exe) + " compress --backend cpu --overwrite " +
+        shell_quote(truncated_lds) + " " + shell_quote(protected_cpu_compress_output));
+    require(read_file(protected_cpu_compress_output) == "keep this CPU output",
+        "failed CPU compression replaced existing output");
+    require(!has_temporary_output_sibling(protected_cpu_compress_output),
+        "failed CPU compression left a temporary output behind");
+    run_ok(shell_quote(exe) + " compress --backend cpu --overwrite " + shell_quote(lds) +
+        " " + shell_quote(protected_cpu_compress_output));
+    run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " +
+        shell_quote(protected_cpu_compress_output));
+    require(!has_temporary_output_sibling(protected_cpu_compress_output),
+        "successful CPU compression left a temporary output behind");
+
+    write_file(protected_native_compress_output, "keep this native output");
+    run_fails(shell_quote(exe) + " compress --backend native-fixed --overwrite " +
+        shell_quote(truncated_lds) + " " + shell_quote(protected_native_compress_output));
+    require(read_file(protected_native_compress_output) == "keep this native output",
+        "failed native compression replaced existing output");
+    require(!has_temporary_output_sibling(protected_native_compress_output),
+        "failed native compression left a temporary output behind");
+    run_ok(shell_quote(exe) + " compress --backend native-fixed --overwrite " +
+        shell_quote(lds) + " " + shell_quote(protected_native_compress_output));
+    run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " +
+        shell_quote(protected_native_compress_output));
+    require(!has_temporary_output_sibling(protected_native_compress_output),
+        "successful native compression left a temporary output behind");
+
     run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(compressed));
     run_ok(shell_quote(exe) + " decompress " + shell_quote(compressed) + " " + shell_quote(decompressed));
     run_fails(shell_quote(exe) + " decompress --overwrite " + shell_quote(compressed) + " " + shell_quote(compressed));
@@ -486,6 +538,14 @@ void test_cli(const std::filesystem::path& exe)
         run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(opencl_output));
         run_ok(shell_quote(exe) + " decompress " + shell_quote(opencl_output) + " " + shell_quote(opencl_output_out));
         require(read_file(opencl_output_out) == fixture, "OpenCL FLAC round trip changed LDS bytes");
+        const auto preserved_opencl_output = read_file(opencl_output);
+        run_fails(shell_quote(exe) + " compress --backend opencl --overwrite" +
+            opencl_device_arg + " " + shell_quote(truncated_lds) + " " +
+            shell_quote(opencl_output));
+        require(read_file(opencl_output) == preserved_opencl_output,
+            "failed OpenCL compression replaced existing output");
+        require(!has_temporary_output_sibling(opencl_output),
+            "failed OpenCL compression left a temporary output behind");
         run_ok(shell_quote(exe) + " compress --backend opencl --stats" + opencl_device_arg + " " + shell_quote(lds) + " " + shell_quote(opencl_stats));
         run_ok(shell_quote(exe) + " decompress " + shell_quote(opencl_stats) + " " + shell_quote(opencl_stats_out));
         require(read_file(opencl_stats_out) == fixture, "OpenCL --stats round trip changed LDS bytes");
@@ -529,6 +589,14 @@ void test_cli(const std::filesystem::path& exe)
         run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(vulkan_output));
         run_ok(shell_quote(exe) + " decompress " + shell_quote(vulkan_output) + " " + shell_quote(vulkan_output_out));
         require(read_file(vulkan_output_out) == fixture, "Vulkan FLAC round trip changed LDS bytes");
+        const auto preserved_vulkan_output = read_file(vulkan_output);
+        run_fails(shell_quote(exe) + " compress --backend vulkan --overwrite --lpc-order 0" +
+            vulkan_device_arg + " " + shell_quote(truncated_lds) + " " +
+            shell_quote(vulkan_output));
+        require(read_file(vulkan_output) == preserved_vulkan_output,
+            "failed Vulkan compression replaced existing output");
+        require(!has_temporary_output_sibling(vulkan_output),
+            "failed Vulkan compression left a temporary output behind");
         run_ok(shell_quote(exe) + " compress --backend vulkan --lpc-order 0" + vulkan_device_arg + " " + shell_quote(lds) + " " + shell_quote(vulkan_fixed_only));
         run_ok(shell_quote(exe) + " decompress " + shell_quote(vulkan_fixed_only) + " " + shell_quote(vulkan_fixed_only_out));
         require(read_file(vulkan_fixed_only_out) == fixture,
@@ -583,6 +651,14 @@ void test_cli(const std::filesystem::path& exe)
         run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(metal_output));
         run_ok(shell_quote(exe) + " decompress " + shell_quote(metal_output) + " " + shell_quote(metal_output_out));
         require(read_file(metal_output_out) == fixture, "Metal FLAC round trip changed LDS bytes");
+        const auto preserved_metal_output = read_file(metal_output);
+        run_fails(shell_quote(exe) + " compress --backend metal --overwrite" +
+            metal_device_arg + " " + shell_quote(truncated_lds) + " " +
+            shell_quote(metal_output));
+        require(read_file(metal_output) == preserved_metal_output,
+            "failed Metal compression replaced existing output");
+        require(!has_temporary_output_sibling(metal_output),
+            "failed Metal compression left a temporary output behind");
         run_ok(shell_quote(exe) + " compress --backend metal --stats" + metal_device_arg + " " + shell_quote(lds) + " " + shell_quote(metal_stats));
         run_ok(shell_quote(exe) + " decompress " + shell_quote(metal_stats) + " " + shell_quote(metal_stats_out));
         require(read_file(metal_stats_out) == fixture, "Metal --stats round trip changed LDS bytes");

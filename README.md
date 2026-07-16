@@ -148,6 +148,12 @@ build/ld-compress-ng compress --overwrite capture.lds capture.ldf
 build/ld-compress-ng decompress --overwrite capture.ldf capture.lds
 ```
 
+Compression and decompression publish their output transactionally: each writes
+to a temporary file beside the destination and renames it into place only after
+the operation finishes successfully. A failed operation leaves an existing
+destination unchanged even when `--overwrite` was requested. This applies to
+every compression backend.
+
 ## Backends
 
 | Backend | Output | Notes |

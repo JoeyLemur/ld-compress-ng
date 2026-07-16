@@ -1,6 +1,7 @@
 # Handoff Notes
 
-Last updated: 2026-07-16, after the large-capture STREAMINFO boundary fix.
+Last updated: 2026-07-16, after the large-capture and transactional-output P1
+fixes.
 
 This file is for maintainer/agent continuity. It is intentionally not installed
 by CMake; release-facing installed docs are listed explicitly in
@@ -11,6 +12,12 @@ by CMake; release-facing installed docs are listed explicitly in
 - Active branch: `main`.
 - Project version is `1.2.0` in `CMakeLists.txt`; `ld-compress-ng --version`
   prints `ld-compress-ng 1.2.0`.
+- All `compress` backends now write through a same-directory temporary path and
+  replace the requested destination only after successful finalization. The CLI
+  regression forces partial CPU and native output before failure, then checks
+  destination preservation, temporary cleanup, and successful replacement. It
+  repeats the failure-preservation check for each available accelerator; the
+  Vulkan branch will run automatically on a Vulkan-capable Linux test host.
 - 1.2.0 adds the macOS-only `metal` native FLAC accelerator backend using Apple
   Command Line Tools, `Metal.framework`, `Foundation.framework`, and runtime
   Metal source compilation. There is no Xcode project and no required offline
