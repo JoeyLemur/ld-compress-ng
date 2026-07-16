@@ -349,6 +349,17 @@ if(BUILD_TESTING)
 
     add_test(NAME flac_native_writer COMMAND test_flac_native_writer)
 
+    add_executable(test_accelerated_native_backend
+        tests/test_accelerated_native_backend.cpp
+    )
+
+    target_link_libraries(test_accelerated_native_backend
+        PRIVATE
+            ldcompress_core
+    )
+
+    add_test(NAME accelerated_native_backend COMMAND test_accelerated_native_backend)
+
     add_executable(test_opencl_analysis
         tests/test_opencl_analysis.cpp
     )

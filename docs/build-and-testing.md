@@ -263,6 +263,45 @@ unknown-length convention internally. On macOS, use the same procedure for
 `--backend metal --device METAL_INDEX` and using `stat -f %z` for the size
 check.
 
+### Linux Accelerated Writer Lifetime Validation
+
+OpenCL, Vulkan, and Metal all queue selected-frame writer jobs through the same
+accelerated host path. The `accelerated_native_backend` regression makes one of
+two writer workers fail while the other is still reading the analyzed sample
+batch. It is device-independent, so first replay the lifetime check under
+AddressSanitizer and UndefinedBehaviorSanitizer on Linux:
+
+```sh
+cmake -S . -B build-sanitize -DCMAKE_BUILD_TYPE=Debug \
+    -DLDCOMPRESS_ENABLE_OPENCL=OFF \
+    -DLDCOMPRESS_ENABLE_VULKAN=OFF \
+    -DLDCOMPRESS_ENABLE_METAL=OFF \
+    '-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer' \
+    '-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined'
+cmake --build build-sanitize --parallel \
+    --target test_accelerated_native_backend
+ctest --test-dir build-sanitize -R '^accelerated_native_backend$' \
+    --output-on-failure
+```
+
+Then use a GPU-visible Linux shell for the normal OpenCL/Vulkan build and
+hardware lanes. Replace the device indexes with values printed by `devices`:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DLDCOMPRESS_ENABLE_OPENCL=ON \
+    -DLDCOMPRESS_ENABLE_VULKAN=ON
+cmake --build build --parallel
+build/ld-compress-ng devices
+ctest --test-dir build -R '^accelerated_native_backend$' --output-on-failure
+ctest --test-dir build -L 'opencl|vulkan' --output-on-failure
+build/test_vulkan_analysis --device VULKAN_INDEX
+```
+
+The regression must exit successfully with no sanitizer report. The labeled
+suites must run against real devices rather than skip or select llvmpipe before
+counting the Linux accelerator validation complete.
+
 CPU-only configure on Linux is the same as macOS:
 
 ```sh

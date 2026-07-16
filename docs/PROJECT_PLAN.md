@@ -143,6 +143,10 @@ Implemented:
   full default CTest suite passed.
 - Frame-level threading for native FLAC encoding with ordered output and bounded
   in-flight work.
+- Threaded accelerated selected-frame jobs now retain shared ownership of their
+  analyzed sample batch. A worker error can unwind the caller without freeing
+  samples still being read by a sibling writer; a device-independent
+  two-worker regression exercises that lifetime under sanitizers.
 - Native decision stats for subframe type, fixed/LPC predictor order, Rice
   partition order, and wasted-bit counts.
 - Native FLAC decode hardening for STREAMINFO presence, RF-shaped 40 kHz mono

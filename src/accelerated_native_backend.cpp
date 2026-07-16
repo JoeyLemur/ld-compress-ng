@@ -182,7 +182,9 @@ struct SelectedEncodedFrame {
 struct SelectedFrameJob {
     std::uint64_t frame_number = 0;
     FlacFrameInfo frame_info;
-    std::span<const std::int32_t> samples;
+    std::shared_ptr<const std::vector<std::int32_t>> sample_owner;
+    std::size_t sample_offset = 0;
+    std::size_t sample_count = 0;
     FlacSelectedSubframe selected;
     FlacSubframeDecision decision;
     bool collect_timings = false;
@@ -241,6 +243,14 @@ FlacFrameInfo make_frame_info(
 
 SelectedEncodedFrame encode_selected_frame(SelectedFrameJob job)
 {
+    if (job.sample_owner == nullptr ||
+        job.sample_offset > job.sample_owner->size() ||
+        job.sample_count > job.sample_owner->size() - job.sample_offset) {
+        throw std::runtime_error("selected native FLAC frame sample range is invalid");
+    }
+    const std::span<const std::int32_t> samples(
+        job.sample_owner->data() + job.sample_offset,
+        job.sample_count);
     const auto expected_bytes =
         static_cast<std::size_t>((job.decision.estimated_bits + 7U) / 8U) + 24U;
     FrameByteStreambuf output_buffer(expected_bytes);
@@ -248,7 +258,7 @@ SelectedEncodedFrame encode_selected_frame(SelectedFrameJob job)
     FlacSelectedFrameWriteTimings timings;
     const auto decision = write_mono_selected_frame_with_decision(
         output,
-        job.samples,
+        samples,
         job.frame_info,
         job.selected,
         job.decision,
@@ -421,7 +431,7 @@ AnalyzedSelectedBatch analyze_accelerated_selected_batch(
 
 void write_accelerated_analyzed_batch(
     std::ostream& output,
-    const AnalyzedSelectedBatch& batch,
+    AnalyzedSelectedBatch batch,
     const AcceleratedNativeCompressionOptions& options,
     SelectedFrameWriterPool* frame_pool)
 {
@@ -442,18 +452,29 @@ void write_accelerated_analyzed_batch(
             " analyzed frame count did not match input batch");
     }
 
+    std::shared_ptr<const std::vector<std::int32_t>> threaded_sample_owner;
+    if (frame_pool != nullptr) {
+        threaded_sample_owner =
+            std::make_shared<const std::vector<std::int32_t>>(std::move(batch.samples));
+    }
+    const auto& samples = frame_pool != nullptr
+        ? *threaded_sample_owner
+        : batch.samples;
+
     const auto write_started = Clock::now();
     for (std::size_t frame = 0; frame < frame_count; ++frame) {
         const auto offset = frame * static_cast<std::size_t>(options.frame_samples);
         const std::span<const std::int32_t> frame_samples(
-            batch.samples.data() + offset,
+            samples.data() + offset,
             static_cast<std::size_t>(options.frame_samples));
         auto frame_info = make_frame_info(batch.first_frame_number + frame, options);
         if (frame_pool != nullptr) {
             frame_pool->submit(SelectedFrameJob {
                 .frame_number = batch.first_frame_number + frame,
                 .frame_info = frame_info,
-                .samples = frame_samples,
+                .sample_owner = threaded_sample_owner,
+                .sample_offset = offset,
+                .sample_count = static_cast<std::size_t>(options.frame_samples),
                 .selected = batch.analysis.selected_subframes[frame],
                 .decision = batch.analysis.decisions[frame],
                 .collect_timings = options.native_stats != nullptr,
@@ -558,7 +579,7 @@ ConversionStats compress_lds_to_accelerated_native_flac(
         }
         auto analyzed = pending_batch.get();
         write_accelerated_analyzed_batch(
-            output, analyzed, options, frame_pool.get());
+            output, std::move(analyzed), options, frame_pool.get());
     };
     const auto flush_batch = [&] {
         if (batch_samples.empty()) {
@@ -573,7 +594,7 @@ ConversionStats compress_lds_to_accelerated_native_flac(
             auto analyzed = pending_batch.get();
             pending_batch = launch_batch_analysis(std::move(full_batch), batch_first_frame);
             write_accelerated_analyzed_batch(
-                output, analyzed, options, frame_pool.get());
+                output, std::move(analyzed), options, frame_pool.get());
             return;
         }
         pending_batch = launch_batch_analysis(std::move(full_batch), batch_first_frame);

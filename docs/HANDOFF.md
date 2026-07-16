@@ -1,7 +1,7 @@
 # Handoff Notes
 
 Last updated: 2026-07-16, after the large-capture and transactional-output P1
-fixes.
+fixes and the accelerated-writer lifetime P2 fix.
 
 This file is for maintainer/agent continuity. It is intentionally not installed
 by CMake; release-facing installed docs are listed explicitly in
@@ -18,6 +18,11 @@ by CMake; release-facing installed docs are listed explicitly in
   destination preservation, temporary cleanup, and successful replacement. It
   repeats the failure-preservation check for each available accelerator; the
   Vulkan branch will run automatically on a Vulkan-capable Linux test host.
+- The shared OpenCL/Vulkan/Metal selected-frame writer now gives each queued
+  job shared ownership of its analyzed sample batch. If one worker fails, a
+  sibling can finish unwinding without reading freed batch storage. The
+  `accelerated_native_backend` regression forces this two-worker error path and
+  passes under AppleClang AddressSanitizer/UndefinedBehaviorSanitizer.
 - 1.2.0 adds the macOS-only `metal` native FLAC accelerator backend using Apple
   Command Line Tools, `Metal.framework`, `Foundation.framework`, and runtime
   Metal source compilation. There is no Xcode project and no required offline
@@ -68,6 +73,15 @@ GPU-visible Linux host through CPU, native-fixed, OpenCL, and Vulkan. The exact
 commands, scratch-space warning, expected STREAMINFO value, and end-to-end
 verification steps are in `docs/build-and-testing.md` under "Linux
 Large-Capture STREAMINFO Validation".
+
+## Accelerated Writer Lifetime Follow-Up
+
+The macOS Metal and no-Metal suites pass the new device-independent regression.
+Linux should replay it under AddressSanitizer/UndefinedBehaviorSanitizer, then
+run the GPU-visible OpenCL and Vulkan lanes so the shared host path remains
+covered with both Linux accelerators. Exact configure and test commands are in
+`docs/build-and-testing.md` under "Linux Accelerated Writer Lifetime
+Validation".
 
 ## 1.2 Final Metal Performance Checkpoint
 

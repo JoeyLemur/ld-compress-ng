@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fixed a use-after-free when one threaded selected-frame writer failed while
+  another writer was still reading the same analyzed sample batch. OpenCL,
+  Vulkan, and Metal writer jobs now retain shared ownership of the batch until
+  every in-flight job releases it, including error unwinding. A two-worker
+  sanitizer regression covers the failure path without requiring a GPU.
 - Compression now writes to a same-directory temporary file and renames it into
   place only after the selected backend finishes successfully. Failed CPU,
   native-verbatim, native-fixed, OpenCL, Vulkan, or Metal compression therefore
