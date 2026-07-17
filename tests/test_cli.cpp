@@ -1,3 +1,4 @@
+#include "compressor.h"
 #include "lds_codec.h"
 #include "metal_devices.h"
 #include "opencl_devices.h"
@@ -315,7 +316,12 @@ std::optional<std::size_t> first_available_vulkan_analysis_device_index()
     }
 
     for (const auto& device : ldcompress::list_vulkan_devices()) {
-        if (device.available && device.shader_int64) {
+        if (device.available && device.shader_int64 && device.device_type == "discrete-gpu") {
+            return device.index;
+        }
+    }
+    for (const auto& device : ldcompress::list_vulkan_devices()) {
+        if (device.available && device.shader_int64 && device.device_type != "cpu") {
             return device.index;
         }
     }
@@ -343,6 +349,25 @@ std::optional<std::size_t> first_available_metal_device_index()
     return std::nullopt;
 }
 
+ldcompress::CompressionBackend automatic_backend()
+{
+    if (first_available_metal_device_index().has_value()) {
+        return ldcompress::CompressionBackend::MetalNativeFlac;
+    }
+    if (first_available_vulkan_analysis_device_index().has_value()) {
+        return ldcompress::CompressionBackend::VulkanNativeFlac;
+    }
+    if (first_available_opencl_device_index().has_value()) {
+        return ldcompress::CompressionBackend::OpenClNativeFlac;
+    }
+    return ldcompress::CompressionBackend::CpuLibFlac;
+}
+
+bool uses_native_flac_container(ldcompress::CompressionBackend backend)
+{
+    return backend != ldcompress::CompressionBackend::CpuLibFlac;
+}
+
 void test_cli(const std::filesystem::path& exe)
 {
     const auto temp_dir = std::filesystem::temp_directory_path() /
@@ -351,13 +376,15 @@ void test_cli(const std::filesystem::path& exe)
     std::filesystem::create_directory(temp_dir);
 
     const auto lds = temp_dir / "fixture.lds";
-    const auto default_lds = temp_dir / "default-name.lds";
+    const auto default_lds = temp_dir / "auto-default.lds";
+    const auto native_default_lds = temp_dir / "default-name.lds";
     const auto alias_lds = temp_dir / "alias-name.lds";
     const auto opencl_default_lds = temp_dir / "opencl-default.lds";
     const auto truncated_lds = temp_dir / "truncated.lds";
     const auto pcm = temp_dir / "fixture.s16";
     const auto repacked = temp_dir / "fixture.repacked.lds";
     const auto compressed = temp_dir / "fixture.ldf";
+    const auto explicit_auto = temp_dir / "fixture.explicit-auto.ldf";
     const auto protected_cpu_compress_output = temp_dir / "protected-cpu.ldf";
     const auto protected_native_compress_output = temp_dir / "protected-native.flac.ldf";
     const auto cpu_level = temp_dir / "fixture.cpu-level.ldf";
@@ -482,6 +509,7 @@ void test_cli(const std::filesystem::path& exe)
     truncated_fixture.push_back('\0');
     write_file(lds, fixture);
     write_file(default_lds, fixture);
+    write_file(native_default_lds, fixture);
     write_file(alias_lds, fixture);
     write_file(opencl_default_lds, fixture);
     write_file(truncated_lds, truncated_fixture);
@@ -496,6 +524,11 @@ void test_cli(const std::filesystem::path& exe)
         "help output did not include examples");
     require(help_text.find("Compression backends:") != std::string::npos,
         "help output did not describe backends");
+    require(help_text.find("Default backend is auto: Metal, Vulkan,") != std::string::npos,
+        "help output did not describe automatic backend selection");
+    require(help_text.find("auto|cpu|native-verbatim|native-fixed|opencl|vulkan|metal") !=
+            std::string::npos,
+        "help output did not list the auto backend");
     require(help_text.find("Reference/debug scalar native FLAC backend") != std::string::npos,
         "help output did not label native-fixed as reference/debug");
     require(help_text.find("vulkan") != std::string::npos,
@@ -521,7 +554,37 @@ void test_cli(const std::filesystem::path& exe)
     run_fails(shell_quote(exe) + " convert --unpack --overwrite " + shell_quote(lds) + " " + shell_quote(lds));
     require(read_file(lds) == fixture, "same-path convert guard changed LDS bytes");
 
-    run_ok(shell_quote(exe) + " compress " + shell_quote(lds) + " " + shell_quote(compressed));
+    const auto selected_automatic_backend = automatic_backend();
+    const auto automatic_container_magic = uses_native_flac_container(selected_automatic_backend)
+        ? "fLaC"
+        : "OggS";
+    const auto automatic_compress_stderr = run_ok_with_stderr(
+        shell_quote(exe) + " compress " + shell_quote(lds) + " " + shell_quote(compressed),
+        command_stderr);
+    require(automatic_compress_stderr.find(
+                std::string(" ") + ldcompress::backend_name(selected_automatic_backend) +
+                " backend") != std::string::npos,
+        "implicit auto backend did not follow the documented priority");
+    require(read_file(compressed).substr(0, 4) == automatic_container_magic,
+        "implicit auto backend selected the wrong FLAC container");
+    const auto explicit_auto_stderr = run_ok_with_stderr(
+        shell_quote(exe) + " compress --backend cpu --backend auto " + shell_quote(lds) +
+            " " + shell_quote(explicit_auto),
+        command_stderr);
+    require(explicit_auto_stderr.find(
+                std::string(" ") + ldcompress::backend_name(selected_automatic_backend) +
+                " backend") != std::string::npos,
+        "explicit auto backend did not override the preceding backend");
+    require(read_file(explicit_auto).substr(0, 4) == automatic_container_magic,
+        "explicit auto backend selected the wrong FLAC container");
+    const auto automatic_default_output = temp_dir /
+        (uses_native_flac_container(selected_automatic_backend)
+            ? "auto-default.flac.ldf"
+            : "auto-default.ldf");
+    run_ok("cd " + shell_quote(temp_dir) + " && " + shell_quote(exe) +
+        " compress auto-default.lds");
+    require(std::filesystem::exists(automatic_default_output),
+        "automatic backend chose the wrong default output suffix");
     run_fails(shell_quote(exe) + " compress " + shell_quote(lds) + " " + shell_quote(compressed));
     run_fails(shell_quote(exe) + " compress --overwrite " + shell_quote(lds) + " " + shell_quote(lds));
     require(read_file(lds) == fixture, "same-path compress guard changed LDS bytes");
@@ -570,7 +633,7 @@ void test_cli(const std::filesystem::path& exe)
         "decompress --progress did not report initial progress");
     require(progress_text.find("100%") != std::string::npos,
         "decompress --progress did not report completion");
-    run_ok(shell_quote(exe) + " compress --level 8 " + shell_quote(lds) + " " + shell_quote(cpu_level));
+    run_ok(shell_quote(exe) + " compress --backend cpu --level 8 " + shell_quote(lds) + " " + shell_quote(cpu_level));
     require(read_file(cpu_level).substr(0, 4) == "OggS", "CPU --level output was not Ogg FLAC");
 
     run_ok(shell_quote(exe) + " compress --backend cpu --container flac --overwrite " + shell_quote(lds) + " " + shell_quote(native));
@@ -663,21 +726,21 @@ void test_cli(const std::filesystem::path& exe)
     require(!std::filesystem::exists(bad_native_rice_partition_order_large), "oversized native Rice partition order wrote output");
     run_fails(shell_quote(exe) + " compress --backend native-fixed --level 8 " + shell_quote(lds) + " " + shell_quote(bad_native_fixed_level));
     require(!std::filesystem::exists(bad_native_fixed_level), "native-fixed --level rejection wrote output");
-    run_fails(shell_quote(exe) + " compress --stats " + shell_quote(lds) + " " + shell_quote(bad_cpu_stats));
+    run_fails(shell_quote(exe) + " compress --backend cpu --stats " + shell_quote(lds) + " " + shell_quote(bad_cpu_stats));
     require(!std::filesystem::exists(bad_cpu_stats), "CPU --stats rejection wrote output");
-    run_fails(shell_quote(exe) + " compress --frame-samples 2048 " + shell_quote(lds) + " " + shell_quote(bad_cpu_frame_samples));
+    run_fails(shell_quote(exe) + " compress --backend cpu --frame-samples 2048 " + shell_quote(lds) + " " + shell_quote(bad_cpu_frame_samples));
     require(!std::filesystem::exists(bad_cpu_frame_samples), "CPU --frame-samples rejection wrote output");
-    run_fails(shell_quote(exe) + " compress --frame-samples 4608 " + shell_quote(lds) + " " + shell_quote(bad_cpu_frame_samples_default));
+    run_fails(shell_quote(exe) + " compress --backend cpu --frame-samples 4608 " + shell_quote(lds) + " " + shell_quote(bad_cpu_frame_samples_default));
     require(!std::filesystem::exists(bad_cpu_frame_samples_default), "CPU default --frame-samples rejection wrote output");
-    run_fails(shell_quote(exe) + " compress --lpc-order 12 " + shell_quote(lds) + " " + shell_quote(bad_cpu_lpc_order_default));
+    run_fails(shell_quote(exe) + " compress --backend cpu --lpc-order 12 " + shell_quote(lds) + " " + shell_quote(bad_cpu_lpc_order_default));
     require(!std::filesystem::exists(bad_cpu_lpc_order_default), "CPU default --lpc-order rejection wrote output");
-    run_fails(shell_quote(exe) + " compress --lpc-precision 10 " + shell_quote(lds) + " " + shell_quote(bad_cpu_lpc_precision));
+    run_fails(shell_quote(exe) + " compress --backend cpu --lpc-precision 10 " + shell_quote(lds) + " " + shell_quote(bad_cpu_lpc_precision));
     require(!std::filesystem::exists(bad_cpu_lpc_precision), "CPU --lpc-precision rejection wrote output");
-    run_fails(shell_quote(exe) + " compress --rice-partition-order 4 " + shell_quote(lds) + " " + shell_quote(bad_cpu_rice_partition_order));
+    run_fails(shell_quote(exe) + " compress --backend cpu --rice-partition-order 4 " + shell_quote(lds) + " " + shell_quote(bad_cpu_rice_partition_order));
     require(!std::filesystem::exists(bad_cpu_rice_partition_order), "CPU --rice-partition-order rejection wrote output");
-    run_fails(shell_quote(exe) + " compress --threads 2 " + shell_quote(lds) + " " + shell_quote(bad_cpu_threads));
+    run_fails(shell_quote(exe) + " compress --backend cpu --threads 2 " + shell_quote(lds) + " " + shell_quote(bad_cpu_threads));
     require(!std::filesystem::exists(bad_cpu_threads), "CPU --threads rejection wrote output");
-    run_fails(shell_quote(exe) + " compress --device 0 " + shell_quote(lds) + " " + shell_quote(bad_cpu_device));
+    run_fails(shell_quote(exe) + " compress --backend cpu --device 0 " + shell_quote(lds) + " " + shell_quote(bad_cpu_device));
     require(!std::filesystem::exists(bad_cpu_device), "CPU --device rejection wrote output");
     run_fails(shell_quote(exe) + " compress --backend native-fixed --device 0 " + shell_quote(lds) + " " + shell_quote(bad_native_device));
     require(!std::filesystem::exists(bad_native_device), "native --device rejection wrote output");
