@@ -177,6 +177,7 @@ struct Options {
     bool native_max_lpc_order_explicit = false;
     bool native_lpc_precision_explicit = false;
     bool native_max_rice_partition_order_explicit = false;
+    bool backend_auto = true;
     bool device_index_explicit = false;
     bool opencl_device_index_explicit = false;
     bool vulkan_device_index_explicit = false;
@@ -224,8 +225,9 @@ struct Options {
         << "  ld-compress-ng devices\n"
         << "  ld-compress-ng compress --backend opencl --device INDEX capture.lds\n\n"
         << "Commands:\n"
-        << "  compress      Compress packed LDS input. Default output is INPUT.ldf for cpu\n"
-        << "                and INPUT.flac.ldf for native-fixed/opencl/vulkan/metal/native-verbatim.\n"
+        << "  compress      Compress packed LDS input. Default backend is auto: Metal, Vulkan,\n"
+        << "                OpenCL, then CPU. Output is INPUT.ldf for cpu and INPUT.flac.ldf\n"
+        << "                for native-fixed/opencl/vulkan/metal/native-verbatim.\n"
         << "  decompress    Decode Ogg/native FLAC RF input back to packed LDS output.\n"
         << "  verify        Print compressed and decoded MD5; compare with --source when set.\n"
         << "  convert       Convert between packed LDS and signed 16-bit little-endian PCM.\n"
@@ -239,7 +241,7 @@ struct Options {
         << "  native-fixed     Reference/debug scalar native FLAC backend for analysis parity.\n"
         << "  native-verbatim  Reference/debug native FLAC backend using verbatim frames.\n\n"
         << "Compress options:\n"
-        << "  --backend cpu|native-verbatim|native-fixed|opencl|vulkan|metal\n"
+        << "  --backend auto|cpu|native-verbatim|native-fixed|opencl|vulkan|metal\n"
         << "  --level N                    CPU/libFLAC level, 1..12; default 11.\n"
         << "  --threads N                  Native FLAC frame writer threads; default 1.\n"
         << "  --frame-samples N            Native FLAC block size, 16..4608; default 4608.\n"
@@ -394,6 +396,20 @@ std::optional<std::size_t> available_metal_device_index(
     }
 
     return std::nullopt;
+}
+
+ldcompress::CompressionBackend select_automatic_backend(const Options& options)
+{
+    if (available_metal_device_index(effective_metal_device_index(options)).has_value()) {
+        return ldcompress::CompressionBackend::MetalNativeFlac;
+    }
+    if (available_vulkan_device_index(effective_vulkan_device_index(options)).has_value()) {
+        return ldcompress::CompressionBackend::VulkanNativeFlac;
+    }
+    if (available_opencl_device_index(effective_opencl_device_index(options)).has_value()) {
+        return ldcompress::CompressionBackend::OpenClNativeFlac;
+    }
+    return ldcompress::CompressionBackend::CpuLibFlac;
 }
 
 ldcompress::FlacContainer default_container_for_backend(ldcompress::CompressionBackend backend)
@@ -718,17 +734,25 @@ Options parse_compress(int argc, char** argv)
                 throw std::runtime_error("--backend requires a value");
             }
             const std::string_view backend(argv[i]);
-            if (backend == "cpu" || backend == "libflac") {
+            if (backend == "auto") {
+                options.backend_auto = true;
+            } else if (backend == "cpu" || backend == "libflac") {
+                options.backend_auto = false;
                 options.backend = ldcompress::CompressionBackend::CpuLibFlac;
             } else if (backend == "native-verbatim" || backend == "verbatim") {
+                options.backend_auto = false;
                 options.backend = ldcompress::CompressionBackend::NativeVerbatimFlac;
             } else if (backend == "native-fixed" || backend == "fixed-rice") {
+                options.backend_auto = false;
                 options.backend = ldcompress::CompressionBackend::NativeFixedFlac;
             } else if (backend == "opencl" || backend == "gpu") {
+                options.backend_auto = false;
                 options.backend = ldcompress::CompressionBackend::OpenClNativeFlac;
             } else if (backend == "vulkan") {
+                options.backend_auto = false;
                 options.backend = ldcompress::CompressionBackend::VulkanNativeFlac;
             } else if (backend == "metal") {
+                options.backend_auto = false;
                 options.backend = ldcompress::CompressionBackend::MetalNativeFlac;
             } else {
                 throw std::runtime_error("unknown backend: " + std::string(backend));
@@ -820,6 +844,10 @@ Options parse_compress(int argc, char** argv)
 
     if (positional.empty() || positional.size() > 2) {
         throw std::runtime_error("compress expects INPUT and optional OUTPUT");
+    }
+
+    if (options.backend_auto) {
+        options.backend = select_automatic_backend(options);
     }
 
     if (!options.container_explicit) {

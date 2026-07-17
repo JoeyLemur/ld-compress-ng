@@ -471,13 +471,17 @@ performance tests on mixed-GPU hosts, use an explicit discrete GPU index from
 smoke testing but should not be used for NVIDIA performance numbers.
 For `compress`, `--device INDEX` is backend-local shorthand for
 `--opencl-device INDEX`, `--vulkan-device INDEX`, or `--metal-device INDEX`
-after `--backend` selects OpenCL, Vulkan, or Metal. For benchmark runs that
-include multiple accelerators, use the backend-specific device flags; the bare
-`--device` form is rejected because it is ambiguous. Optional accelerator `bench` rows are
-omitted when no suitable device is visible, while direct `compress --backend
-vulkan --device INDEX` fails if the selected device is unavailable or lacks
-backend-required features such as `shaderInt64`, and `compress --backend metal
---device INDEX` fails if the selected Metal device is unavailable.
+after `--backend` selects OpenCL, Vulkan, or Metal. With the default `auto`
+policy, the index is checked at each candidate backend in priority order.
+Backend-specific device flags are valid only when the resolved backend matches;
+use the matching explicit backend to pin one. For benchmark runs that include
+multiple accelerators, use the backend-specific device flags; the bare
+`--device` form is rejected because it is ambiguous. Optional accelerator
+`bench` rows are omitted when no suitable device is visible, while direct
+`compress --backend vulkan --device INDEX` fails if the selected device is
+unavailable or lacks backend-required features such as `shaderInt64`, and
+`compress --backend metal --device INDEX` fails if the selected Metal device is
+unavailable.
 Use `--dry-run` to inspect the generated commands, and `--strict-optional` to
 fail instead of skipping when a requested local fixture directory is missing.
 

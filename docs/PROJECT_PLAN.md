@@ -479,6 +479,19 @@ Metal size/speed tuning checkpoint:
   `compress --backend metal` on `issue176.lds`, `verify --source` against the
   original LDS, and `git diff --check`.
 
+## Implementation Checkpoint - 2026-07-16, automatic backend policy
+
+`compress` now defaults to a deterministic `auto` policy. It selects Metal,
+then a usable non-CPU Vulkan device with `shaderInt64`, then OpenCL, and falls
+back to CPU/libFLAC. Explicit `--backend` values remain authoritative, and
+`--backend auto` is available when a later argument needs to restore the default
+policy. Backend selection happens before implicit container and output naming:
+accelerator selection writes native `.flac.ldf`, while CPU fallback retains Ogg
+`.ldf`. Device-less or accelerator-disabled builds therefore preserve the
+portable CPU behavior without a failed accelerator attempt. An encoder failure
+after selection remains an error rather than silently rerunning the capture on
+CPU.
+
 Current default native tuning values:
 
 - Frame samples: `4608`.
@@ -969,10 +982,10 @@ Immediate engineering focus:
 - Add targeted tests from `reference/flac-test-files/` only when they are useful
   for this compressor's native FLAC surface. Done for the first rejection-focused
   opt-in suite; expand only as native FLAC compatibility work needs it.
-- Keep CPU/libFLAC Ogg `.ldf` as the default and recommended CPU compression
-  path for maximum compatibility. Treat scalar native-fixed and native-verbatim
-  as reference/debug backends for native writer coverage, tuning, and
-  accelerator oracle work.
+- Keep `--backend cpu` as the portable Ogg `.ldf` path for maximum
+  compatibility. Treat scalar native-fixed and native-verbatim as
+  reference/debug backends for native writer coverage, tuning, and accelerator
+  oracle work.
 
 ## Recommendation
 
@@ -1008,10 +1021,12 @@ ld-compress-ng devices
 
 Implemented behavior:
 
-- `compress` defaults to CPU compression using Ogg FLAC-compatible `.ldf` output.
-- `compress --backend cpu|native-verbatim|native-fixed|opencl|vulkan` selects
-  between the implemented CPU/libFLAC path, reference/debug native FLAC writer
-  paths, the OpenCL-native FLAC encoder, and the Linux-first Vulkan encoder.
+- `compress` defaults to automatic Metal, Vulkan, OpenCL, then CPU selection;
+  CPU fallback uses Ogg FLAC-compatible `.ldf` output and accelerators use
+  native `.flac.ldf` output.
+- `compress --backend auto|cpu|native-verbatim|native-fixed|opencl|vulkan|metal`
+  selects between automatic capability selection, the CPU/libFLAC path,
+  reference/debug native FLAC writer paths, and the accelerated encoders.
 - `decompress` accepts existing `.ldf`, `.raw.oga`, and `.flac.ldf` inputs where
   supported by the implemented decoder path.
 - `verify` reports hashes for the compressed input and the decompressed/repacked

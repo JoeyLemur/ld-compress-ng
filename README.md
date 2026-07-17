@@ -5,18 +5,22 @@ files. It compresses packed `.lds` captures to FLAC-backed `.ldf` files,
 decompresses them back to `.lds`, and verifies round trips without requiring the
 old shell pipeline or helper tools.
 
-The default CPU backend writes Ogg FLAC `.ldf` files with system `libFLAC` and
-`libogg`; this is the normal CPU-only compression path. The OpenCL, Vulkan, and
-Metal backends write native FLAC `.flac.ldf` files through the native writer. The
-scalar native backends remain available as reference/debug paths for analysis
-parity, writer coverage, and tuning experiments, not as recommended CPU
-compression choices. Vulkan has been validated locally on NVIDIA hardware for
-compatible native FLAC output; AMD is intended through standard Vulkan compute
-but not yet hardware-validated. Metal is macOS-only, uses Apple Command Line
-Tools plus runtime Metal source compilation, and has been validated locally on
-Apple M5 Pro for compatible native FLAC output and speed-profile throughput in
-the same class as the Linux OpenCL/Vulkan accelerators; no Xcode project or
-offline `.metallib` is required.
+By default, `compress` selects the first usable backend in this order: Metal,
+Vulkan, OpenCL, then CPU/libFLAC. Metal, Vulkan, and OpenCL write native FLAC
+`.flac.ldf` files through the native writer; the CPU/libFLAC fallback writes an
+Ogg FLAC `.ldf` with system `libFLAC` and `libogg`. Use `--backend cpu` when
+you specifically need the portable Ogg output. The scalar native backends remain
+available as reference/debug paths for analysis parity, writer coverage, and
+tuning experiments, not as recommended CPU compression choices. Vulkan has
+been validated locally on NVIDIA hardware for compatible native FLAC output;
+AMD is intended through standard Vulkan compute but not yet hardware-validated.
+Metal is macOS-only, uses Apple Command Line Tools plus runtime Metal source
+compilation, and has been validated locally on Apple M5 Pro for compatible
+native FLAC output and speed-profile throughput in the same class as the Linux
+OpenCL/Vulkan accelerators; no Xcode project or offline `.metallib` is required.
+Auto selection is based on built support and usable-device discovery; if the
+selected encoder later fails to initialize or run, `compress` reports that
+error rather than silently rerunning the capture through CPU compression.
 
 `ld-compress-ng` does not depend at runtime on Qt, ffmpeg, `.NET`, Mono, FlaLDF,
 OpenSSL, or `ld-lds-converter`.
@@ -119,13 +123,18 @@ cmake --install build --prefix /usr/local
 
 ## Basic Usage
 
-Compress an `.lds` capture with the default CPU/libFLAC backend:
+Compress an `.lds` capture with automatic backend selection:
 
 ```sh
 build/ld-compress-ng compress capture.lds
 ```
 
-This writes `capture.ldf` unless you provide an explicit output path.
+This writes `capture.flac.ldf` when it selects Metal, Vulkan, or OpenCL, and
+`capture.ldf` when it falls back to CPU. To always write the portable Ogg form:
+
+```sh
+build/ld-compress-ng compress --backend cpu capture.lds
+```
 
 Decompress an `.ldf`, `.raw.oga`, or `.flac.ldf` file back to `.lds`:
 
@@ -168,7 +177,8 @@ This applies to every compression backend.
 
 | Backend | Output | Notes |
 | --- | --- | --- |
-| `cpu` | Ogg FLAC `.ldf` by default | Default, portable, uses system `libFLAC`/`libogg`; supports `--level` and can write native FLAC with `--container flac`. |
+| `auto` | Native FLAC `.flac.ldf` or Ogg FLAC `.ldf` | Default. Chooses Metal, then a usable non-CPU Vulkan device with `shaderInt64`, then OpenCL, then CPU/libFLAC. |
+| `cpu` | Ogg FLAC `.ldf` by default | Portable, uses system `libFLAC`/`libogg`; supports `--level` and can write native FLAC with `--container flac`. |
 | `opencl` | Native FLAC `.flac.ldf` | GPU-assisted native encoder; list devices with `devices`, select one with `--device INDEX` or `--opencl-device INDEX`. |
 | `vulkan` | Native FLAC `.flac.ldf` | Linux-first acceleration backend with Vulkan exact costing for fixed/Rice and GPU-generated LPC candidates; validated locally on NVIDIA and intended for standard Vulkan compute devices; select one with `--device INDEX` or `--vulkan-device INDEX`. |
 | `metal` | Native FLAC `.flac.ldf` | macOS acceleration backend using Apple Metal runtime source compilation for generated LPC and exact costing; select one with `--device INDEX` or `--metal-device INDEX`. |
@@ -202,10 +212,13 @@ build-metal/ld-compress-ng devices
 build-metal/ld-compress-ng compress --backend metal --device INDEX capture.lds
 ```
 
-For `compress`, `--device INDEX` is backend-local shorthand for the selected
-OpenCL, Vulkan, or Metal backend. For benchmark runs that include multiple
-accelerators, use `--opencl-device INDEX`, `--vulkan-device INDEX`, and
-`--metal-device INDEX` because a bare `--device` would be ambiguous.
+For `compress`, `--device INDEX` is backend-local shorthand after `--backend`
+selects OpenCL, Vulkan, or Metal. With the default `auto` policy it tests that
+index at each candidate backend in priority order. Backend-specific device flags
+are valid only when the resolved backend matches; use the matching explicit
+backend to pin one. For benchmark runs that include multiple accelerators, use
+`--opencl-device INDEX`, `--vulkan-device INDEX`, and `--metal-device INDEX`
+because a bare `--device` would be ambiguous.
 
 ## Advanced Usage
 
