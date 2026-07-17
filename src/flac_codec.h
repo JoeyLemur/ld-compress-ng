@@ -3,6 +3,7 @@
 #include "lds_codec.h"
 
 #include <cstdint>
+#include <functional>
 #include <iosfwd>
 #include <string>
 
@@ -19,6 +20,12 @@ struct FlacEncodeOptions {
     unsigned sample_rate = 40000;
 };
 
+// Called after STREAMINFO and after each decoded FLAC frame. A total of zero
+// means the stream did not declare its total sample count.
+using DecompressionProgressCallback = std::function<void(
+    std::uint64_t decoded_samples,
+    std::uint64_t total_samples)>;
+
 ConversionStats compress_lds_to_flac(
     std::istream& lds_input,
     const std::string& output_path,
@@ -26,7 +33,8 @@ ConversionStats compress_lds_to_flac(
 
 ConversionStats decompress_flac_to_lds(
     const std::string& input_path,
-    std::ostream& lds_output);
+    std::ostream& lds_output,
+    DecompressionProgressCallback progress_callback = {});
 
 FlacContainer detect_flac_container(const std::string& input_path);
 

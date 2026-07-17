@@ -59,6 +59,20 @@ void run_fails(const std::string& command)
     }
 }
 
+std::string read_file(const std::filesystem::path& path);
+
+std::string run_ok_with_stderr(
+    const std::string& command,
+    const std::filesystem::path& stderr_path)
+{
+    std::filesystem::remove(stderr_path);
+    const int rc = std::system((command + " 2> " + shell_quote(stderr_path)).c_str());
+    if (rc != 0) {
+        throw std::runtime_error("command failed: " + command);
+    }
+    return read_file(stderr_path);
+}
+
 std::string read_file(const std::filesystem::path& path)
 {
     std::ifstream input(path, std::ios::binary);
@@ -123,6 +137,18 @@ std::string corrupt_native_streaminfo_sample_count(std::string data)
     require(data.size() > 42, "native FLAC test file is too small to corrupt STREAMINFO sample count");
     require(data.substr(0, 4) == "fLaC", "native FLAC test file did not have fLaC marker");
     data[25] = static_cast<char>(static_cast<unsigned char>(data[25]) ^ 0x04U);
+    return data;
+}
+
+std::string clear_native_streaminfo_sample_count(std::string data)
+{
+    require(data.size() > 42, "native FLAC test file is too small to clear STREAMINFO sample count");
+    require(data.substr(0, 4) == "fLaC", "native FLAC test file did not have fLaC marker");
+    data[21] = static_cast<char>(static_cast<unsigned char>(data[21]) & 0xf0U);
+    data[22] = 0;
+    data[23] = 0;
+    data[24] = 0;
+    data[25] = 0;
     return data;
 }
 
@@ -211,6 +237,8 @@ void test_cli(const std::filesystem::path& exe)
     const auto protected_native_compress_output = temp_dir / "protected-native.flac.ldf";
     const auto cpu_level = temp_dir / "fixture.cpu-level.ldf";
     const auto decompressed = temp_dir / "fixture.out.lds";
+    const auto decompressed_progress = temp_dir / "fixture.progress.out.lds";
+    const auto progress_stderr = temp_dir / "decompress-progress.stderr";
     const auto native = temp_dir / "fixture.flac.ldf";
     const auto native_verbatim = temp_dir / "fixture.native-verbatim.flac.ldf";
     const auto native_verbatim_out = temp_dir / "fixture.native-verbatim.out.lds";
@@ -222,6 +250,8 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_native_verbatim_rice_partition_order = temp_dir / "fixture.bad-native-verbatim-rice-partition-order.flac.ldf";
     const auto native_fixed = temp_dir / "fixture.native-fixed.flac.ldf";
     const auto native_fixed_out = temp_dir / "fixture.native-fixed.out.lds";
+    const auto native_fixed_unknown_total = temp_dir / "fixture.native-fixed.unknown-total.flac.ldf";
+    const auto native_fixed_unknown_total_out = temp_dir / "fixture.native-fixed.unknown-total.out.lds";
     const auto bad_native_fixed_md5 = temp_dir / "fixture.native-fixed.bad-md5.flac.ldf";
     const auto bad_native_fixed_md5_out = temp_dir / "fixture.native-fixed.bad-md5.out.lds";
     const auto bad_native_fixed_count = temp_dir / "fixture.native-fixed.bad-count.flac.ldf";
@@ -398,8 +428,18 @@ void test_cli(const std::filesystem::path& exe)
 
     run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(compressed));
     run_ok(shell_quote(exe) + " decompress " + shell_quote(compressed) + " " + shell_quote(decompressed));
+    const auto progress_text = run_ok_with_stderr(
+        shell_quote(exe) + " decompress --progress " + shell_quote(compressed) + " " +
+            shell_quote(decompressed_progress),
+        progress_stderr);
     run_fails(shell_quote(exe) + " decompress --overwrite " + shell_quote(compressed) + " " + shell_quote(compressed));
     require(read_file(decompressed) == fixture, "Ogg FLAC round trip changed LDS bytes");
+    require(read_file(decompressed_progress) == fixture,
+        "progress-enabled Ogg FLAC round trip changed LDS bytes");
+    require(progress_text.find("decompressing: 0%") != std::string::npos,
+        "decompress --progress did not report initial progress");
+    require(progress_text.find("100%") != std::string::npos,
+        "decompress --progress did not report completion");
     run_ok(shell_quote(exe) + " compress --level 8 " + shell_quote(lds) + " " + shell_quote(cpu_level));
     require(read_file(cpu_level).substr(0, 4) == "OggS", "CPU --level output was not Ogg FLAC");
 
@@ -425,6 +465,16 @@ void test_cli(const std::filesystem::path& exe)
     run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(native_fixed));
     run_ok(shell_quote(exe) + " decompress " + shell_quote(native_fixed) + " " + shell_quote(native_fixed_out));
     require(read_file(native_fixed_out) == fixture, "native-fixed FLAC round trip changed LDS bytes");
+    write_file(native_fixed_unknown_total,
+        clear_native_streaminfo_sample_count(read_file(native_fixed)));
+    const auto unknown_total_progress_text = run_ok_with_stderr(
+        shell_quote(exe) + " decompress --progress " + shell_quote(native_fixed_unknown_total) +
+            " " + shell_quote(native_fixed_unknown_total_out),
+        progress_stderr);
+    require(read_file(native_fixed_unknown_total_out) == fixture,
+        "unknown-total native FLAC round trip changed LDS bytes");
+    require(unknown_total_progress_text.find("samples decoded") != std::string::npos,
+        "decompress --progress did not report decoded samples for an unknown total");
     require(std::filesystem::file_size(native_fixed) < std::filesystem::file_size(native_verbatim),
         "native-fixed fixture was not smaller than native-verbatim fixture");
     write_file(bad_native_fixed_md5, corrupt_native_streaminfo_md5(read_file(native_fixed)));

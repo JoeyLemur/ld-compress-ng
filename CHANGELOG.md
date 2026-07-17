@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `decompress --progress` now provides a throttled stderr status line with
+  decoded-sample progress and elapsed time. It starts after STREAMINFO is read,
+  shows a percentage when the stream declares a total sample count, and still
+  reports useful decoded-sample counts for FLAC streams with an unknown total.
 - Decompression now batches packed LDS output instead of issuing one stream
   write per four decoded samples. It uses libFLAC's checked final PCM-MD5
   validation rather than a second, per-sample MD5 pass, substantially improving

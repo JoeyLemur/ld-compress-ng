@@ -61,6 +61,7 @@ unsigned map_compression_level(unsigned legacy_level)
 struct DecoderClient {
     std::ostream& output;
     ConversionStats stats;
+    DecompressionProgressCallback progress_callback;
     std::uint64_t expected_total_samples = 0;
     unsigned expected_sample_rate = 0;
     unsigned expected_channels = 0;
@@ -78,6 +79,25 @@ void set_error_once(DecoderClient& client, std::string message)
     if (client.error.empty()) {
         client.error = std::move(message);
     }
+}
+
+bool report_progress(DecoderClient& client)
+{
+    if (!client.progress_callback) {
+        return true;
+    }
+
+    try {
+        client.progress_callback(client.stats.samples, client.expected_total_samples);
+    } catch (const std::exception& error) {
+        set_error_once(client, std::string("decompression progress callback failed: ") +
+            error.what());
+        return false;
+    } catch (...) {
+        set_error_once(client, "decompression progress callback failed");
+        return false;
+    }
+    return true;
 }
 
 bool flush_packed_output(DecoderClient& client)
@@ -155,6 +175,9 @@ FLAC__StreamDecoderWriteStatus write_callback(
         }
     }
 
+    if (!report_progress(client)) {
+        return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
+    }
     return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
 }
 
@@ -183,6 +206,10 @@ void metadata_callback(
     } else if (client.expected_total_samples != 0 &&
         (client.expected_total_samples % 4U) != 0) {
         set_error_once(client, "FLAC STREAMINFO total sample count is not divisible by four");
+    }
+
+    if (client.error.empty()) {
+        (void)report_progress(client);
     }
 }
 
@@ -307,7 +334,8 @@ ConversionStats compress_lds_to_flac(
 
 ConversionStats decompress_flac_to_lds(
     const std::string& input_path,
-    std::ostream& lds_output)
+    std::ostream& lds_output,
+    DecompressionProgressCallback progress_callback)
 {
     DecoderPtr decoder(FLAC__stream_decoder_new());
     if (!decoder) {
@@ -321,6 +349,7 @@ ConversionStats decompress_flac_to_lds(
     DecoderClient client {
         .output = lds_output,
         .stats = {},
+        .progress_callback = std::move(progress_callback),
         .expected_total_samples = 0,
         .expected_sample_rate = 0,
         .expected_channels = 0,

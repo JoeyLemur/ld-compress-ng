@@ -154,6 +154,9 @@ Implemented:
 - FLAC decompression now batches 8,192 LDS groups per output write and checks
   libFLAC's final STREAMINFO PCM-MD5 result through
   `FLAC__stream_decoder_finish()`, avoiding a redundant per-sample MD5 pass.
+- `decompress --progress` provides a throttled stderr update from decoder frame
+  callbacks, with an immediate STREAMINFO state, elapsed time, and either a
+  percentage or decoded-sample count when the FLAC total is unknown.
 - Native FLAC decode now rejects STREAMINFO-declared non-RF sample counts before
   writing decoded LDS output, and preserves the first decoder validation error
   instead of overwriting it with a later libFLAC status.
@@ -981,7 +984,7 @@ The CLI should use explicit subcommands rather than mirroring the old option sou
 
 ```text
 ld-compress-ng compress [--backend cpu|native-verbatim|native-fixed|opencl|vulkan] INPUT [OUTPUT]
-ld-compress-ng decompress INPUT [OUTPUT]
+ld-compress-ng decompress [--overwrite] [--progress] INPUT [OUTPUT]
 ld-compress-ng verify INPUT [--source ORIGINAL.lds]
 ld-compress-ng convert --pack|--unpack INPUT [OUTPUT]
 ld-compress-ng bench [--threads 8] [--analysis-profile NAME[,NAME...]]

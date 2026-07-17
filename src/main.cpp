@@ -44,6 +44,7 @@ struct Options {
     bool unpack = false;
     bool container_explicit = false;
     bool show_stats = false;
+    bool show_progress = false;
     bool bench_include_opencl = false;
     bool bench_include_vulkan = false;
     bool bench_include_metal = false;
@@ -88,7 +89,7 @@ struct Options {
     out << "ld-compress-ng compresses LaserDisc RF .lds captures to FLAC-backed .ldf files.\n\n"
         << "Usage:\n"
         << "  ld-compress-ng compress [OPTIONS] INPUT.lds [OUTPUT]\n"
-        << "  ld-compress-ng decompress [--overwrite] INPUT [OUTPUT]\n"
+        << "  ld-compress-ng decompress [--overwrite] [--progress] INPUT [OUTPUT]\n"
         << "  ld-compress-ng verify [--source ORIGINAL.lds] INPUT\n"
         << "  ld-compress-ng convert --pack|--unpack [--overwrite] INPUT [OUTPUT]\n"
         << "  ld-compress-ng bench [--threads 8] [--frame-samples N[,N...]] [--lpc-order N[,N...]] [--lpc-precision N[,N...]] [--rice-partition-order N[,N...]] [--analysis-profile NAME[,NAME...]] [--include-opencl] [--include-vulkan] [--include-metal] [--reuse-opencl-session] [--reuse-vulkan-session] [--reuse-metal-session] [--device INDEX|--opencl-device INDEX|--vulkan-device INDEX|--metal-device INDEX] INPUT\n"
@@ -131,6 +132,9 @@ struct Options {
         << "  --stats                      Print native backend decision stats and timings.\n"
         << "  --container ogg|flac         cpu can write Ogg or native FLAC; native/opencl/vulkan/metal write flac.\n"
         << "  --overwrite                  Replace an existing output path.\n\n"
+        << "Decompress options:\n"
+        << "  --overwrite                  Replace an existing output path.\n"
+        << "  --progress                   Show decode progress and elapsed time on stderr.\n\n"
         << "Bench options:\n"
         << "  --analysis-profile NAME      exact, order-guess-exact-rice,\n"
         << "                               order-guess-mean-rice,\n"
@@ -729,6 +733,8 @@ Options parse_decompress(int argc, char** argv)
         const std::string_view arg(argv[i]);
         if (arg == "--overwrite") {
             options.overwrite = true;
+        } else if (arg == "--progress") {
+            options.show_progress = true;
         } else if (arg == "--help" || arg == "-h") {
             usage(0);
         } else if (!arg.empty() && arg.front() == '-') {
@@ -981,6 +987,80 @@ protected:
 private:
     ldcompress::Md5 md5_;
     std::uint64_t bytes_ = 0;
+};
+
+class DecompressionProgressReporter final {
+public:
+    explicit DecompressionProgressReporter(bool enabled)
+        : enabled_(enabled)
+        , started_(std::chrono::steady_clock::now())
+    {
+    }
+
+    ~DecompressionProgressReporter()
+    {
+        finish();
+    }
+
+    void report(std::uint64_t decoded_samples, std::uint64_t total_samples)
+    {
+        if (!enabled_ || finished_) {
+            return;
+        }
+
+        decoded_samples_ = decoded_samples;
+        total_samples_ = total_samples;
+        have_progress_ = true;
+        const auto now = std::chrono::steady_clock::now();
+        if (!rendered_ || now - last_render_ >= kUpdateInterval) {
+            render(now);
+        }
+    }
+
+    void finish() noexcept
+    {
+        if (!enabled_ || finished_ || !have_progress_) {
+            return;
+        }
+
+        try {
+            render(std::chrono::steady_clock::now());
+            std::cerr << '\n' << std::flush;
+        } catch (...) {
+            // Progress reporting must never obscure the decode result.
+        }
+        finished_ = true;
+    }
+
+private:
+    static constexpr auto kUpdateInterval = std::chrono::milliseconds(250);
+
+    void render(std::chrono::steady_clock::time_point now)
+    {
+        std::cerr << "\rdecompressing: ";
+        if (total_samples_ != 0) {
+            const auto percent = decoded_samples_ >= total_samples_
+                ? 100U
+                : static_cast<unsigned>((decoded_samples_ * 100U) / total_samples_);
+            std::cerr << percent << "% (" << decoded_samples_ << '/'
+                      << total_samples_ << " samples)";
+        } else {
+            std::cerr << decoded_samples_ << " samples";
+        }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - started_);
+        std::cerr << " decoded, " << elapsed.count() << "s" << std::flush;
+        last_render_ = now;
+        rendered_ = true;
+    }
+
+    bool enabled_ = false;
+    bool have_progress_ = false;
+    bool rendered_ = false;
+    bool finished_ = false;
+    std::chrono::steady_clock::time_point started_;
+    std::chrono::steady_clock::time_point last_render_ {};
+    std::uint64_t decoded_samples_ = 0;
+    std::uint64_t total_samples_ = 0;
 };
 
 template <std::size_t N>
@@ -1321,6 +1401,15 @@ int run_decompress(const Options& options)
     const auto temp_output = make_temporary_output_path(options.output);
     bool renamed = false;
     ldcompress::ConversionStats stats;
+    DecompressionProgressReporter progress_reporter(options.show_progress);
+    ldcompress::DecompressionProgressCallback progress_callback;
+    if (options.show_progress) {
+        progress_callback = [&progress_reporter](
+                                std::uint64_t decoded_samples,
+                                std::uint64_t total_samples) {
+            progress_reporter.report(decoded_samples, total_samples);
+        };
+    }
     try {
         {
             std::ofstream output(temp_output, std::ios::binary);
@@ -1328,7 +1417,8 @@ int run_decompress(const Options& options)
                 throw std::runtime_error("could not open temporary output: " + temp_output.string());
             }
 
-            stats = ldcompress::decompress_flac_to_lds(options.input, output);
+            stats = ldcompress::decompress_flac_to_lds(
+                options.input, output, std::move(progress_callback));
             output.close();
             if (!output) {
                 throw std::runtime_error("failed to finish decompressed output: " +
@@ -1347,6 +1437,7 @@ int run_decompress(const Options& options)
         throw;
     }
 
+    progress_reporter.finish();
     std::cerr << "decompressed " << stats.input_bytes << " bytes to "
               << stats.output_bytes << " bytes (" << stats.samples
               << " samples)\n";

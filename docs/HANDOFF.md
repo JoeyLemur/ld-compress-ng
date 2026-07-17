@@ -23,6 +23,10 @@ by CMake; release-facing installed docs are listed explicitly in
   STREAMINFO PCM-MD5 result. This replaces the former second MD5 pass over
   individual samples while retaining the corrupted-STREAMINFO regression and
   same-directory transactional output behavior.
+- `decompress --progress` reports a throttled stderr line from decoder frame
+  callbacks. It emits an immediate STREAMINFO-based `0%` state, shows elapsed
+  time, uses a percentage when the FLAC total is known, and otherwise reports
+  decoded samples; the option has a CLI regression that captures stderr.
 - Potential scalar-native tuning point: profile `update_md5_s16le()` before
   changing it. It still updates the project MD5 once per four-sample LDS group;
   if that matters on Apple, batch the existing signed-16-bit little-endian PCM

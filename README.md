@@ -135,6 +135,13 @@ build/ld-compress-ng decompress capture.ldf
 
 This writes `capture.lds` by default.
 
+For long captures, add `--progress` to update one stderr line with decoded
+sample progress (when STREAMINFO provides a total) and elapsed time:
+
+```sh
+build/ld-compress-ng decompress --progress capture.ldf
+```
+
 Verify that a compressed file decodes to the original `.lds` data:
 
 ```sh
