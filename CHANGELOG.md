@@ -15,9 +15,11 @@
   losslessly represented by the LDS 10-bit packing grid. Invalid streams leave
   no published LDS output.
 - `compress` and `decompress` now write their payload inside a private
-  same-directory staging directory created with `mkdtemp`, then atomically
-  rename that payload into place. This removes the temporary-name race while
-  retaining destination preservation and cleanup on failure.
+  same-directory staging directory created with `mkdtemp`. Without
+  `--overwrite`, an atomic hard-link publish prevents a destination created
+  during the run from being replaced; with `--overwrite`, the payload is
+  atomically renamed into place. `SIGINT`, `SIGTERM`, and `SIGHUP` also remove
+  active private staging data before preserving the normal signal termination.
 - `verify` now hashes compressed input bytes while it sequentially decodes,
   avoiding a second full read of large Ogg and native FLAC captures. It checks
   that the digest covered the whole input before reporting the result.

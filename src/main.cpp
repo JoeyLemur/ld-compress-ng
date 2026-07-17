@@ -10,11 +10,15 @@
 #include "vulkan_devices.h"
 
 #include <array>
+#include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits.h>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -39,6 +43,121 @@ constexpr unsigned kDefaultNativeFrameSamples = 4608;
 constexpr unsigned kDefaultNativeMaxLpcOrder = 12;
 constexpr unsigned kDefaultNativeLpcPrecision = 12;
 constexpr unsigned kDefaultNativeMaxRicePartitionOrder = 5;
+
+// A compression/decompression command has at most one active staging output.
+// Keep its paths in fixed storage so termination cleanup can use only
+// async-signal-safe POSIX calls.
+struct SignalSafeStagingOutput {
+    volatile sig_atomic_t active = 0;
+    char directory[PATH_MAX] {};
+    char payload[PATH_MAX] {};
+};
+
+SignalSafeStagingOutput g_signal_safe_staging_output;
+volatile sig_atomic_t g_termination_cleanup_in_progress = 0;
+
+void add_termination_signals(sigset_t& signals)
+{
+    (void)sigaddset(&signals, SIGINT);
+    (void)sigaddset(&signals, SIGTERM);
+    (void)sigaddset(&signals, SIGHUP);
+}
+
+class BlockTerminationSignals final {
+public:
+    BlockTerminationSignals()
+    {
+        sigset_t signals {};
+        (void)sigemptyset(&signals);
+        add_termination_signals(signals);
+        if (::sigprocmask(SIG_BLOCK, &signals, &previous_mask_) != 0) {
+            throw std::runtime_error("could not block termination signals while staging output");
+        }
+        blocked_ = true;
+    }
+
+    BlockTerminationSignals(const BlockTerminationSignals&) = delete;
+    BlockTerminationSignals& operator=(const BlockTerminationSignals&) = delete;
+
+    ~BlockTerminationSignals()
+    {
+        if (blocked_) {
+            (void)::sigprocmask(SIG_SETMASK, &previous_mask_, nullptr);
+        }
+    }
+
+private:
+    sigset_t previous_mask_ {};
+    bool blocked_ = false;
+};
+
+void register_signal_safe_staging_output(
+    const std::filesystem::path& directory,
+    const std::filesystem::path& payload)
+{
+    const auto directory_text = directory.string();
+    const auto payload_text = payload.string();
+    if (directory_text.size() >= sizeof(g_signal_safe_staging_output.directory) ||
+        payload_text.size() >= sizeof(g_signal_safe_staging_output.payload)) {
+        throw std::runtime_error("staging output path is too long for termination cleanup");
+    }
+
+    BlockTerminationSignals blocked;
+    g_signal_safe_staging_output.active = 0;
+    std::memcpy(g_signal_safe_staging_output.directory,
+        directory_text.c_str(), directory_text.size() + 1U);
+    std::memcpy(g_signal_safe_staging_output.payload,
+        payload_text.c_str(), payload_text.size() + 1U);
+    g_signal_safe_staging_output.active = 1;
+}
+
+void unregister_signal_safe_staging_output() noexcept
+{
+    sigset_t signals {};
+    sigset_t previous_mask {};
+    (void)sigemptyset(&signals);
+    add_termination_signals(signals);
+    if (::sigprocmask(SIG_BLOCK, &signals, &previous_mask) != 0) {
+        return;
+    }
+    g_signal_safe_staging_output.active = 0;
+    (void)::sigprocmask(SIG_SETMASK, &previous_mask, nullptr);
+}
+
+extern "C" void cleanup_staging_output_on_termination(int signal_number)
+{
+    if (g_termination_cleanup_in_progress != 0) {
+        _exit(128 + signal_number);
+    }
+    g_termination_cleanup_in_progress = 1;
+
+    if (g_signal_safe_staging_output.active != 0) {
+        (void)::unlink(g_signal_safe_staging_output.payload);
+        (void)::rmdir(g_signal_safe_staging_output.directory);
+    }
+
+    struct sigaction default_action {};
+    default_action.sa_handler = SIG_DFL;
+    (void)sigemptyset(&default_action.sa_mask);
+    (void)::sigaction(signal_number, &default_action, nullptr);
+    if (::kill(::getpid(), signal_number) != 0) {
+        _exit(128 + signal_number);
+    }
+}
+
+void install_staging_output_termination_cleanup()
+{
+    struct sigaction action {};
+    action.sa_handler = cleanup_staging_output_on_termination;
+    (void)sigemptyset(&action.sa_mask);
+    add_termination_signals(action.sa_mask);
+
+    for (const int signal_number : {SIGINT, SIGTERM, SIGHUP}) {
+        if (::sigaction(signal_number, &action, nullptr) != 0) {
+            throw std::runtime_error("could not install staging-output termination cleanup");
+        }
+    }
+}
 
 struct Options {
     bool overwrite = false;
@@ -365,6 +484,13 @@ public:
         }
         directory_ = std::move(template_path);
         payload_ = directory_ / "payload";
+        try {
+            register_signal_safe_staging_output(directory_, payload_);
+        } catch (...) {
+            std::error_code ec;
+            std::filesystem::remove_all(directory_, ec);
+            throw;
+        }
     }
 
     TemporaryOutput(const TemporaryOutput&) = delete;
@@ -374,6 +500,9 @@ public:
     {
         std::error_code ec;
         std::filesystem::remove_all(directory_, ec);
+        if (!ec) {
+            unregister_signal_safe_staging_output();
+        }
     }
 
     const std::filesystem::path& payload() const
@@ -385,6 +514,28 @@ private:
     std::filesystem::path directory_;
     std::filesystem::path payload_;
 };
+
+void publish_temporary_output(
+    const TemporaryOutput& staging_output,
+    const std::string& output,
+    bool overwrite)
+{
+    if (overwrite) {
+        std::filesystem::rename(staging_output.payload(), output);
+        return;
+    }
+
+    if (::link(staging_output.payload().c_str(), output.c_str()) == 0) {
+        return;
+    }
+
+    const int error = errno;
+    if (error == EEXIST) {
+        throw std::runtime_error("output already exists: " + output + " (use --overwrite)");
+    }
+    throw std::runtime_error("could not publish output: " + output + ": " +
+        std::string(std::strerror(error)));
+}
 
 unsigned parse_level(std::string_view text)
 {
@@ -1386,8 +1537,7 @@ int run_compress(const Options& options)
     ldcompress::ConversionStats stats;
     stats = ldcompress::compress_lds(input, staging_output.payload().string(), compress_options);
 
-    ensure_output_allowed(options.output, options.overwrite);
-    std::filesystem::rename(staging_output.payload(), options.output);
+    publish_temporary_output(staging_output, options.output, options.overwrite);
 
     std::cerr << "compressed " << stats.input_bytes << " bytes to "
               << stats.output_bytes << " bytes (" << stats.samples
@@ -1432,8 +1582,7 @@ int run_decompress(const Options& options)
         }
     }
 
-    ensure_output_allowed(options.output, options.overwrite);
-    std::filesystem::rename(staging_output.payload(), options.output);
+    publish_temporary_output(staging_output, options.output, options.overwrite);
 
     progress_reporter.finish();
     std::cerr << "decompressed " << stats.input_bytes << " bytes to "
@@ -2252,6 +2401,7 @@ int run_devices(int argc, char** argv)
 int main(int argc, char** argv)
 {
     try {
+        install_staging_output_termination_cleanup();
         if (argc < 2) {
             usage(2);
         }

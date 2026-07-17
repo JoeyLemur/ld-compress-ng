@@ -165,14 +165,17 @@ Implemented:
   writing decoded LDS output, and preserves the first decoder validation error
   instead of overwriting it with a later libFLAC status.
 - The `decompress` CLI writes to a private same-directory `mkdtemp` staging
-  directory and renames its payload into place only after decode and late FLAC
-  validations succeed, so bad STREAMINFO sample-count or off-grid inputs do not
+  directory and publishes its payload only after decode and late FLAC
+  validations succeed. No-overwrite mode uses an atomic hard link so an output
+  created during the run cannot be replaced; `--overwrite` uses an atomic
+  rename. Bad STREAMINFO sample-count or off-grid inputs therefore do not
   replace an existing `.lds` output. A stale STREAMINFO PCM MD5 is reported but
   remains compatible with original ld-compress captures.
 - The `compress` CLI uses the same private publish-on-success staging model for
   every backend, so encoder, input, device, and finalization failures leave an
-  existing output untouched even with `--overwrite` and remove all incomplete
-  staging data without a temporary-name race.
+  existing output untouched even with `--overwrite`. `SIGINT`, `SIGTERM`, and
+  `SIGHUP` additionally remove an active staging payload/directory before the
+  process preserves normal signal termination; `SIGKILL` remains uncatchable.
 - `verify` now computes its compressed-input MD5 through a sequential decoder
   read callback, confirms that the digest covered the complete file, and avoids
   the former second full input pass while retaining `--source` comparison.

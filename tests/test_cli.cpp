@@ -3,8 +3,12 @@
 #include "opencl_devices.h"
 #include "vulkan_devices.h"
 
+#include <cerrno>
+#include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <filesystem>
+#include <fcntl.h>
 #include <fstream>
 #include <iostream>
 #include <optional>
@@ -12,6 +16,9 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <thread>
 
 #include <unistd.h>
 
@@ -122,6 +129,124 @@ bool has_temporary_output_sibling(const std::filesystem::path& output_path)
         }
     }
     return false;
+}
+
+int create_held_open_fifo(const std::filesystem::path& path)
+{
+    if (::mkfifo(path.c_str(), 0600) != 0) {
+        throw std::runtime_error("could not create test FIFO: " + path.string());
+    }
+    const int fd = ::open(path.c_str(), O_RDWR | O_NONBLOCK);
+    if (fd < 0) {
+        throw std::runtime_error("could not hold test FIFO open: " + path.string());
+    }
+    if (::fcntl(fd, F_SETFD, FD_CLOEXEC) != 0) {
+        (void)::close(fd);
+        throw std::runtime_error("could not make test FIFO close on exec: " + path.string());
+    }
+    return fd;
+}
+
+pid_t start_blocked_compress(
+    const std::filesystem::path& exe,
+    const std::filesystem::path& input,
+    const std::filesystem::path& output)
+{
+    const auto exe_text = exe.string();
+    const auto input_text = input.string();
+    const auto output_text = output.string();
+    const auto child = ::fork();
+    if (child < 0) {
+        throw std::runtime_error("could not fork blocked compression test");
+    }
+    if (child == 0) {
+        ::execl(exe_text.c_str(), exe_text.c_str(), "compress", input_text.c_str(),
+            output_text.c_str(), static_cast<char*>(nullptr));
+        _exit(127);
+    }
+    return child;
+}
+
+void wait_for_temporary_output_sibling(const std::filesystem::path& output_path, pid_t child)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (has_temporary_output_sibling(output_path)) {
+            return;
+        }
+
+        int status = 0;
+        const auto result = ::waitpid(child, &status, WNOHANG);
+        if (result == child) {
+            throw std::runtime_error("blocked compression exited before creating staging output");
+        }
+        if (result < 0 && errno != EINTR) {
+            throw std::runtime_error("could not poll blocked compression test");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    throw std::runtime_error("blocked compression did not create staging output");
+}
+
+int wait_for_child(pid_t child)
+{
+    int status = 0;
+    while (::waitpid(child, &status, 0) < 0) {
+        if (errno != EINTR) {
+            throw std::runtime_error("could not wait for blocked compression test");
+        }
+    }
+    return status;
+}
+
+void test_atomic_no_overwrite_publish(
+    const std::filesystem::path& exe,
+    const std::filesystem::path& temp_dir)
+{
+    const auto input = temp_dir / "publish-race-input.lds";
+    const auto output = temp_dir / "publish-race-output.ldf";
+    const int fifo_fd = create_held_open_fifo(input);
+    const auto child = start_blocked_compress(exe, input, output);
+    wait_for_temporary_output_sibling(output, child);
+
+    write_file(output, "concurrent destination");
+    (void)::close(fifo_fd);
+    const int status = wait_for_child(child);
+    require(WIFEXITED(status) && WEXITSTATUS(status) != 0,
+        "no-overwrite compression accepted a concurrently created destination");
+    require(read_file(output) == "concurrent destination",
+        "no-overwrite compression replaced a concurrently created destination");
+    require(!has_temporary_output_sibling(output),
+        "no-overwrite publish race left a staging directory behind");
+    std::filesystem::remove(input);
+}
+
+void test_signal_cleanup_of_staging_output(
+    const std::filesystem::path& exe,
+    const std::filesystem::path& temp_dir)
+{
+    for (const int signal_number : {SIGINT, SIGTERM, SIGHUP}) {
+        const auto suffix = std::to_string(signal_number);
+        const auto input = temp_dir / ("signal-cleanup-input-" + suffix + ".lds");
+        const auto output = temp_dir / ("signal-cleanup-output-" + suffix + ".ldf");
+        const int fifo_fd = create_held_open_fifo(input);
+        const auto child = start_blocked_compress(exe, input, output);
+        wait_for_temporary_output_sibling(output, child);
+
+        if (::kill(child, signal_number) != 0) {
+            (void)::close(fifo_fd);
+            throw std::runtime_error("could not interrupt blocked compression test");
+        }
+        const int status = wait_for_child(child);
+        (void)::close(fifo_fd);
+        require(WIFSIGNALED(status) && WTERMSIG(status) == signal_number,
+            "interrupted compression did not preserve termination status");
+        require(!std::filesystem::exists(output),
+            "interrupted compression published an output");
+        require(!has_temporary_output_sibling(output),
+            "interrupted compression left a staging directory behind");
+        std::filesystem::remove(input);
+    }
 }
 
 std::string corrupt_native_streaminfo_md5(std::string data)
@@ -361,6 +486,9 @@ void test_cli(const std::filesystem::path& exe)
     write_file(opencl_default_lds, fixture);
     write_file(truncated_lds, truncated_fixture);
     write_file(empty_lds, "");
+
+    test_atomic_no_overwrite_publish(exe, temp_dir);
+    test_signal_cleanup_of_staging_output(exe, temp_dir);
 
     run_ok(shell_quote(exe) + " --help > " + shell_quote(help_output));
     const auto help_text = read_file(help_output);
