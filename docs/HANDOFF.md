@@ -23,6 +23,12 @@ by CMake; release-facing installed docs are listed explicitly in
   STREAMINFO PCM-MD5 result. This replaces the former second MD5 pass over
   individual samples while retaining the corrupted-STREAMINFO regression and
   same-directory transactional output behavior.
+- Potential scalar-native tuning point: profile `update_md5_s16le()` before
+  changing it. It still updates the project MD5 once per four-sample LDS group;
+  if that matters on Apple, batch the existing signed-16-bit little-endian PCM
+  bytes, flush the final tail before STREAMINFO finalization, and keep updates
+  on the ordered ingest thread rather than frame workers. This is not a current
+  correctness or release blocker.
 - The shared OpenCL/Vulkan/Metal selected-frame writer now gives each queued
   job shared ownership of its analyzed sample batch. If one worker fails, a
   sibling can finish unwinding without reading freed batch storage. The
