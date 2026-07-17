@@ -27,6 +27,8 @@
 #include <utility>
 #include <vector>
 
+#include <unistd.h>
+
 #ifndef LDCOMPRESS_VERSION
 #define LDCOMPRESS_VERSION "unknown"
 #endif
@@ -348,26 +350,41 @@ void ensure_distinct_input_output(const std::string& input, const std::string& o
     }
 }
 
-std::filesystem::path make_temporary_output_path(const std::string& output)
-{
-    const std::filesystem::path output_path(output);
-    const auto directory = output_path.parent_path();
-    const auto filename = output_path.filename().string();
-    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-    for (unsigned attempt = 0; attempt < 100; ++attempt) {
-        auto candidate = directory /
-            ("." + filename + ".tmp-" + std::to_string(stamp) + "-" + std::to_string(attempt));
-        std::error_code ec;
-        if (!std::filesystem::exists(candidate, ec)) {
-            return candidate;
+class TemporaryOutput final {
+public:
+    explicit TemporaryOutput(const std::string& output)
+    {
+        const std::filesystem::path output_path(output);
+        const auto parent = output_path.parent_path().empty()
+            ? std::filesystem::current_path()
+            : output_path.parent_path();
+        std::string template_path =
+            (parent / ("." + output_path.filename().string() + ".tmp-XXXXXX")).string();
+        if (::mkdtemp(template_path.data()) == nullptr) {
+            throw std::runtime_error("could not create private staging directory for: " + output);
         }
-        if (ec) {
-            throw std::runtime_error("could not inspect temporary output path: " +
-                candidate.string() + ": " + ec.message());
-        }
+        directory_ = std::move(template_path);
+        payload_ = directory_ / "payload";
     }
-    throw std::runtime_error("could not allocate temporary output path for: " + output);
-}
+
+    TemporaryOutput(const TemporaryOutput&) = delete;
+    TemporaryOutput& operator=(const TemporaryOutput&) = delete;
+
+    ~TemporaryOutput()
+    {
+        std::error_code ec;
+        std::filesystem::remove_all(directory_, ec);
+    }
+
+    const std::filesystem::path& payload() const
+    {
+        return payload_;
+    }
+
+private:
+    std::filesystem::path directory_;
+    std::filesystem::path payload_;
+};
 
 unsigned parse_level(std::string_view text)
 {
@@ -1363,24 +1380,14 @@ int run_compress(const Options& options)
         .vulkan_device_index = effective_vulkan_device_index(options),
         .metal_device_index = effective_metal_device_index(options),
     };
-    // Backend writers open their path destructively, so give them a disposable
-    // same-directory sibling and publish it only after compression succeeds.
-    const auto temp_output = make_temporary_output_path(options.output);
-    bool renamed = false;
+    // Backend writers open their path destructively, so give them a private
+    // same-directory staging directory and publish its payload only on success.
+    const TemporaryOutput staging_output(options.output);
     ldcompress::ConversionStats stats;
-    try {
-        stats = ldcompress::compress_lds(input, temp_output.string(), compress_options);
+    stats = ldcompress::compress_lds(input, staging_output.payload().string(), compress_options);
 
-        ensure_output_allowed(options.output, options.overwrite);
-        std::filesystem::rename(temp_output, options.output);
-        renamed = true;
-    } catch (...) {
-        if (!renamed) {
-            std::error_code ec;
-            std::filesystem::remove(temp_output, ec);
-        }
-        throw;
-    }
+    ensure_output_allowed(options.output, options.overwrite);
+    std::filesystem::rename(staging_output.payload(), options.output);
 
     std::cerr << "compressed " << stats.input_bytes << " bytes to "
               << stats.output_bytes << " bytes (" << stats.samples
@@ -1398,8 +1405,7 @@ int run_decompress(const Options& options)
     ensure_distinct_input_output(options.input, options.output);
     ensure_output_allowed(options.output, options.overwrite);
 
-    const auto temp_output = make_temporary_output_path(options.output);
-    bool renamed = false;
+    const TemporaryOutput staging_output(options.output);
     ldcompress::ConversionStats stats;
     DecompressionProgressReporter progress_reporter(options.show_progress);
     ldcompress::DecompressionProgressCallback progress_callback;
@@ -1410,37 +1416,33 @@ int run_decompress(const Options& options)
             progress_reporter.report(decoded_samples, total_samples);
         };
     }
-    try {
-        {
-            std::ofstream output(temp_output, std::ios::binary);
-            if (!output) {
-                throw std::runtime_error("could not open temporary output: " + temp_output.string());
-            }
-
-            stats = ldcompress::decompress_flac_to_lds(
-                options.input, output, std::move(progress_callback));
-            output.close();
-            if (!output) {
-                throw std::runtime_error("failed to finish decompressed output: " +
-                    temp_output.string());
-            }
+    {
+        std::ofstream output(staging_output.payload(), std::ios::binary);
+        if (!output) {
+            throw std::runtime_error("could not open temporary output: " +
+                staging_output.payload().string());
         }
 
-        ensure_output_allowed(options.output, options.overwrite);
-        std::filesystem::rename(temp_output, options.output);
-        renamed = true;
-    } catch (...) {
-        if (!renamed) {
-            std::error_code ec;
-            std::filesystem::remove(temp_output, ec);
+        stats = ldcompress::decompress_flac_to_lds(
+            options.input, output, std::move(progress_callback));
+        output.close();
+        if (!output) {
+            throw std::runtime_error("failed to finish decompressed output: " +
+                staging_output.payload().string());
         }
-        throw;
     }
+
+    ensure_output_allowed(options.output, options.overwrite);
+    std::filesystem::rename(staging_output.payload(), options.output);
 
     progress_reporter.finish();
     std::cerr << "decompressed " << stats.input_bytes << " bytes to "
               << stats.output_bytes << " bytes (" << stats.samples
               << " samples)\n";
+    if (stats.streaminfo_pcm_md5_mismatch) {
+        std::cerr << "warning: decoded FLAC PCM MD5 did not match STREAMINFO; "
+                  << "use verify --source for an end-to-end comparison\n";
+    }
     return 0;
 }
 
@@ -2103,14 +2105,18 @@ int run_bench(const Options& options)
 
 int run_verify(const Options& options)
 {
-    const auto compressed = ldcompress::md5_file(options.input);
-
     HashingStreambuf decoded_hash_buffer;
     std::ostream decoded_hash_stream(&decoded_hash_buffer);
-    const auto decoded_stats = ldcompress::decompress_flac_to_lds(options.input, decoded_hash_stream);
+    ldcompress::FileDigest compressed;
+    const auto decoded_stats = ldcompress::decompress_flac_to_lds_with_input_digest(
+        options.input, decoded_hash_stream, compressed);
     decoded_hash_stream.flush();
     if (!decoded_hash_stream) {
         throw std::runtime_error("failed to hash decoded stream");
+    }
+    if (decoded_stats.streaminfo_pcm_md5_mismatch) {
+        std::cerr << "warning: decoded FLAC PCM MD5 did not match STREAMINFO; "
+                  << "use verify --source for an end-to-end comparison\n";
     }
 
     std::cout << "compressed md5 " << compressed.md5.hex()

@@ -10,6 +10,7 @@ struct ConversionStats {
     std::uint64_t input_bytes = 0;
     std::uint64_t output_bytes = 0;
     std::uint64_t samples = 0;
+    bool streaminfo_pcm_md5_mismatch = false;
 };
 
 using PackedLdsGroup = std::array<std::uint8_t, 5>;

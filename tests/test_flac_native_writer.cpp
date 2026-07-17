@@ -629,12 +629,19 @@ void test_native_verbatim_round_trip()
         "native verbatim writer did not mark LDS low zero bits as wasted");
 
     std::ostringstream decoded;
-    const auto stats = ldcompress::decompress_flac_to_lds(flac_path.string(), decoded);
+    ldcompress::FileDigest compressed_digest;
+    const auto stats = ldcompress::decompress_flac_to_lds_with_input_digest(
+        flac_path.string(), decoded, compressed_digest);
     const auto expected = pack_expected_lds(samples);
 
     require(stats.samples == samples.size(), "unexpected decoded sample count");
     require(stats.output_bytes == expected.size(), "unexpected decoded LDS byte count");
     require(decoded.str() == expected, "native verbatim FLAC did not round-trip to expected LDS");
+    const auto expected_digest = ldcompress::md5_file(flac_path.string());
+    require(compressed_digest.bytes == expected_digest.bytes,
+        "native digest decode read an unexpected number of compressed bytes");
+    require(compressed_digest.md5.digest() == expected_digest.md5.digest(),
+        "native digest decode MD5 did not match md5_file");
 
     std::filesystem::remove_all(temp_dir);
 }
@@ -648,8 +655,8 @@ void test_native_fixed_rice_round_trip()
 
     verify_fixed_rice_round_trip(temp_dir / "order0.flac", std::vector<std::int32_t>(16, 0), 0, 0);
     verify_fixed_rice_round_trip(temp_dir / "order1.flac", {
-        -2, -1, -1, -2, 0, -2, -2, -4,
-        -6, -8, -6, -8, -7, -8, -7, -9,
+        -128, -64, -64, -128, 0, -128, -128, -256,
+        -384, -512, -384, -512, -448, -512, -448, -576,
     }, 1, 0);
     verify_fixed_rice_round_trip(temp_dir / "order2.flac", {
         0, 64, 128, 192, 256, 320, 384, 448,
@@ -658,9 +665,11 @@ void test_native_fixed_rice_round_trip()
 
     std::vector<std::int32_t> quadratic;
     std::vector<std::int32_t> cubic;
-    for (int i = 0; i < 32; ++i) {
-        quadratic.push_back(i * i * 8);
-        cubic.push_back(i * i * i);
+    for (int i = 0; i < 16; ++i) {
+        quadratic.push_back(i * i * 64);
+    }
+    for (int i = 0; i < 8; ++i) {
+        cubic.push_back(i * i * i * 64);
     }
     verify_fixed_rice_round_trip(temp_dir / "order3.flac", quadratic, 3, 0);
     verify_fixed_rice_round_trip(temp_dir / "order4.flac", cubic, 4, 0);
@@ -674,7 +683,7 @@ void test_native_fixed_rice_round_trip()
     };
     verify_fixed_rice_round_trip(temp_dir / "partitioned.flac", partitioned, 0, 1);
     verify_fixed_rice_round_trip(temp_dir / "partitioned-max0.flac", partitioned, 0, 0, -1, 0);
-    verify_fixed_rice_round_trip(temp_dir / "tiny.flac", {0, -1, 1, -2}, 0, 0);
+    verify_fixed_rice_round_trip(temp_dir / "tiny.flac", {0, -64, 64, -128}, 0, 0);
     verify_fixed_rice_round_trip(temp_dir / "wide.flac", {
         32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
         32704, -32768, 32704, -32768, 32704, -32768, 32704, -32768,
@@ -1285,7 +1294,7 @@ void test_native_encoder_streaminfo_block_bounds_for_short_tail()
     std::filesystem::remove_all(temp_dir);
 }
 
-void test_native_streaminfo_md5_mismatch_is_rejected()
+void test_native_streaminfo_md5_mismatch_is_reported()
 {
     const auto temp_dir = std::filesystem::temp_directory_path() /
         ("ld-compress-ng-native-md5-test-" + std::to_string(::getpid()));
@@ -1321,14 +1330,12 @@ void test_native_streaminfo_md5_mismatch_is_rejected()
     ldcompress::write_mono_verbatim_frame(output, samples, frame_info);
     output.close();
 
-    bool threw = false;
-    try {
-        std::ostringstream decoded;
-        (void)ldcompress::decompress_flac_to_lds(flac_path.string(), decoded);
-    } catch (const std::runtime_error&) {
-        threw = true;
-    }
-    require(threw, "native FLAC decode accepted a bad STREAMINFO sample MD5");
+    std::ostringstream decoded;
+    const auto stats = ldcompress::decompress_flac_to_lds(flac_path.string(), decoded);
+    require(stats.streaminfo_pcm_md5_mismatch,
+        "native FLAC decode did not report a bad STREAMINFO sample MD5");
+    require(decoded.str() == pack_expected_lds(samples),
+        "native FLAC MD5 mismatch changed decoded LDS bytes");
 
     std::filesystem::remove_all(temp_dir);
 }
@@ -1426,6 +1433,56 @@ void test_native_streaminfo_non_lds_sample_count_is_rejected_before_writing()
     std::filesystem::remove_all(temp_dir);
 }
 
+void test_native_off_grid_sample_is_rejected_before_writing()
+{
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+        ("ld-compress-ng-native-off-grid-sample-test-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directory(temp_dir);
+
+    const auto flac_path = temp_dir / "off-grid.flac";
+    auto samples = make_samples();
+    samples.at(0) += 1;
+
+    std::ofstream output(flac_path, std::ios::binary);
+    if (!output) {
+        throw std::runtime_error("could not create test FLAC file");
+    }
+    const ldcompress::FlacStreamInfo stream_info {
+        .min_block_size = static_cast<unsigned>(samples.size()),
+        .max_block_size = static_cast<unsigned>(samples.size()),
+        .min_frame_size = 0,
+        .max_frame_size = 0,
+        .sample_rate = 40000,
+        .channels = 1,
+        .bits_per_sample = 16,
+        .total_samples = samples.size(),
+        .md5 = md5_samples_s16le(samples),
+    };
+    ldcompress::write_native_flac_streaminfo(output, stream_info);
+    const ldcompress::FlacFrameInfo frame_info {
+        .frame_number = 0,
+        .sample_rate = 40000,
+        .bits_per_sample = 16,
+    };
+    ldcompress::write_mono_verbatim_frame(output, samples, frame_info);
+    output.close();
+
+    std::ostringstream decoded;
+    std::string error;
+    try {
+        (void)ldcompress::decompress_flac_to_lds(flac_path.string(), decoded);
+    } catch (const std::runtime_error& exception) {
+        error = exception.what();
+    }
+    require(!error.empty(), "native FLAC decode accepted an off-grid PCM sample");
+    require(error.find("LDS 10-bit grid") != std::string::npos,
+        "off-grid PCM sample reported the wrong decode error");
+    require(decoded.str().empty(), "off-grid PCM sample wrote LDS bytes");
+
+    std::filesystem::remove_all(temp_dir);
+}
+
 }  // namespace
 
 int main()
@@ -1443,9 +1500,10 @@ int main()
         test_native_streaminfo_and_frame_header_contract();
         test_native_streaminfo_large_total_samples_are_unknown();
         test_native_encoder_streaminfo_block_bounds_for_short_tail();
-        test_native_streaminfo_md5_mismatch_is_rejected();
+        test_native_streaminfo_md5_mismatch_is_reported();
         test_native_streaminfo_total_samples_mismatch_is_rejected();
         test_native_streaminfo_non_lds_sample_count_is_rejected_before_writing();
+        test_native_off_grid_sample_is_rejected_before_writing();
     } catch (const std::exception& ex) {
         std::cerr << "test_flac_native_writer: " << ex.what() << '\n';
         return 1;

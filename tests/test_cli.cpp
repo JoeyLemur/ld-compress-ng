@@ -136,7 +136,7 @@ std::string corrupt_native_streaminfo_sample_count(std::string data)
 {
     require(data.size() > 42, "native FLAC test file is too small to corrupt STREAMINFO sample count");
     require(data.substr(0, 4) == "fLaC", "native FLAC test file did not have fLaC marker");
-    data[25] = static_cast<char>(static_cast<unsigned char>(data[25]) ^ 0x04U);
+    data[25] = static_cast<char>(static_cast<unsigned char>(data[25]) ^ 0x01U);
     return data;
 }
 
@@ -428,6 +428,8 @@ void test_cli(const std::filesystem::path& exe)
 
     run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(compressed));
     run_ok(shell_quote(exe) + " decompress " + shell_quote(compressed) + " " + shell_quote(decompressed));
+    require(!has_temporary_output_sibling(decompressed),
+        "successful Ogg decompression left a staging directory behind");
     const auto progress_text = run_ok_with_stderr(
         shell_quote(exe) + " decompress --progress " + shell_quote(compressed) + " " +
             shell_quote(decompressed_progress),
@@ -478,17 +480,23 @@ void test_cli(const std::filesystem::path& exe)
     require(std::filesystem::file_size(native_fixed) < std::filesystem::file_size(native_verbatim),
         "native-fixed fixture was not smaller than native-verbatim fixture");
     write_file(bad_native_fixed_md5, corrupt_native_streaminfo_md5(read_file(native_fixed)));
-    run_fails(shell_quote(exe) + " decompress " + shell_quote(bad_native_fixed_md5) + " " + shell_quote(bad_native_fixed_md5_out));
-    require(!std::filesystem::exists(bad_native_fixed_md5_out),
-        "failed decompress without overwrite left output behind");
+    run_ok(shell_quote(exe) + " decompress " + shell_quote(bad_native_fixed_md5) + " " + shell_quote(bad_native_fixed_md5_out));
+    require(read_file(bad_native_fixed_md5_out) == fixture,
+        "STREAMINFO MD5 mismatch changed decompressed LDS output");
+    require(!has_temporary_output_sibling(bad_native_fixed_md5_out),
+        "STREAMINFO MD5 mismatch left a staging directory behind");
     write_file(bad_native_fixed_count, corrupt_native_streaminfo_sample_count(read_file(native_fixed)));
     write_file(protected_decompress_output, "keep this LDS output");
     run_fails(shell_quote(exe) + " decompress --overwrite " + shell_quote(bad_native_fixed_count) + " " + shell_quote(protected_decompress_output));
     require(read_file(protected_decompress_output) == "keep this LDS output",
         "failed decompress replaced existing output");
+    require(!has_temporary_output_sibling(protected_decompress_output),
+        "failed overwrite decompression left a staging directory behind");
     run_ok(shell_quote(exe) + " decompress --overwrite " + shell_quote(native_fixed) + " " + shell_quote(protected_decompress_output));
     require(read_file(protected_decompress_output) == fixture,
         "successful overwrite decompress did not replace existing output");
+    require(!has_temporary_output_sibling(protected_decompress_output),
+        "successful overwrite decompression left a staging directory behind");
     run_ok(shell_quote(exe) + " compress --backend native-fixed --threads 2 " + shell_quote(lds) + " " + shell_quote(native_fixed_threads));
     run_ok(shell_quote(exe) + " decompress " + shell_quote(native_fixed_threads) + " " + shell_quote(native_fixed_threads_out));
     require(read_file(native_fixed_threads_out) == fixture, "threaded native-fixed FLAC round trip changed LDS bytes");

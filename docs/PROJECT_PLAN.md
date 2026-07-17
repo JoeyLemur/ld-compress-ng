@@ -150,22 +150,32 @@ Implemented:
 - Native decision stats for subframe type, fixed/LPC predictor order, Rice
   partition order, and wasted-bit counts.
 - Native FLAC decode hardening for STREAMINFO presence, RF-shaped 40 kHz mono
-  16-bit streams, decoded sample count, and decoded PCM MD5.
-- FLAC decompression now batches 8,192 LDS groups per output write and checks
+  16-bit streams, exact LDS 10-bit sample-grid alignment, decoded sample count,
+  and reported decoded PCM MD5 status.
+- FLAC decompression now batches 8,192 LDS groups per output write and records
   libFLAC's final STREAMINFO PCM-MD5 result through
   `FLAC__stream_decoder_finish()`, avoiding a redundant per-sample MD5 pass.
+  Original ld-compress Ogg and FlaLDF captures can have stale nonzero fields,
+  so a mismatch is reported while `verify --source` remains the authoritative
+  end-to-end check.
 - `decompress --progress` provides a throttled stderr update from decoder frame
   callbacks, with an immediate STREAMINFO state, elapsed time, and either a
   percentage or decoded-sample count when the FLAC total is unknown.
 - Native FLAC decode now rejects STREAMINFO-declared non-RF sample counts before
   writing decoded LDS output, and preserves the first decoder validation error
   instead of overwriting it with a later libFLAC status.
-- The `decompress` CLI writes to a same-directory temporary output and renames
-  it into place only after decode and late FLAC validations succeed, so bad
-  STREAMINFO MD5/sample-count inputs do not replace an existing `.lds` output.
-- The `compress` CLI uses the same publish-on-success model for every backend,
-  so encoder, input, device, and finalization failures leave an existing output
-  untouched even with `--overwrite` and remove the incomplete temporary file.
+- The `decompress` CLI writes to a private same-directory `mkdtemp` staging
+  directory and renames its payload into place only after decode and late FLAC
+  validations succeed, so bad STREAMINFO sample-count or off-grid inputs do not
+  replace an existing `.lds` output. A stale STREAMINFO PCM MD5 is reported but
+  remains compatible with original ld-compress captures.
+- The `compress` CLI uses the same private publish-on-success staging model for
+  every backend, so encoder, input, device, and finalization failures leave an
+  existing output untouched even with `--overwrite` and remove all incomplete
+  staging data without a temporary-name race.
+- `verify` now computes its compressed-input MD5 through a sequential decoder
+  read callback, confirms that the digest covered the complete file, and avoids
+  the former second full input pass while retaining `--source` comparison.
 - Native/OpenCL FLAC encoders now keep STREAMINFO min/max block sizes in the
   RFC-required `16..65535` range and exclude short final LDS tails from the
   minimum block-size bound.

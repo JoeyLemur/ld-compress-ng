@@ -9,6 +9,8 @@
 
 namespace ldcompress {
 
+struct FileDigest;
+
 enum class FlacContainer {
     Ogg,
     Native,
@@ -34,6 +36,14 @@ ConversionStats compress_lds_to_flac(
 ConversionStats decompress_flac_to_lds(
     const std::string& input_path,
     std::ostream& lds_output,
+    DecompressionProgressCallback progress_callback = {});
+
+// Decodes sequentially while hashing every compressed input byte read.  This
+// is used by verify so it does not need a second full pass over a capture.
+ConversionStats decompress_flac_to_lds_with_input_digest(
+    const std::string& input_path,
+    std::ostream& lds_output,
+    FileDigest& input_digest,
     DecompressionProgressCallback progress_callback = {});
 
 FlacContainer detect_flac_container(const std::string& input_path);

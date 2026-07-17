@@ -1,7 +1,7 @@
 # Handoff Notes
 
-Last updated: 2026-07-16, after the large-capture and transactional-output P1
-fixes and the accelerated-writer lifetime P2 fix.
+Last updated: 2026-07-16, after decompression hardening and single-pass
+verification follow-up work.
 
 This file is for maintainer/agent continuity. It is intentionally not installed
 by CMake; release-facing installed docs are listed explicitly in
@@ -12,21 +12,31 @@ by CMake; release-facing installed docs are listed explicitly in
 - Active branch: `main`.
 - Project version is `1.2.0` in `CMakeLists.txt`; `ld-compress-ng --version`
   prints `ld-compress-ng 1.2.0`.
-- All `compress` backends now write through a same-directory temporary path and
-  replace the requested destination only after successful finalization. The CLI
-  regression forces partial CPU and native output before failure, then checks
-  destination preservation, temporary cleanup, and successful replacement. It
-  repeats the failure-preservation check for each available accelerator; the
-  Vulkan branch will run automatically on a Vulkan-capable Linux test host.
+- `compress` and `decompress` now write inside a private `mkdtemp`
+  same-directory staging directory, then atomically rename its payload to the
+  requested destination. The CLI regression covers successful and failed
+  compression/decompression cleanup as well as destination preservation; it
+  repeats the compression failure-preservation check for each available
+  accelerator. The Vulkan branch will run automatically on a Vulkan-capable
+  Linux test host.
 - FLAC decompression now buffers 8,192 LDS groups (40 KiB packed output) per
-  write and explicitly checks `FLAC__stream_decoder_finish()` for the
-  STREAMINFO PCM-MD5 result. This replaces the former second MD5 pass over
-  individual samples while retaining the corrupted-STREAMINFO regression and
-  same-directory transactional output behavior.
+  write and records `FLAC__stream_decoder_finish()` PCM-MD5 mismatches without
+  discarding otherwise valid output, replacing the former second MD5 pass over
+  individual samples. Original ld-compress Ogg and FlaLDF captures can have a
+  stale nonzero field; the Indiana Jones capture does, so `verify --source`
+  remains the end-to-end check.
 - `decompress --progress` reports a throttled stderr line from decoder frame
   callbacks. It emits an immediate STREAMINFO-based `0%` state, shows elapsed
   time, uses a percentage when the FLAC total is known, and otherwise reports
   decoded samples; the option has a CLI regression that captures stderr.
+- Decoding rejects samples outside the exact signed-16-bit LDS 10-bit grid
+  (`sample % 64 == 0`) before they can be silently quantized by the packer. A
+  native-FLAC regression supplies an MD5-valid off-grid sample and confirms no
+  LDS bytes are emitted.
+- `verify` uses a sequential libFLAC read callback that feeds the compressed
+  input MD5 during decoding. It requires the counted bytes to equal the input
+  file size, so large captures avoid the former separate `md5_file()` pass.
+  Native and Ogg tests compare this digest and byte count to `md5_file()`.
 - Potential scalar-native tuning point: profile `update_md5_s16le()` before
   changing it. It still updates the project MD5 once per four-sample LDS group;
   if that matters on Apple, batch the existing signed-16-bit little-endian PCM

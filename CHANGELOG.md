@@ -7,17 +7,31 @@
   shows a percentage when the stream declares a total sample count, and still
   reports useful decoded-sample counts for FLAC streams with an unknown total.
 - Decompression now batches packed LDS output instead of issuing one stream
-  write per four decoded samples. It uses libFLAC's checked final PCM-MD5
-  validation rather than a second, per-sample MD5 pass, substantially improving
-  Ogg and native FLAC decode throughput while preserving the existing malformed
-  STREAMINFO rejection and transactional-output behavior.
+  write per four decoded samples. It uses libFLAC's final PCM-MD5 result rather
+  than a second, per-sample MD5 pass, substantially improving Ogg and native
+  FLAC decode throughput while preserving malformed STREAMINFO rejection and
+  transactional-output behavior.
+- Decoding now rejects any 40 kHz mono 16-bit FLAC sample that cannot be
+  losslessly represented by the LDS 10-bit packing grid. Invalid streams leave
+  no published LDS output.
+- `compress` and `decompress` now write their payload inside a private
+  same-directory staging directory created with `mkdtemp`, then atomically
+  rename that payload into place. This removes the temporary-name race while
+  retaining destination preservation and cleanup on failure.
+- `verify` now hashes compressed input bytes while it sequentially decodes,
+  avoiding a second full read of large Ogg and native FLAC captures. It checks
+  that the digest covered the whole input before reporting the result.
+- Original ld-compress Ogg and FlaLDF captures may contain stale nonzero
+  STREAMINFO PCM MD5 fields. The decoder reports a mismatch on stderr but does
+  not discard otherwise valid LDS data; `verify --source` is the authoritative
+  end-to-end validation.
 - Fixed a use-after-free when one threaded selected-frame writer failed while
   another writer was still reading the same analyzed sample batch. OpenCL,
   Vulkan, and Metal writer jobs now retain shared ownership of the batch until
   every in-flight job releases it, including error unwinding. A two-worker
   sanitizer regression covers the failure path without requiring a GPU.
-- Compression now writes to a same-directory temporary file and renames it into
-  place only after the selected backend finishes successfully. Failed CPU,
+- Compression now writes through same-directory staging and renames its payload
+  into place only after the selected backend finishes successfully. Failed CPU,
   native-verbatim, native-fixed, OpenCL, Vulkan, or Metal compression therefore
   leaves an existing destination unchanged even with `--overwrite`, and removes
   the incomplete temporary output.

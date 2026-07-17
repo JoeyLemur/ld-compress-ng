@@ -1,10 +1,12 @@
 #include "flac_codec.h"
+#include "hash.h"
 
 #include <FLAC/stream_decoder.h>
 #include <FLAC/stream_encoder.h>
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -45,6 +47,17 @@ struct DecoderDeleter {
 
 using DecoderPtr = std::unique_ptr<FLAC__StreamDecoder, DecoderDeleter>;
 
+struct FileDeleter {
+    void operator()(std::FILE* file) const
+    {
+        if (file != nullptr) {
+            (void)std::fclose(file);
+        }
+    }
+};
+
+using FilePtr = std::unique_ptr<std::FILE, FileDeleter>;
+
 void require_encoder(bool ok, const char* message)
 {
     if (!ok) {
@@ -62,6 +75,8 @@ struct DecoderClient {
     std::ostream& output;
     ConversionStats stats;
     DecompressionProgressCallback progress_callback;
+    std::FILE* input_file = nullptr;
+    FileDigest* input_digest = nullptr;
     std::uint64_t expected_total_samples = 0;
     unsigned expected_sample_rate = 0;
     unsigned expected_channels = 0;
@@ -98,6 +113,75 @@ bool report_progress(DecoderClient& client)
         return false;
     }
     return true;
+}
+
+FLAC__StreamDecoderReadStatus read_and_hash_callback(
+    const FLAC__StreamDecoder*,
+    FLAC__byte buffer[],
+    std::size_t* bytes,
+    void* client_data)
+{
+    auto& client = *static_cast<DecoderClient*>(client_data);
+    if (*bytes == 0 || client.input_file == nullptr || client.input_digest == nullptr) {
+        *bytes = 0;
+        set_error_once(client, "invalid sequential FLAC decoder read request");
+        return FLAC__STREAM_DECODER_READ_STATUS_ABORT;
+    }
+
+    const auto read = std::fread(buffer, 1, *bytes, client.input_file);
+    if (read == 0) {
+        *bytes = 0;
+        if (std::ferror(client.input_file)) {
+            set_error_once(client, "failed to read compressed input");
+            return FLAC__STREAM_DECODER_READ_STATUS_ABORT;
+        }
+        return FLAC__STREAM_DECODER_READ_STATUS_END_OF_STREAM;
+    }
+
+    try {
+        client.input_digest->md5.update(buffer, read);
+        client.input_digest->bytes += read;
+    } catch (const std::exception& error) {
+        *bytes = 0;
+        set_error_once(client, std::string("failed to hash compressed input: ") + error.what());
+        return FLAC__STREAM_DECODER_READ_STATUS_ABORT;
+    } catch (...) {
+        *bytes = 0;
+        set_error_once(client, "failed to hash compressed input");
+        return FLAC__STREAM_DECODER_READ_STATUS_ABORT;
+    }
+    *bytes = read;
+    return FLAC__STREAM_DECODER_READ_STATUS_CONTINUE;
+}
+
+bool drain_and_hash_input(DecoderClient& client)
+{
+    if (client.input_file == nullptr || client.input_digest == nullptr) {
+        return true;
+    }
+
+    std::array<FLAC__byte, 64 * 1024> buffer {};
+    while (true) {
+        const auto read = std::fread(buffer.data(), 1, buffer.size(), client.input_file);
+        if (read == 0) {
+            if (std::ferror(client.input_file)) {
+                set_error_once(client, "failed to read compressed input");
+                return false;
+            }
+            return true;
+        }
+
+        try {
+            client.input_digest->md5.update(buffer.data(), read);
+            client.input_digest->bytes += read;
+        } catch (const std::exception& error) {
+            set_error_once(client, std::string("failed to hash compressed input: ") + error.what());
+            return false;
+        } catch (...) {
+            set_error_once(client, "failed to hash compressed input");
+            return false;
+        }
+    }
 }
 
 bool flush_packed_output(DecoderClient& client)
@@ -157,11 +241,22 @@ FLAC__StreamDecoderWriteStatus write_callback(
         set_error_once(client, "FLAC stream sample rate is not 40000 Hz");
         return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
     }
+    if (client.expected_total_samples != 0 &&
+        (client.stats.samples > client.expected_total_samples ||
+            frame->header.blocksize >
+                client.expected_total_samples - client.stats.samples)) {
+        set_error_once(client, "decoded FLAC sample count exceeded STREAMINFO");
+        return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
+    }
 
     for (std::uint32_t i = 0; i < frame->header.blocksize; ++i) {
         const auto sample = buffer[0][i];
         if (sample < -32768 || sample > 32767) {
             set_error_once(client, "decoded FLAC sample is outside int16 range");
+            return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
+        }
+        if ((sample % 64) != 0) {
+            set_error_once(client, "decoded FLAC sample is not aligned to the LDS 10-bit grid");
             return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
         }
 
@@ -332,24 +427,63 @@ ConversionStats compress_lds_to_flac(
     return stats;
 }
 
-ConversionStats decompress_flac_to_lds(
+namespace {
+
+bool process_until_declared_end(FLAC__StreamDecoder* decoder, DecoderClient& client)
+{
+    while (true) {
+        if (!FLAC__stream_decoder_process_single(decoder)) {
+            return false;
+        }
+        if (!client.error.empty()) {
+            return false;
+        }
+        // Legacy ld-compress captures use the declared STREAMINFO sample count
+        // as the capture boundary even when trailing FLAC frames are present.
+        if (client.expected_total_samples != 0 &&
+            client.stats.samples == client.expected_total_samples) {
+            return true;
+        }
+
+        const auto state = FLAC__stream_decoder_get_state(decoder);
+        if (state == FLAC__STREAM_DECODER_END_OF_STREAM ||
+            state == FLAC__STREAM_DECODER_END_OF_LINK) {
+            return true;
+        }
+    }
+}
+
+ConversionStats decompress_flac_to_lds_impl(
     const std::string& input_path,
     std::ostream& lds_output,
-    DecompressionProgressCallback progress_callback)
+    DecompressionProgressCallback progress_callback,
+    FileDigest* input_digest)
 {
     DecoderPtr decoder(FLAC__stream_decoder_new());
     if (!decoder) {
         throw std::runtime_error("could not allocate FLAC decoder");
     }
 
+    const auto container = detect_flac_container(input_path);
     if (!FLAC__stream_decoder_set_md5_checking(decoder.get(), true)) {
         throw std::runtime_error("could not enable FLAC decoded-PCM MD5 checking");
+    }
+
+    FilePtr input_file;
+    if (input_digest != nullptr) {
+        *input_digest = {};
+        input_file.reset(std::fopen(input_path.c_str(), "rb"));
+        if (!input_file) {
+            throw std::runtime_error("could not open input: " + input_path);
+        }
     }
 
     DecoderClient client {
         .output = lds_output,
         .stats = {},
         .progress_callback = std::move(progress_callback),
+        .input_file = input_file.get(),
+        .input_digest = input_digest,
         .expected_total_samples = 0,
         .expected_sample_rate = 0,
         .expected_channels = 0,
@@ -361,22 +495,35 @@ ConversionStats decompress_flac_to_lds(
         .packed_output_bytes = 0,
         .error = {},
     };
-    const auto container = detect_flac_container(input_path);
-    const FLAC__StreamDecoderInitStatus init_status =
-        container == FlacContainer::Ogg
+    if (container == FlacContainer::Ogg &&
+        !FLAC__stream_decoder_set_decode_chained_stream(decoder.get(), false)) {
+        throw std::runtime_error("could not disable chained Ogg FLAC decoding");
+    }
+    FLAC__StreamDecoderInitStatus init_status;
+    if (input_digest != nullptr) {
+        init_status = container == FlacContainer::Ogg
+            ? FLAC__stream_decoder_init_ogg_stream(
+                  decoder.get(), read_and_hash_callback, nullptr, nullptr, nullptr, nullptr,
+                  write_callback, metadata_callback, error_callback, &client)
+            : FLAC__stream_decoder_init_stream(
+                  decoder.get(), read_and_hash_callback, nullptr, nullptr, nullptr, nullptr,
+                  write_callback, metadata_callback, error_callback, &client);
+    } else {
+        init_status = container == FlacContainer::Ogg
             ? FLAC__stream_decoder_init_ogg_file(
                   decoder.get(), input_path.c_str(), write_callback, metadata_callback,
                   error_callback, &client)
             : FLAC__stream_decoder_init_file(
                   decoder.get(), input_path.c_str(), write_callback, metadata_callback,
                   error_callback, &client);
+    }
 
     if (init_status != FLAC__STREAM_DECODER_INIT_STATUS_OK) {
         throw std::runtime_error(std::string("could not initialize FLAC decoder: ") +
             FLAC__StreamDecoderInitStatusString[init_status]);
     }
 
-    if (!FLAC__stream_decoder_process_until_end_of_stream(decoder.get())) {
+    if (!process_until_declared_end(decoder.get(), client)) {
         if (!client.error.empty()) {
             throw std::runtime_error(client.error);
         }
@@ -407,16 +554,45 @@ ConversionStats decompress_flac_to_lds(
         throw std::runtime_error("decoded FLAC sample count did not match STREAMINFO");
     }
     if (!FLAC__stream_decoder_finish(decoder.get())) {
-        throw std::runtime_error("decoded FLAC sample MD5 did not match STREAMINFO");
+        // Original ld-compress Ogg and FlaLDF captures may have a stale
+        // non-zero STREAMINFO PCM MD5. Preserve the diagnostic while allowing
+        // callers to validate decoded LDS bytes with verify --source.
+        client.stats.streaminfo_pcm_md5_mismatch = true;
+    }
+    if (!drain_and_hash_input(client)) {
+        throw std::runtime_error(client.error);
     }
     if (!flush_packed_output(client)) {
         throw std::runtime_error(client.error);
     }
 
-    if (std::filesystem::exists(input_path)) {
-        client.stats.input_bytes = std::filesystem::file_size(input_path);
+    const auto input_bytes = std::filesystem::file_size(input_path);
+    if (input_digest != nullptr && input_digest->bytes != input_bytes) {
+        throw std::runtime_error("decoder did not consume the complete compressed input");
     }
+    client.stats.input_bytes = input_bytes;
     return client.stats;
+}
+
+}  // namespace
+
+ConversionStats decompress_flac_to_lds(
+    const std::string& input_path,
+    std::ostream& lds_output,
+    DecompressionProgressCallback progress_callback)
+{
+    return decompress_flac_to_lds_impl(
+        input_path, lds_output, std::move(progress_callback), nullptr);
+}
+
+ConversionStats decompress_flac_to_lds_with_input_digest(
+    const std::string& input_path,
+    std::ostream& lds_output,
+    FileDigest& input_digest,
+    DecompressionProgressCallback progress_callback)
+{
+    return decompress_flac_to_lds_impl(
+        input_path, lds_output, std::move(progress_callback), &input_digest);
 }
 
 }  // namespace ldcompress
