@@ -18,6 +18,11 @@ by CMake; release-facing installed docs are listed explicitly in
   destination preservation, temporary cleanup, and successful replacement. It
   repeats the failure-preservation check for each available accelerator; the
   Vulkan branch will run automatically on a Vulkan-capable Linux test host.
+- FLAC decompression now buffers 8,192 LDS groups (40 KiB packed output) per
+  write and explicitly checks `FLAC__stream_decoder_finish()` for the
+  STREAMINFO PCM-MD5 result. This replaces the former second MD5 pass over
+  individual samples while retaining the corrupted-STREAMINFO regression and
+  same-directory transactional output behavior.
 - The shared OpenCL/Vulkan/Metal selected-frame writer now gives each queued
   job shared ownership of its analyzed sample batch. If one worker fails, a
   sibling can finish unwinding without reading freed batch storage. The

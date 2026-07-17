@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Decompression now batches packed LDS output instead of issuing one stream
+  write per four decoded samples. It uses libFLAC's checked final PCM-MD5
+  validation rather than a second, per-sample MD5 pass, substantially improving
+  Ogg and native FLAC decode throughput while preserving the existing malformed
+  STREAMINFO rejection and transactional-output behavior.
 - Fixed a use-after-free when one threaded selected-frame writer failed while
   another writer was still reading the same analyzed sample batch. OpenCL,
   Vulkan, and Metal writer jobs now retain shared ownership of the batch until

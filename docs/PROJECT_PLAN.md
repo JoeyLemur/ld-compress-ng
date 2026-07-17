@@ -151,6 +151,9 @@ Implemented:
   partition order, and wasted-bit counts.
 - Native FLAC decode hardening for STREAMINFO presence, RF-shaped 40 kHz mono
   16-bit streams, decoded sample count, and decoded PCM MD5.
+- FLAC decompression now batches 8,192 LDS groups per output write and checks
+  libFLAC's final STREAMINFO PCM-MD5 result through
+  `FLAC__stream_decoder_finish()`, avoiding a redundant per-sample MD5 pass.
 - Native FLAC decode now rejects STREAMINFO-declared non-RF sample counts before
   writing decoded LDS output, and preserves the first decoder validation error
   instead of overwriting it with a later libFLAC status.
