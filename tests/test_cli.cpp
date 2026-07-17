@@ -428,6 +428,8 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_native_fixed = temp_dir / "fixture.bad-native-fixed.ldf";
     const auto bad_native_fixed_reversed = temp_dir / "fixture.bad-native-fixed-reversed.ldf";
     const auto bad_native_fixed_threads = temp_dir / "fixture.bad-native-fixed-threads.ldf";
+    const auto bad_native_fixed_threads_large =
+        temp_dir / "fixture.bad-native-fixed-threads-large.ldf";
     const auto bad_native_frame_samples = temp_dir / "fixture.bad-native-frame-samples.ldf";
     const auto bad_native_frame_samples_large = temp_dir / "fixture.bad-native-frame-samples-large.ldf";
     const auto bad_native_lpc_order = temp_dir / "fixture.bad-native-lpc-order.ldf";
@@ -437,6 +439,7 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_native_rice_partition_order = temp_dir / "fixture.bad-native-rice-partition-order.ldf";
     const auto bad_native_rice_partition_order_large = temp_dir / "fixture.bad-native-rice-partition-order-large.ldf";
     const auto bad_native_fixed_level = temp_dir / "fixture.bad-native-fixed-level.flac.ldf";
+    const auto bad_cpu_level_large = temp_dir / "fixture.bad-cpu-level-large.ldf";
     const auto bad_cpu_stats = temp_dir / "fixture.bad-cpu-stats.ldf";
     const auto bad_cpu_frame_samples = temp_dir / "fixture.bad-cpu-frame-samples.ldf";
     const auto bad_cpu_frame_samples_default = temp_dir / "fixture.bad-cpu-frame-samples-default.ldf";
@@ -738,6 +741,13 @@ void test_cli(const std::filesystem::path& exe)
         "threaded tuned native-fixed output differed from single-threaded output");
     run_fails(shell_quote(exe) + " compress --backend native-fixed --threads 0 " + shell_quote(lds) + " " + shell_quote(bad_native_fixed_threads));
     require(!std::filesystem::exists(bad_native_fixed_threads), "invalid native-fixed thread count wrote output");
+    run_fails_with_stderr(
+        shell_quote(exe) + " compress --backend native-fixed --threads 4294967297 " +
+            shell_quote(lds) + " " + shell_quote(bad_native_fixed_threads_large),
+        command_stderr,
+        "thread count must be 1..1024");
+    require(!std::filesystem::exists(bad_native_fixed_threads_large),
+        "overflowing native-fixed thread count wrote output");
     run_fails(shell_quote(exe) + " compress --backend native-fixed --frame-samples 15 " + shell_quote(lds) + " " + shell_quote(bad_native_frame_samples));
     require(!std::filesystem::exists(bad_native_frame_samples), "invalid native frame size wrote output");
     run_fails(shell_quote(exe) + " compress --backend native-fixed --frame-samples 99999999999999999999 " + shell_quote(lds) + " " + shell_quote(bad_native_frame_samples_large));
@@ -756,6 +766,13 @@ void test_cli(const std::filesystem::path& exe)
     require(!std::filesystem::exists(bad_native_rice_partition_order_large), "oversized native Rice partition order wrote output");
     run_fails(shell_quote(exe) + " compress --backend native-fixed --level 8 " + shell_quote(lds) + " " + shell_quote(bad_native_fixed_level));
     require(!std::filesystem::exists(bad_native_fixed_level), "native-fixed --level rejection wrote output");
+    run_fails_with_stderr(
+        shell_quote(exe) + " compress --backend cpu --level 4294967297 " + shell_quote(lds) +
+            " " + shell_quote(bad_cpu_level_large),
+        command_stderr,
+        "compression level must be 1..12");
+    require(!std::filesystem::exists(bad_cpu_level_large),
+        "overflowing CPU compression level wrote output");
     run_fails(shell_quote(exe) + " compress --backend cpu --stats " + shell_quote(lds) + " " + shell_quote(bad_cpu_stats));
     require(!std::filesystem::exists(bad_cpu_stats), "CPU --stats rejection wrote output");
     run_fails(shell_quote(exe) + " compress --backend cpu --frame-samples 2048 " + shell_quote(lds) + " " + shell_quote(bad_cpu_frame_samples));

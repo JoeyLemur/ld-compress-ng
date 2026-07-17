@@ -26,7 +26,12 @@
   Older platforms or filesystems without no-replace rename support fall back
   to hard-link publication when available. With `--overwrite`, the payload is
   atomically renamed into place. `SIGINT`, `SIGTERM`, and `SIGHUP` also remove
-  active private staging data before preserving the normal signal termination.
+  active private staging data before preserving the normal signal termination;
+  those signals remain blocked from staging-directory creation through cleanup
+  registration so they cannot strand a directory in that narrow window.
+- Compression levels and native writer thread counts now reject values that
+  overflow their accepted unsigned ranges instead of wrapping to a smaller,
+  valid value.
 - `verify` now hashes compressed input bytes while it sequentially decodes,
   avoiding a second full read of large Ogg and native FLAC captures. It checks
   that the digest covered the whole input before reporting the result.

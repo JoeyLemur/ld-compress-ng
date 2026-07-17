@@ -502,6 +502,9 @@ public:
             : output_path.parent_path();
         std::string template_path =
             (parent / ("." + output_path.filename().string() + ".tmp-XXXXXX")).string();
+        // Keep termination signals pending from the moment the directory can
+        // become visible until its cleanup paths have been registered.
+        BlockTerminationSignals blocked;
         if (::mkdtemp(template_path.data()) == nullptr) {
             throw std::runtime_error("could not create private staging directory for: " + output);
         }
@@ -599,42 +602,6 @@ void publish_temporary_output(
         std::string(std::strerror(error)));
 }
 
-unsigned parse_level(std::string_view text)
-{
-    unsigned level = 0;
-    if (text.empty()) {
-        throw std::runtime_error("empty compression level");
-    }
-    for (const char ch : text) {
-        if (ch < '0' || ch > '9') {
-            throw std::runtime_error("invalid compression level: " + std::string(text));
-        }
-        level = (level * 10U) + static_cast<unsigned>(ch - '0');
-    }
-    if (level == 0U || level > 12U) {
-        throw std::runtime_error("compression level must be 1..12");
-    }
-    return level;
-}
-
-unsigned parse_threads(std::string_view text)
-{
-    unsigned threads = 0;
-    if (text.empty()) {
-        throw std::runtime_error("empty thread count");
-    }
-    for (const char ch : text) {
-        if (ch < '0' || ch > '9') {
-            throw std::runtime_error("invalid thread count: " + std::string(text));
-        }
-        threads = (threads * 10U) + static_cast<unsigned>(ch - '0');
-    }
-    if (threads == 0U || threads > 1024U) {
-        throw std::runtime_error("thread count must be 1..1024");
-    }
-    return threads;
-}
-
 unsigned parse_bounded_unsigned(
     std::string_view text,
     std::string_view name,
@@ -650,7 +617,7 @@ unsigned parse_bounded_unsigned(
             throw std::runtime_error("invalid " + std::string(name) + ": " + std::string(text));
         }
         const auto digit = static_cast<unsigned>(ch - '0');
-        if (value > (max_value - digit) / 10U) {
+        if (digit > max_value || value > (max_value - digit) / 10U) {
             throw std::runtime_error(std::string(name) + " must be " +
                 std::to_string(min_value) + ".." + std::to_string(max_value));
         }
@@ -661,6 +628,16 @@ unsigned parse_bounded_unsigned(
             std::to_string(min_value) + ".." + std::to_string(max_value));
     }
     return value;
+}
+
+unsigned parse_level(std::string_view text)
+{
+    return parse_bounded_unsigned(text, "compression level", 1, 12);
+}
+
+unsigned parse_threads(std::string_view text)
+{
+    return parse_bounded_unsigned(text, "thread count", 1, 1024);
 }
 
 std::size_t parse_device_index(std::string_view text)

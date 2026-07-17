@@ -177,7 +177,11 @@ Implemented:
   every backend, so encoder, input, device, and finalization failures leave an
   existing output untouched even with `--overwrite`. `SIGINT`, `SIGTERM`, and
   `SIGHUP` additionally remove an active staging payload/directory before the
-  process preserves normal signal termination; `SIGKILL` remains uncatchable.
+  process preserves normal signal termination. Those signals remain blocked
+  from `mkdtemp` through cleanup registration, closing the staging-creation
+  race; `SIGKILL` remains uncatchable.
+- Compression-level and native thread-count parsing rejects arithmetic overflow
+  before it can wrap into an otherwise valid option value.
 - `verify` now computes its compressed-input MD5 through a sequential decoder
   read callback, confirms that the digest covered the complete file, and avoids
   the former second full input pass while retaining `--source` comparison.
