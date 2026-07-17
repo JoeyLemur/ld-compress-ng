@@ -21,8 +21,10 @@
   no published LDS output.
 - `compress` and `decompress` now write their payload inside a private
   same-directory staging directory created with `mkdtemp`. Without
-  `--overwrite`, an atomic hard-link publish prevents a destination created
-  during the run from being replaced; with `--overwrite`, the payload is
+  `--overwrite`, an atomic no-replace rename prevents a destination created
+  during the run from being replaced without requiring hard-link support.
+  Older platforms or filesystems without no-replace rename support fall back
+  to hard-link publication when available. With `--overwrite`, the payload is
   atomically renamed into place. `SIGINT`, `SIGTERM`, and `SIGHUP` also remove
   active private staging data before preserving the normal signal termination.
 - `verify` now hashes compressed input bytes while it sequentially decodes,

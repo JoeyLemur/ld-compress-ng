@@ -166,11 +166,13 @@ Implemented:
   instead of overwriting it with a later libFLAC status.
 - The `decompress` CLI writes to a private same-directory `mkdtemp` staging
   directory and publishes its payload only after decode and late FLAC
-  validations succeed. No-overwrite mode uses an atomic hard link so an output
-  created during the run cannot be replaced; `--overwrite` uses an atomic
-  rename. Bad STREAMINFO sample-count or off-grid inputs therefore do not
-  replace an existing `.lds` output. A stale STREAMINFO PCM MD5 is reported but
-  remains compatible with original ld-compress captures.
+  validations succeed. No-overwrite mode uses a platform atomic no-replace
+  rename so an output created during the run cannot be replaced without
+  requiring hard-link support; older platforms or filesystems without
+  no-replace rename support retain a hard-link fallback when available.
+  `--overwrite` uses an atomic rename. Bad STREAMINFO sample-count or off-grid
+  inputs therefore do not replace an existing `.lds` output. A stale STREAMINFO
+  PCM MD5 is reported but remains compatible with original ld-compress captures.
 - The `compress` CLI uses the same private publish-on-success staging model for
   every backend, so encoder, input, device, and finalization failures leave an
   existing output untouched even with `--overwrite`. `SIGINT`, `SIGTERM`, and

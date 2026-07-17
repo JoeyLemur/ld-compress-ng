@@ -31,6 +31,13 @@
 #include <utility>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <sys/stdio.h>
+#elif defined(__linux__)
+#include <fcntl.h>
+#include <sys/syscall.h>
+#endif
+
 #include <unistd.h>
 
 #ifndef LDCOMPRESS_VERSION
@@ -531,6 +538,29 @@ private:
     std::filesystem::path payload_;
 };
 
+int rename_no_replace(
+    const std::filesystem::path& source,
+    const std::filesystem::path& destination)
+{
+#if defined(__APPLE__)
+    return ::renamex_np(source.c_str(), destination.c_str(), RENAME_EXCL);
+#elif defined(__linux__) && defined(SYS_renameat2)
+    constexpr unsigned kRenameNoReplace = 1U;
+    return static_cast<int>(::syscall(SYS_renameat2,
+        AT_FDCWD, source.c_str(), AT_FDCWD, destination.c_str(), kRenameNoReplace));
+#else
+    (void)source;
+    (void)destination;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+bool rename_no_replace_is_unavailable(int error)
+{
+    return error == ENOSYS || error == EINVAL || error == ENOTSUP;
+}
+
 void publish_temporary_output(
     const TemporaryOutput& staging_output,
     const std::string& output,
@@ -541,6 +571,22 @@ void publish_temporary_output(
         return;
     }
 
+    if (rename_no_replace(staging_output.payload(), output) == 0) {
+        return;
+    }
+
+    const int rename_error = errno;
+    if (rename_error == EEXIST) {
+        throw std::runtime_error("output already exists: " + output + " (use --overwrite)");
+    }
+    if (!rename_no_replace_is_unavailable(rename_error)) {
+        throw std::runtime_error("could not publish output: " + output + ": " +
+            std::string(std::strerror(rename_error)));
+    }
+
+    // Older Linux kernels and other POSIX targets may not provide an atomic
+    // no-replace rename. Preserve the original hard-link publication path for
+    // filesystems where it is available.
     if (::link(staging_output.payload().c_str(), output.c_str()) == 0) {
         return;
     }

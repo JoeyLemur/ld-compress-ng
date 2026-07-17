@@ -14,14 +14,17 @@ by CMake; release-facing installed docs are listed explicitly in
   prints `ld-compress-ng 1.2.0`.
 - `compress` and `decompress` write inside a private `mkdtemp` same-directory
   staging directory. `--overwrite` atomically renames its payload to the
-  requested destination; no-overwrite mode atomically hard-links the payload,
-  so a destination created during the run cannot be replaced. `SIGINT`,
-  `SIGTERM`, and `SIGHUP` unlink the active payload and staging directory
-  before preserving normal signal termination (`SIGKILL` is uncatchable). The
-  CLI regression covers successful and failed compression/decompression
-  cleanup, no-overwrite publication races, and interrupt cleanup. It repeats
-  compression failure-preservation checks for each available accelerator. The
-  Vulkan branch will run automatically on a Vulkan-capable Linux test host.
+  requested destination; no-overwrite mode uses the platform atomic
+  no-replace rename so a destination created during the run cannot be replaced,
+  without requiring hard-link support. Older platforms or filesystems without
+  no-replace rename support retain a hard-link fallback when available.
+  `SIGINT`, `SIGTERM`, and `SIGHUP` unlink the active payload and staging
+  directory before preserving normal signal termination (`SIGKILL` is
+  uncatchable). The CLI regression covers successful and failed
+  compression/decompression cleanup, no-overwrite publication races, and
+  interrupt cleanup. It repeats compression failure-preservation checks for
+  each available accelerator. The Vulkan branch will run automatically on a
+  Vulkan-capable Linux test host.
 - FLAC decompression now buffers 8,192 LDS groups (40 KiB packed output) per
   write and records `FLAC__stream_decoder_finish()` PCM-MD5 mismatches without
   discarding otherwise valid output, replacing the former second MD5 pass over

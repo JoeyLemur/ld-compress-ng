@@ -167,11 +167,13 @@ build/ld-compress-ng decompress --overwrite capture.ldf capture.lds
 Compression and decompression publish their output transactionally: each writes
 inside a private staging directory beside the destination and publishes only
 after the operation finishes successfully. Without `--overwrite`, publication
-uses an atomic hard link, so a destination created by another process during
-the run is never replaced. With `--overwrite`, the staged payload is atomically
-renamed into place. Normal failures and `SIGINT`, `SIGTERM`, or `SIGHUP` remove
-the private staging data; as with any process, `SIGKILL` cannot be cleaned up.
-This applies to every compression backend.
+uses an atomic no-replace rename, so a destination created by another process
+during the run is never replaced without requiring hard-link support. Older
+platforms or filesystems without no-replace rename support fall back to
+hard-link publication when available. With `--overwrite`, the staged payload
+is atomically renamed into place. Normal failures and `SIGINT`, `SIGTERM`, or
+`SIGHUP` remove the private staging data; as with any process, `SIGKILL` cannot
+be cleaned up. This applies to every compression backend.
 
 ## Backends
 
