@@ -1633,14 +1633,26 @@ int run_convert(const Options& options)
         throw std::runtime_error("could not open input: " + options.input);
     }
 
-    std::ofstream output(options.output, std::ios::binary);
-    if (!output) {
-        throw std::runtime_error("could not open output: " + options.output);
+    const TemporaryOutput staging_output(options.output);
+    ldcompress::ConversionStats stats;
+    {
+        std::ofstream output(staging_output.payload(), std::ios::binary);
+        if (!output) {
+            throw std::runtime_error("could not open temporary output: " +
+                staging_output.payload().string());
+        }
+
+        stats = options.unpack
+            ? ldcompress::unpack_lds10_to_s16le(input, output)
+            : ldcompress::pack_s16le_to_lds10(input, output);
+        output.close();
+        if (!output) {
+            throw std::runtime_error("failed to finish converted output: " +
+                staging_output.payload().string());
+        }
     }
 
-    const auto stats = options.unpack
-        ? ldcompress::unpack_lds10_to_s16le(input, output)
-        : ldcompress::pack_s16le_to_lds10(input, output);
+    publish_temporary_output(staging_output, options.output, options.overwrite);
 
     std::cerr << "converted " << stats.input_bytes << " bytes to "
               << stats.output_bytes << " bytes (" << stats.samples

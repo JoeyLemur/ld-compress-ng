@@ -381,8 +381,13 @@ void test_cli(const std::filesystem::path& exe)
     const auto alias_lds = temp_dir / "alias-name.lds";
     const auto opencl_default_lds = temp_dir / "opencl-default.lds";
     const auto truncated_lds = temp_dir / "truncated.lds";
+    const auto truncated_pcm = temp_dir / "truncated.s16";
     const auto pcm = temp_dir / "fixture.s16";
     const auto repacked = temp_dir / "fixture.repacked.lds";
+    const auto failed_unpack = temp_dir / "failed-unpack.s16";
+    const auto failed_pack = temp_dir / "failed-pack.lds";
+    const auto protected_unpack = temp_dir / "protected-unpack.s16";
+    const auto protected_pack = temp_dir / "protected-pack.lds";
     const auto compressed = temp_dir / "fixture.ldf";
     const auto explicit_auto = temp_dir / "fixture.explicit-auto.ldf";
     const auto protected_cpu_compress_output = temp_dir / "protected-cpu.ldf";
@@ -513,6 +518,7 @@ void test_cli(const std::filesystem::path& exe)
     write_file(alias_lds, fixture);
     write_file(opencl_default_lds, fixture);
     write_file(truncated_lds, truncated_fixture);
+    write_file(truncated_pcm, std::string((8U * 8192U) + 1U, '\0'));
     write_file(empty_lds, "");
 
     test_atomic_no_overwrite_publish(exe, temp_dir);
@@ -553,6 +559,30 @@ void test_cli(const std::filesystem::path& exe)
     require(read_file(repacked) == fixture, "convert round trip changed LDS bytes");
     run_fails(shell_quote(exe) + " convert --unpack --overwrite " + shell_quote(lds) + " " + shell_quote(lds));
     require(read_file(lds) == fixture, "same-path convert guard changed LDS bytes");
+    run_fails(shell_quote(exe) + " convert --unpack " + shell_quote(truncated_lds) + " " + shell_quote(failed_unpack));
+    require(!std::filesystem::exists(failed_unpack),
+        "failed LDS unpack published a partial output");
+    require(!has_temporary_output_sibling(failed_unpack),
+        "failed LDS unpack left a temporary output behind");
+    write_file(protected_unpack, "preserved unpack output");
+    run_fails(shell_quote(exe) + " convert --unpack --overwrite " +
+        shell_quote(truncated_lds) + " " + shell_quote(protected_unpack));
+    require(read_file(protected_unpack) == "preserved unpack output",
+        "failed LDS unpack replaced an existing output");
+    require(!has_temporary_output_sibling(protected_unpack),
+        "failed LDS unpack left a temporary output behind");
+    run_fails(shell_quote(exe) + " convert --pack " + shell_quote(truncated_pcm) + " " + shell_quote(failed_pack));
+    require(!std::filesystem::exists(failed_pack),
+        "failed PCM pack published a partial output");
+    require(!has_temporary_output_sibling(failed_pack),
+        "failed PCM pack left a temporary output behind");
+    write_file(protected_pack, "preserved pack output");
+    run_fails(shell_quote(exe) + " convert --pack --overwrite " +
+        shell_quote(truncated_pcm) + " " + shell_quote(protected_pack));
+    require(read_file(protected_pack) == "preserved pack output",
+        "failed PCM pack replaced an existing output");
+    require(!has_temporary_output_sibling(protected_pack),
+        "failed PCM pack left a temporary output behind");
 
     const auto selected_automatic_backend = automatic_backend();
     const auto automatic_container_magic = uses_native_flac_container(selected_automatic_backend)
