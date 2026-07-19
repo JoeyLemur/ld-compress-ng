@@ -10,8 +10,8 @@ by CMake; release-facing installed docs are listed explicitly in
 ## Current Repository State
 
 - Active branch: `main`.
-- Project version is `1.2.0` in `CMakeLists.txt`; `ld-compress-ng --version`
-  prints `ld-compress-ng 1.2.0`.
+- Project version is `1.2.1` in `CMakeLists.txt`; `ld-compress-ng --version`
+  prints `ld-compress-ng 1.2.1`.
 - `compress` and `decompress` write inside a private `mkdtemp` same-directory
   staging directory. `--overwrite` atomically renames its payload to the
   requested destination; no-overwrite mode uses the platform atomic

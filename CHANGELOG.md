@@ -1,67 +1,26 @@
 # Changelog
 
-## Unreleased
+## 1.2.1 - 2026-07-18 — "Wait, I'm supposed to test this?"
 
-- `compress` now defaults to the deterministic `auto` backend policy: Metal,
-  then a usable non-CPU Vulkan device with `shaderInt64`, then a
-  GPU/accelerator-class OpenCL device, then CPU/libFLAC. Explicit `--level`
-  and `--container ogg` preserve CPU/libFLAC selection under auto. `--backend`
-  remains authoritative and `--backend auto` is available explicitly. The
-  selected accelerator writes native FLAC `.flac.ldf`; CPU fallback continues
-  to write Ogg FLAC `.ldf`.
-- `decompress --progress` now provides a throttled stderr status line with
-  decoded-sample progress and elapsed time. It starts after STREAMINFO is read,
-  shows a percentage when the stream declares a total sample count, and still
-  reports useful decoded-sample counts for FLAC streams with an unknown total.
-- Legacy FlaLDF captures with an overflowed STREAMINFO total now decompress
-  through physical end of stream rather than stopping at the stale header
-  count. The completed output and `verify` report a warning with the declared
-  and recovered sample counts; a stream that ends before its declared total
-  still fails transactionally.
-- Decompression now batches packed LDS output instead of issuing one stream
-  write per four decoded samples. It uses libFLAC's final PCM-MD5 result rather
-  than a second, per-sample MD5 pass, substantially improving Ogg and native
-  FLAC decode throughput while preserving malformed STREAMINFO rejection and
-  transactional-output behavior.
-- Decoding now rejects any 40 kHz mono 16-bit FLAC sample that cannot be
-  losslessly represented by the LDS 10-bit packing grid. Invalid streams leave
-  no published LDS output.
-- `compress` and `decompress` now write their payload inside a private
-  same-directory staging directory created with `mkdtemp`. Without
-  `--overwrite`, an atomic no-replace rename prevents a destination created
-  during the run from being replaced without requiring hard-link support.
-  Older platforms or filesystems without no-replace rename support fall back
-  to hard-link publication when available. With `--overwrite`, the payload is
-  atomically renamed into place. `SIGINT`, `SIGTERM`, and `SIGHUP` also remove
-  active private staging data before preserving the normal signal termination;
-  those signals remain blocked from staging-directory creation through cleanup
-  registration so they cannot strand a directory in that narrow window.
-- Compression levels and native writer thread counts now reject values that
-  overflow their accepted unsigned ranges instead of wrapping to a smaller,
-  valid value.
-- `verify` now hashes compressed input bytes while it sequentially decodes,
-  avoiding a second full read of large Ogg and native FLAC captures. It checks
-  that the digest covered the whole input before reporting the result.
-- Original ld-compress Ogg and FlaLDF captures may contain stale nonzero
-  STREAMINFO PCM MD5 fields. The decoder reports a mismatch on stderr but does
-  not discard otherwise valid LDS data; `verify --source` is the authoritative
-  end-to-end validation.
-- Fixed a use-after-free when one threaded selected-frame writer failed while
-  another writer was still reading the same analyzed sample batch. OpenCL,
-  Vulkan, and Metal writer jobs now retain shared ownership of the batch until
-  every in-flight job releases it, including error unwinding. A two-worker
-  sanitizer regression covers the failure path without requiring a GPU.
-- Compression now writes through same-directory staging and renames its payload
-  into place only after the selected backend finishes successfully. Failed CPU,
-  native-verbatim, native-fixed, OpenCL, Vulkan, or Metal compression therefore
-  leaves an existing destination unchanged even with `--overwrite`, and removes
-  the incomplete temporary output.
-- Fixed native FLAC compression failing during its final STREAMINFO rewrite for
-  LDS captures at or above 80 GiB. Native-verbatim, native-fixed, OpenCL,
-  Vulkan, and Metal now write the FLAC-defined `0` (unknown) total-sample count
-  when the real count exceeds the 36-bit field, matching the existing
-  CPU/libFLAC behavior. The STREAMINFO PCM MD5 remains populated and end-to-end
-  `verify --source` still checks the complete decoded capture.
+This release makes normal compression and recovery work safer, clearer, and
+less fussy—especially when handling long-running or older captures.
+
+- `compress` now chooses the best usable backend automatically: Metal, then
+  Vulkan, OpenCL, or CPU. Explicit backend choices still win.
+- `decompress --progress` shows useful progress and elapsed time. It can also
+  recover valid legacy FlaLDF captures whose header reports an overflowed
+  sample count.
+- Failed or interrupted compression and decompression no longer replace an
+  existing destination or leave partial output behind. Invalid input is
+  rejected before an `.lds` file is published.
+- Decompression and verification make fewer passes over large captures, so the
+  usual recovery and checking workflow is faster.
+- Fixed an accelerated-writer failure-path crash and native FLAC handling for
+  captures over 80 GiB. Numeric command-line options also reject overflowing
+  values instead of silently wrapping.
+
+`verify --source` remains the recommended end-to-end check for original
+ld-compress captures, which can contain stale FLAC MD5 metadata.
 
 ## 1.2.0 - 2026-07-09
 

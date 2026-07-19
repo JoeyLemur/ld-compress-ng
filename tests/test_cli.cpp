@@ -597,7 +597,7 @@ void test_cli(const std::filesystem::path& exe)
         "help output did not mention --version");
 
     run_ok(shell_quote(exe) + " --version > " + shell_quote(version_output));
-    require(read_file(version_output) == "ld-compress-ng 1.2.0\n",
+    require(read_file(version_output) == "ld-compress-ng 1.2.1\n",
         "version output did not match project version");
 
     run_ok(shell_quote(exe) + " convert --unpack " + shell_quote(lds) + " " + shell_quote(pcm));

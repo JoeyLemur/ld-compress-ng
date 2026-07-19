@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ld-compress-ng
-    VERSION 1.2.0
+    VERSION 1.2.1
     LANGUAGES CXX
 )
 
