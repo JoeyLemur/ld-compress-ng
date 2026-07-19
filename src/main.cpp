@@ -233,7 +233,8 @@ struct Options {
         << "  ld-compress-ng compress --backend opencl --device INDEX capture.lds\n\n"
         << "Commands:\n"
         << "  compress      Compress packed LDS input. Default backend is auto: Metal, Vulkan,\n"
-        << "                OpenCL, then CPU. Output is INPUT.ldf for cpu and INPUT.flac.ldf\n"
+        << "                hardware OpenCL, then CPU. --level or --container ogg selects CPU.\n"
+        << "                Output is INPUT.ldf for cpu and INPUT.flac.ldf\n"
         << "                for native-fixed/opencl/vulkan/metal/native-verbatim.\n"
         << "  decompress    Decode Ogg/native FLAC RF input back to packed LDS output.\n"
         << "  verify        Print compressed and decoded MD5; compare with --source when set.\n"
@@ -344,6 +345,23 @@ std::optional<std::size_t> available_opencl_device_index(
     return std::nullopt;
 }
 
+std::optional<std::size_t> available_opencl_accelerator_device_index(
+    std::optional<std::size_t> requested_index)
+{
+    if (!ldcompress::opencl_support_built()) {
+        return std::nullopt;
+    }
+
+    for (const auto& device : ldcompress::list_opencl_devices()) {
+        if (ldcompress::opencl_device_is_auto_eligible(device) &&
+            (!requested_index.has_value() || device.flat_index == *requested_index)) {
+            return device.flat_index;
+        }
+    }
+
+    return std::nullopt;
+}
+
 std::optional<std::size_t> available_vulkan_device_index(
     std::optional<std::size_t> requested_index)
 {
@@ -413,10 +431,17 @@ ldcompress::CompressionBackend select_automatic_backend(const Options& options)
     if (available_vulkan_device_index(effective_vulkan_device_index(options)).has_value()) {
         return ldcompress::CompressionBackend::VulkanNativeFlac;
     }
-    if (available_opencl_device_index(effective_opencl_device_index(options)).has_value()) {
+    if (available_opencl_accelerator_device_index(
+            effective_opencl_device_index(options)).has_value()) {
         return ldcompress::CompressionBackend::OpenClNativeFlac;
     }
     return ldcompress::CompressionBackend::CpuLibFlac;
+}
+
+bool automatic_backend_is_constrained_to_cpu(const Options& options)
+{
+    return options.level_explicit ||
+        (options.container_explicit && options.container == ldcompress::FlacContainer::Ogg);
 }
 
 ldcompress::FlacContainer default_container_for_backend(ldcompress::CompressionBackend backend)
@@ -870,7 +895,9 @@ Options parse_compress(int argc, char** argv)
     }
 
     if (options.backend_auto) {
-        options.backend = select_automatic_backend(options);
+        options.backend = automatic_backend_is_constrained_to_cpu(options)
+            ? ldcompress::CompressionBackend::CpuLibFlac
+            : select_automatic_backend(options);
     }
 
     if (!options.container_explicit) {

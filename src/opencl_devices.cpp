@@ -251,6 +251,7 @@ std::vector<OpenClDeviceInfo> list_opencl_devices()
 
         for (std::size_t device_index = 0; device_index < platform_devices.size(); ++device_index) {
             const auto device = platform_devices[device_index];
+            const auto type = get_device_value<cl_device_type>(device, CL_DEVICE_TYPE);
             OpenClDeviceInfo info;
             info.flat_index = static_cast<std::uint32_t>(devices.size());
             info.platform_index = static_cast<std::uint32_t>(platform_index);
@@ -262,11 +263,13 @@ std::vector<OpenClDeviceInfo> list_opencl_devices()
             info.device_vendor = get_device_string(device, CL_DEVICE_VENDOR);
             info.device_version = get_device_string(device, CL_DEVICE_VERSION);
             info.driver_version = get_device_string(device, CL_DRIVER_VERSION);
-            info.type = device_type_name(get_device_value<cl_device_type>(device, CL_DEVICE_TYPE));
+            info.type = device_type_name(type);
             info.compute_units =
                 get_device_value<cl_uint>(device, CL_DEVICE_MAX_COMPUTE_UNITS);
             info.global_memory_bytes =
                 get_device_value<cl_ulong>(device, CL_DEVICE_GLOBAL_MEM_SIZE);
+            info.hardware_accelerator =
+                (type & (CL_DEVICE_TYPE_GPU | CL_DEVICE_TYPE_ACCELERATOR)) != 0;
             info.available = get_device_value<cl_bool>(device, CL_DEVICE_AVAILABLE) == CL_TRUE;
             devices.push_back(std::move(info));
         }
@@ -308,6 +311,11 @@ OpenClDeviceInfo select_opencl_device(std::optional<std::size_t> requested_index
     }
 
     throw std::runtime_error("no available OpenCL devices found");
+}
+
+bool opencl_device_is_auto_eligible(const OpenClDeviceInfo& device) noexcept
+{
+    return device.available && device.hardware_accelerator;
 }
 
 }  // namespace ldcompress

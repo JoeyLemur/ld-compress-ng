@@ -3,10 +3,12 @@
 ## Unreleased
 
 - `compress` now defaults to the deterministic `auto` backend policy: Metal,
-  then a usable non-CPU Vulkan device with `shaderInt64`, then OpenCL, then
-  CPU/libFLAC. `--backend` remains authoritative and `--backend auto` is
-  available explicitly. The selected accelerator writes native FLAC
-  `.flac.ldf`; CPU fallback continues to write Ogg FLAC `.ldf`.
+  then a usable non-CPU Vulkan device with `shaderInt64`, then a
+  GPU/accelerator-class OpenCL device, then CPU/libFLAC. Explicit `--level`
+  and `--container ogg` preserve CPU/libFLAC selection under auto. `--backend`
+  remains authoritative and `--backend auto` is available explicitly. The
+  selected accelerator writes native FLAC `.flac.ldf`; CPU fallback continues
+  to write Ogg FLAC `.ldf`.
 - `decompress --progress` now provides a throttled stderr status line with
   decoded-sample progress and elapsed time. It starts after STREAMINFO is read,
   shows a percentage when the stream declares a total sample count, and still

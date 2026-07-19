@@ -87,12 +87,72 @@ void test_opencl_device_selection()
     }, "out-of-range OpenCL device index was selected");
 }
 
+void test_opencl_auto_eligibility()
+{
+    const ldcompress::OpenClDeviceInfo cpu {
+        .type = "cpu",
+        .hardware_accelerator = false,
+        .available = true,
+    };
+    require(!ldcompress::opencl_device_is_auto_eligible(cpu),
+        "CPU OpenCL device was auto-eligible");
+
+    const ldcompress::OpenClDeviceInfo default_only {
+        .type = "default",
+        .hardware_accelerator = false,
+        .available = true,
+    };
+    require(!ldcompress::opencl_device_is_auto_eligible(default_only),
+        "default-only OpenCL device was auto-eligible");
+
+    const ldcompress::OpenClDeviceInfo custom {
+        .type = "custom",
+        .hardware_accelerator = false,
+        .available = true,
+    };
+    require(!ldcompress::opencl_device_is_auto_eligible(custom),
+        "custom OpenCL device was auto-eligible");
+
+    const ldcompress::OpenClDeviceInfo unknown {
+        .type = "unknown",
+        .hardware_accelerator = false,
+        .available = true,
+    };
+    require(!ldcompress::opencl_device_is_auto_eligible(unknown),
+        "unknown OpenCL device was auto-eligible");
+
+    const ldcompress::OpenClDeviceInfo gpu {
+        .type = "gpu",
+        .hardware_accelerator = true,
+        .available = true,
+    };
+    require(ldcompress::opencl_device_is_auto_eligible(gpu),
+        "GPU OpenCL device was not auto-eligible");
+
+    const ldcompress::OpenClDeviceInfo accelerator {
+        .type = "accelerator",
+        .hardware_accelerator = true,
+        .available = true,
+    };
+    require(ldcompress::opencl_device_is_auto_eligible(accelerator),
+        "accelerator-class OpenCL device was not auto-eligible");
+
+    const ldcompress::OpenClDeviceInfo unavailable_gpu {
+        .type = "gpu",
+        .hardware_accelerator = true,
+        .available = false,
+    };
+    require(!ldcompress::opencl_device_is_auto_eligible(unavailable_gpu),
+        "unavailable OpenCL accelerator was auto-eligible");
+}
+
 }  // namespace
 
 int main()
 {
     try {
         test_opencl_device_selection();
+        test_opencl_auto_eligibility();
     } catch (const std::exception& ex) {
         std::cerr << "test_opencl_devices: " << ex.what() << '\n';
         return 1;

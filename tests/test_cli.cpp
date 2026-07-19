@@ -324,6 +324,21 @@ std::optional<std::size_t> first_available_opencl_device_index()
     return std::nullopt;
 }
 
+std::optional<std::size_t> first_available_opencl_accelerator_device_index()
+{
+    if (!ldcompress::opencl_support_built()) {
+        return std::nullopt;
+    }
+
+    for (const auto& device : ldcompress::list_opencl_devices()) {
+        if (ldcompress::opencl_device_is_auto_eligible(device)) {
+            return device.flat_index;
+        }
+    }
+
+    return std::nullopt;
+}
+
 std::optional<std::size_t> first_available_vulkan_analysis_device_index()
 {
     if (!ldcompress::vulkan_support_built()) {
@@ -372,7 +387,7 @@ ldcompress::CompressionBackend automatic_backend()
     if (first_available_vulkan_analysis_device_index().has_value()) {
         return ldcompress::CompressionBackend::VulkanNativeFlac;
     }
-    if (first_available_opencl_device_index().has_value()) {
+    if (first_available_opencl_accelerator_device_index().has_value()) {
         return ldcompress::CompressionBackend::OpenClNativeFlac;
     }
     return ldcompress::CompressionBackend::CpuLibFlac;
@@ -408,6 +423,10 @@ void test_cli(const std::filesystem::path& exe)
     const auto protected_cpu_compress_output = temp_dir / "protected-cpu.ldf";
     const auto protected_native_compress_output = temp_dir / "protected-native.flac.ldf";
     const auto cpu_level = temp_dir / "fixture.cpu-level.ldf";
+    const auto automatic_cpu_level = temp_dir / "fixture.auto-cpu-level.ldf";
+    const auto automatic_ogg = temp_dir / "fixture.auto-ogg.ldf";
+    const auto explicit_automatic_cpu_level = temp_dir / "fixture.explicit-auto-cpu-level.ldf";
+    const auto explicit_automatic_ogg = temp_dir / "fixture.explicit-auto-ogg.ldf";
     const auto decompressed = temp_dir / "fixture.out.lds";
     const auto decompressed_progress = temp_dir / "fixture.progress.out.lds";
     const auto progress_stderr = temp_dir / "decompress-progress.stderr";
@@ -556,6 +575,9 @@ void test_cli(const std::filesystem::path& exe)
         "help output did not describe backends");
     require(help_text.find("Default backend is auto: Metal, Vulkan,") != std::string::npos,
         "help output did not describe automatic backend selection");
+    require(help_text.find("hardware OpenCL, then CPU. --level or --container ogg selects CPU.") !=
+            std::string::npos,
+        "help output did not describe automatic CPU constraints");
     require(help_text.find("auto|cpu|native-verbatim|native-fixed|opencl|vulkan|metal") !=
             std::string::npos,
         "help output did not list the auto backend");
@@ -687,6 +709,38 @@ void test_cli(const std::filesystem::path& exe)
         "decompress --progress did not report initial progress");
     require(progress_text.find("100%") != std::string::npos,
         "decompress --progress did not report completion");
+    const auto automatic_cpu_level_stderr = run_ok_with_stderr(
+        shell_quote(exe) + " compress --level 8 " + shell_quote(lds) + " " +
+            shell_quote(automatic_cpu_level),
+        command_stderr);
+    require(automatic_cpu_level_stderr.find(" cpu backend") != std::string::npos,
+        "auto --level did not select the cpu backend");
+    require(read_file(automatic_cpu_level).substr(0, 4) == "OggS",
+        "auto --level output was not Ogg FLAC");
+    const auto automatic_ogg_stderr = run_ok_with_stderr(
+        shell_quote(exe) + " compress --container ogg " + shell_quote(lds) + " " +
+            shell_quote(automatic_ogg),
+        command_stderr);
+    require(automatic_ogg_stderr.find(" cpu backend") != std::string::npos,
+        "auto --container ogg did not select the cpu backend");
+    require(read_file(automatic_ogg).substr(0, 4) == "OggS",
+        "auto --container ogg output was not Ogg FLAC");
+    const auto explicit_automatic_cpu_level_stderr = run_ok_with_stderr(
+        shell_quote(exe) + " compress --level 8 --backend native-fixed --backend auto " +
+            shell_quote(lds) + " " + shell_quote(explicit_automatic_cpu_level),
+        command_stderr);
+    require(explicit_automatic_cpu_level_stderr.find(" cpu backend") != std::string::npos,
+        "explicit auto --level did not select the cpu backend");
+    require(read_file(explicit_automatic_cpu_level).substr(0, 4) == "OggS",
+        "explicit auto --level output was not Ogg FLAC");
+    const auto explicit_automatic_ogg_stderr = run_ok_with_stderr(
+        shell_quote(exe) + " compress --backend native-fixed --backend auto --container ogg " +
+            shell_quote(lds) + " " + shell_quote(explicit_automatic_ogg),
+        command_stderr);
+    require(explicit_automatic_ogg_stderr.find(" cpu backend") != std::string::npos,
+        "explicit auto --container ogg did not select the cpu backend");
+    require(read_file(explicit_automatic_ogg).substr(0, 4) == "OggS",
+        "explicit auto --container ogg output was not Ogg FLAC");
     run_ok(shell_quote(exe) + " compress --backend cpu --level 8 " + shell_quote(lds) + " " + shell_quote(cpu_level));
     require(read_file(cpu_level).substr(0, 4) == "OggS", "CPU --level output was not Ogg FLAC");
 

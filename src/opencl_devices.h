@@ -22,11 +22,15 @@ struct OpenClDeviceInfo {
     std::string type;
     std::uint32_t compute_units = 0;
     std::uint64_t global_memory_bytes = 0;
+    // True for OpenCL GPU or accelerator-class devices. Auto backend selection
+    // deliberately excludes CPU-only OpenCL implementations.
+    bool hardware_accelerator = false;
     bool available = false;
 };
 
 bool opencl_support_built();
 std::vector<OpenClDeviceInfo> list_opencl_devices();
 OpenClDeviceInfo select_opencl_device(std::optional<std::size_t> requested_index);
+bool opencl_device_is_auto_eligible(const OpenClDeviceInfo& device) noexcept;
 
 }  // namespace ldcompress

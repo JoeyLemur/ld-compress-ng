@@ -1032,9 +1032,10 @@ ld-compress-ng devices
 
 Implemented behavior:
 
-- `compress` defaults to automatic Metal, Vulkan, OpenCL, then CPU selection;
-  CPU fallback uses Ogg FLAC-compatible `.ldf` output and accelerators use
-  native `.flac.ldf` output.
+- `compress` defaults to automatic Metal, Vulkan, hardware OpenCL, then CPU
+  selection; explicit `--level` or `--container ogg` retains CPU/libFLAC
+  selection. CPU fallback uses Ogg FLAC-compatible `.ldf` output and
+  accelerators use native `.flac.ldf` output.
 - `compress --backend auto|cpu|native-verbatim|native-fixed|opencl|vulkan|metal`
   selects between automatic capability selection, the CPU/libFLAC path,
   reference/debug native FLAC writer paths, and the accelerated encoders.
