@@ -175,6 +175,11 @@ std::uint8_t bits_per_sample_code(unsigned bits_per_sample)
     }
 }
 
+void validate_frame_bits_per_sample(unsigned bits_per_sample)
+{
+    (void)bits_per_sample_code(bits_per_sample);
+}
+
 void validate_sample(std::int32_t sample, unsigned bits_per_sample)
 {
     const auto min_value = -(std::int64_t {1} << (bits_per_sample - 1U));
@@ -2431,6 +2436,7 @@ FlacSubframeDecision write_mono_verbatim_frame_impl(
     SampleSpan samples,
     const FlacFrameInfo& info)
 {
+    validate_frame_bits_per_sample(info.bits_per_sample);
     if (samples.empty()) {
         throw std::runtime_error("cannot write an empty FLAC frame");
     }
@@ -2464,6 +2470,7 @@ FlacSubframeDecision write_mono_constant_frame_impl(
     SampleSpan samples,
     const FlacFrameInfo& info)
 {
+    validate_frame_bits_per_sample(info.bits_per_sample);
     if (samples.empty()) {
         throw std::runtime_error("cannot write an empty FLAC frame");
     }
@@ -2497,6 +2504,7 @@ FlacSubframeDecision write_mono_selected_frame_impl(
     const FlacSubframeDecision* trusted_decision,
     FlacSelectedFrameWriteTimings* timings)
 {
+    validate_frame_bits_per_sample(info.bits_per_sample);
     if (samples.empty()) {
         throw std::runtime_error("cannot write an empty selected FLAC frame");
     }
@@ -2631,6 +2639,7 @@ FlacSubframeDecision analyze_mono_best_frame(
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& info)
 {
+    validate_frame_bits_per_sample(info.bits_per_sample);
     if (samples.empty()) {
         throw std::runtime_error("cannot analyze an empty FLAC frame");
     }
@@ -2679,6 +2688,7 @@ std::optional<FlacLpcSubframeAnalysis> analyze_mono_lpc_frame(
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& info)
 {
+    validate_frame_bits_per_sample(info.bits_per_sample);
     if (samples.empty()) {
         throw std::runtime_error("cannot analyze an empty FLAC frame");
     }
@@ -2701,6 +2711,7 @@ std::optional<FlacLpcSubframeAnalysis> analyze_mono_lpc_order(
     const FlacFrameInfo& info,
     unsigned lpc_order)
 {
+    validate_frame_bits_per_sample(info.bits_per_sample);
     if (samples.empty()) {
         throw std::runtime_error("cannot analyze an empty FLAC frame");
     }
@@ -2727,6 +2738,7 @@ std::vector<FlacLpcSubframeAnalysis> analyze_mono_lpc_order_candidates(
     const FlacFrameInfo& info,
     unsigned lpc_order)
 {
+    validate_frame_bits_per_sample(info.bits_per_sample);
     if (samples.empty()) {
         throw std::runtime_error("cannot analyze an empty FLAC frame");
     }
@@ -2823,6 +2835,7 @@ FlacSubframeDecision write_mono_fixed_rice_frame(
     const std::vector<std::int32_t>& samples,
     const FlacFrameInfo& info)
 {
+    validate_frame_bits_per_sample(info.bits_per_sample);
     if (samples.empty()) {
         throw std::runtime_error("cannot write an empty FLAC frame");
     }
@@ -2889,6 +2902,7 @@ FlacSubframeDecision write_mono_best_frame(
     const FlacFrameInfo& info,
     NativeAnalysisProfile profile)
 {
+    validate_frame_bits_per_sample(info.bits_per_sample);
     if (samples.empty()) {
         throw std::runtime_error("cannot write an empty FLAC frame");
     }

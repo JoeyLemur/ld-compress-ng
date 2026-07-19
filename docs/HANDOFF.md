@@ -1,7 +1,7 @@
 # Handoff Notes
 
-Last updated: 2026-07-16, after decompression hardening and single-pass
-verification follow-up work.
+Last updated: 2026-07-18, after Metal Subdivide-Tukey3 and native-frame
+validation fixes.
 
 This file is for maintainer/agent continuity. It is intentionally not installed
 by CMake; release-facing installed docs are listed explicitly in
@@ -88,6 +88,43 @@ by CMake; release-facing installed docs are listed explicitly in
   cmake --build build-no-metal --parallel
   ctest --test-dir build-no-metal --output-on-failure
   ```
+
+## Metal Subdivide-Tukey3 Regression Follow-Up
+
+The Metal generated-LPC path previously defined the Subdivide-Tukey3 profile as
+six windows with a `0.375` taper. The shared task planner and the scalar,
+OpenCL, and Vulkan implementations define the profile as nine windows: one
+full Tukey window, two two-way partial windows, three three-way partial
+windows, and three punch-out windows, all with a `0.5 / 3.0` taper. As a
+result, normal Metal profile runs silently used rectangular windows; a
+hand-built six-window plan could also overrun its window buffer while filling
+the final three punch-out windows.
+
+The fix in `src/metal_analysis.mm` now uses the nine-window/`0.5 / 3.0`
+definition, rejects an incompatible task plan instead of falling back, and
+checks that the generator filled exactly the allocated windows. Validate it on
+a GPU-visible Mac shell after building `build-metal` as above:
+
+```sh
+ctest --test-dir build-metal -L metal --output-on-failure
+
+build-metal/ld-compress-ng bench \
+    --threads 1 \
+    --frame-samples 4608 \
+    --lpc-order 12 \
+    --lpc-precision 12 \
+    --rice-partition-order 6 \
+    --analysis-profile subdivide-tukey3-mean-rice,subdivide-tukey3-mean-estimate-rice \
+    --include-metal \
+    --metal-device 0 \
+    reference/testdata/ld-decode-testdata-ci/1cf698d2025e8515e9ef57e34adaf85a194da96a/ntsc/issue176.lds
+```
+
+Use the index reported by `build-metal/ld-compress-ng devices` in place of
+`0`. The Metal rows must complete and decode successfully; compare their
+output size and selected-subframe statistics with the CPU/native-fixed rows in
+the same benchmark. Repeat against the six-fixture real-fixture lane before
+recording a new Metal performance baseline.
 
 ## Large-Capture STREAMINFO Follow-Up
 

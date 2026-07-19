@@ -1544,6 +1544,37 @@ void test_native_off_grid_sample_is_rejected_before_writing()
     std::filesystem::remove_all(temp_dir);
 }
 
+void test_native_frame_bit_depth_is_validated_before_sample_work()
+{
+    const auto samples = make_samples();
+    const ldcompress::FlacFrameInfo invalid_info {
+        .frame_number = 0,
+        .sample_rate = 40000,
+        .bits_per_sample = 0,
+    };
+
+    bool analyzer_threw = false;
+    try {
+        (void)ldcompress::analyze_mono_best_frame(samples, invalid_info);
+    } catch (const std::runtime_error& exception) {
+        analyzer_threw = std::string_view(exception.what()).find(
+            "unsupported FLAC frame bits per sample") != std::string_view::npos;
+    }
+    require(analyzer_threw,
+        "native frame analyzer accepted an invalid bit depth before sample validation");
+
+    bool writer_threw = false;
+    std::ostringstream output;
+    try {
+        (void)ldcompress::write_mono_verbatim_frame(output, samples, invalid_info);
+    } catch (const std::runtime_error& exception) {
+        writer_threw = std::string_view(exception.what()).find(
+            "unsupported FLAC frame bits per sample") != std::string_view::npos;
+    }
+    require(writer_threw,
+        "native frame writer accepted an invalid bit depth before sample validation");
+}
+
 }  // namespace
 
 int main()
@@ -1566,6 +1597,7 @@ int main()
         test_native_streaminfo_total_samples_shorter_than_stream_is_rejected();
         test_native_streaminfo_non_lds_sample_count_is_rejected_before_writing();
         test_native_off_grid_sample_is_rejected_before_writing();
+        test_native_frame_bit_depth_is_validated_before_sample_work();
     } catch (const std::exception& ex) {
         std::cerr << "test_flac_native_writer: " << ex.what() << '\n';
         return 1;

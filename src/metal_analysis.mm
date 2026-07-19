@@ -33,8 +33,8 @@ constexpr std::uint32_t kWorkgroupSize = 64;
 constexpr std::size_t kMetalMaxBlockSize = 8192;
 constexpr double kPi = 3.14159265358979323846264338327950288;
 constexpr double kGeneratedTukeyTaperFraction = 0.5;
-constexpr double kSubdivideTukey3TaperFraction = 0.375;
-constexpr std::size_t kSubdivideTukey3WindowCount = 6;
+constexpr double kSubdivideTukey3TaperFraction = 0.5 / 3.0;
+constexpr std::size_t kSubdivideTukey3WindowCount = 9;
 constexpr unsigned kMetalExactLeafMaxRicePartitionOrder = 6;
 
 struct ExactParams {
@@ -326,8 +326,11 @@ std::vector<float> make_generated_lpc_windows(
 {
     std::vector<float> windows(blocksize * window_count, 1.0F);
     if (generated_profile_uses_subdivide_tukey3(profile)) {
-        if (window_count != kSubdivideTukey3WindowCount || blocksize == 0) {
+        if (blocksize == 0) {
             return windows;
+        }
+        if (window_count != kSubdivideTukey3WindowCount) {
+            throw std::runtime_error("Metal subdivide-Tukey3 analysis requires nine LPC windows");
         }
 
         for (std::size_t n = 0; n < blocksize; ++n) {
@@ -354,6 +357,9 @@ std::vector<float> make_generated_lpc_windows(
                 values[n] = punchout_tukey_weight(
                     n, blocksize, kSubdivideTukey3TaperFraction, start, end);
             }
+        }
+        if (window != window_count) {
+            throw std::runtime_error("Metal subdivide-Tukey3 LPC window count mismatch");
         }
         return windows;
     }
