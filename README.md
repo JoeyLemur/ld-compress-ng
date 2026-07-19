@@ -151,6 +151,12 @@ sample progress (when STREAMINFO provides a total) and elapsed time:
 build/ld-compress-ng decompress --progress capture.ldf
 ```
 
+Some legacy `ld-compress`/FlaLDF captures have a stale STREAMINFO total because
+the original encoder overflowed FLAC's 36-bit count. `decompress` recovers all
+valid frames through physical EOF and reports the discrepancy. Progress changes
+to `>=100%` once that advisory total is exceeded; it has not completed until
+the command reports its final decoded-sample count.
+
 Verify that a compressed file decodes to the original `.lds` data:
 
 ```sh

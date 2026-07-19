@@ -23,7 +23,8 @@ struct FlacEncodeOptions {
 };
 
 // Called after STREAMINFO and after each decoded FLAC frame. A total of zero
-// means the stream did not declare its total sample count.
+// means the stream did not declare its total sample count. Legacy streams can
+// underreport this advisory total, so callers must not treat 100% as EOF.
 using DecompressionProgressCallback = std::function<void(
     std::uint64_t decoded_samples,
     std::uint64_t total_samples)>;

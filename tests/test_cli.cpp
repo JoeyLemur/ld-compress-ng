@@ -266,6 +266,21 @@ std::string corrupt_native_streaminfo_sample_count(std::string data)
     return data;
 }
 
+std::string set_native_streaminfo_sample_count(std::string data, std::uint64_t samples)
+{
+    require(samples < (std::uint64_t {1} << 36U),
+        "native FLAC test STREAMINFO total did not fit 36 bits");
+    require(data.size() > 42, "native FLAC test file is too small to set STREAMINFO sample count");
+    require(data.substr(0, 4) == "fLaC", "native FLAC marker mismatch");
+    data[21] = static_cast<char>((static_cast<unsigned char>(data[21]) & 0xf0U) |
+        static_cast<unsigned char>((samples >> 32U) & 0x0fU));
+    data[22] = static_cast<char>((samples >> 24U) & 0xffU);
+    data[23] = static_cast<char>((samples >> 16U) & 0xffU);
+    data[24] = static_cast<char>((samples >> 8U) & 0xffU);
+    data[25] = static_cast<char>(samples & 0xffU);
+    return data;
+}
+
 std::string clear_native_streaminfo_sample_count(std::string data)
 {
     require(data.size() > 42, "native FLAC test file is too small to clear STREAMINFO sample count");
@@ -409,9 +424,15 @@ void test_cli(const std::filesystem::path& exe)
     const auto native_fixed_out = temp_dir / "fixture.native-fixed.out.lds";
     const auto native_fixed_unknown_total = temp_dir / "fixture.native-fixed.unknown-total.flac.ldf";
     const auto native_fixed_unknown_total_out = temp_dir / "fixture.native-fixed.unknown-total.out.lds";
+    const auto native_fixed_underreported =
+        temp_dir / "fixture.native-fixed.underreported-total.flac.ldf";
+    const auto native_fixed_underreported_out =
+        temp_dir / "fixture.native-fixed.underreported-total.out.lds";
     const auto bad_native_fixed_md5 = temp_dir / "fixture.native-fixed.bad-md5.flac.ldf";
     const auto bad_native_fixed_md5_out = temp_dir / "fixture.native-fixed.bad-md5.out.lds";
     const auto bad_native_fixed_count = temp_dir / "fixture.native-fixed.bad-count.flac.ldf";
+    const auto bad_native_fixed_short_count =
+        temp_dir / "fixture.native-fixed.short-count.flac.ldf";
     const auto protected_decompress_output = temp_dir / "fixture.protected-output.lds";
     const auto native_fixed_threads = temp_dir / "fixture.native-fixed-threads.flac.ldf";
     const auto native_fixed_threads_out = temp_dir / "fixture.native-fixed-threads.out.lds";
@@ -701,6 +722,24 @@ void test_cli(const std::filesystem::path& exe)
         "unknown-total native FLAC round trip changed LDS bytes");
     require(unknown_total_progress_text.find("samples decoded") != std::string::npos,
         "decompress --progress did not report decoded samples for an unknown total");
+    write_file(native_fixed_underreported,
+        set_native_streaminfo_sample_count(read_file(native_fixed), 4));
+    const auto underreported_progress_text = run_ok_with_stderr(
+        shell_quote(exe) + " decompress --progress " + shell_quote(native_fixed_underreported) +
+            " " + shell_quote(native_fixed_underreported_out),
+        progress_stderr);
+    require(read_file(native_fixed_underreported_out) == fixture,
+        "underreported STREAMINFO did not recover complete LDS output");
+    require(underreported_progress_text.find("STREAMINFO total exceeded") != std::string::npos,
+        "decompress --progress did not report an exceeded STREAMINFO total");
+    require(underreported_progress_text.find("STREAMINFO declares 4") != std::string::npos,
+        "decompress did not report the stale STREAMINFO total");
+    const auto underreported_verify_text = run_ok_with_stderr(
+        shell_quote(exe) + " verify --source " + shell_quote(lds) + " " +
+            shell_quote(native_fixed_underreported),
+        progress_stderr);
+    require(underreported_verify_text.find("STREAMINFO declares 4") != std::string::npos,
+        "verify did not report the stale STREAMINFO total");
     require(std::filesystem::file_size(native_fixed) < std::filesystem::file_size(native_verbatim),
         "native-fixed fixture was not smaller than native-verbatim fixture");
     write_file(bad_native_fixed_md5, corrupt_native_streaminfo_md5(read_file(native_fixed)));
@@ -710,12 +749,19 @@ void test_cli(const std::filesystem::path& exe)
     require(!has_temporary_output_sibling(bad_native_fixed_md5_out),
         "STREAMINFO MD5 mismatch left a staging directory behind");
     write_file(bad_native_fixed_count, corrupt_native_streaminfo_sample_count(read_file(native_fixed)));
+    write_file(bad_native_fixed_short_count,
+        set_native_streaminfo_sample_count(read_file(native_fixed), (fixture.size() * 4U / 5U) + 4U));
     write_file(protected_decompress_output, "keep this LDS output");
     run_fails(shell_quote(exe) + " decompress --overwrite " + shell_quote(bad_native_fixed_count) + " " + shell_quote(protected_decompress_output));
     require(read_file(protected_decompress_output) == "keep this LDS output",
         "failed decompress replaced existing output");
     require(!has_temporary_output_sibling(protected_decompress_output),
         "failed overwrite decompression left a staging directory behind");
+    run_fails(shell_quote(exe) + " decompress --overwrite " + shell_quote(bad_native_fixed_short_count) + " " + shell_quote(protected_decompress_output));
+    require(read_file(protected_decompress_output) == "keep this LDS output",
+        "short STREAMINFO decode replaced existing output");
+    require(!has_temporary_output_sibling(protected_decompress_output),
+        "short STREAMINFO decode left a staging directory behind");
     run_ok(shell_quote(exe) + " decompress --overwrite " + shell_quote(native_fixed) + " " + shell_quote(protected_decompress_output));
     require(read_file(protected_decompress_output) == fixture,
         "successful overwrite decompress did not replace existing output");

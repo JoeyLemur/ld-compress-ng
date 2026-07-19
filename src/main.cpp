@@ -1258,11 +1258,15 @@ private:
     {
         std::cerr << "\rdecompressing: ";
         if (total_samples_ != 0) {
-            const auto percent = decoded_samples_ >= total_samples_
-                ? 100U
-                : static_cast<unsigned>((decoded_samples_ * 100U) / total_samples_);
-            std::cerr << percent << "% (" << decoded_samples_ << '/'
-                      << total_samples_ << " samples)";
+            if (decoded_samples_ > total_samples_) {
+                std::cerr << ">=100% (" << decoded_samples_ << '/'
+                          << total_samples_ << " samples; STREAMINFO total exceeded)";
+            } else {
+                const auto percent = static_cast<unsigned>(
+                    (decoded_samples_ * 100U) / total_samples_);
+                std::cerr << percent << "% (" << decoded_samples_ << '/'
+                          << total_samples_ << " samples)";
+            }
         } else {
             std::cerr << decoded_samples_ << " samples";
         }
@@ -1639,6 +1643,11 @@ int run_decompress(const Options& options)
     std::cerr << "decompressed " << stats.input_bytes << " bytes to "
               << stats.output_bytes << " bytes (" << stats.samples
               << " samples)\n";
+    if (stats.streaminfo_total_samples_underreported) {
+        std::cerr << "warning: decoded " << stats.samples << " samples but STREAMINFO declares "
+                  << stats.streaminfo_declared_total_samples
+                  << "; recovered valid frames through end of stream\n";
+    }
     if (stats.streaminfo_pcm_md5_mismatch) {
         std::cerr << "warning: decoded FLAC PCM MD5 did not match STREAMINFO; "
                   << "use verify --source for an end-to-end comparison\n";
@@ -2325,6 +2334,12 @@ int run_verify(const Options& options)
     decoded_hash_stream.flush();
     if (!decoded_hash_stream) {
         throw std::runtime_error("failed to hash decoded stream");
+    }
+    if (decoded_stats.streaminfo_total_samples_underreported) {
+        std::cerr << "warning: decoded " << decoded_stats.samples
+                  << " samples but STREAMINFO declares "
+                  << decoded_stats.streaminfo_declared_total_samples
+                  << "; recovered valid frames through end of stream\n";
     }
     if (decoded_stats.streaminfo_pcm_md5_mismatch) {
         std::cerr << "warning: decoded FLAC PCM MD5 did not match STREAMINFO; "

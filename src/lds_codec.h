@@ -10,7 +10,12 @@ struct ConversionStats {
     std::uint64_t input_bytes = 0;
     std::uint64_t output_bytes = 0;
     std::uint64_t samples = 0;
+    // Zero means the FLAC stream did not declare a total sample count.
+    std::uint64_t streaminfo_declared_total_samples = 0;
     bool streaminfo_pcm_md5_mismatch = false;
+    // A legacy FLAC STREAMINFO count was smaller than the valid frames decoded
+    // through physical end of stream.
+    bool streaminfo_total_samples_underreported = false;
 };
 
 using PackedLdsGroup = std::array<std::uint8_t, 5>;

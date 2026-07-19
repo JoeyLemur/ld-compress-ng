@@ -263,6 +263,30 @@ unknown-length convention internally. On macOS, use the same procedure for
 `--backend metal --device METAL_INDEX` and using `stat -f %z` for the size
 check.
 
+### Legacy STREAMINFO Overflow Recovery
+
+Older FlaLDF captures may instead contain a nonzero 36-bit total that wrapped
+while their FLAC frames continue to physical EOF. The decoder treats an
+underreported total as advisory and prints both counts after it has recovered
+the complete stream. It still rejects a stream that ends before its declared
+total.
+
+The known Indiana Jones capture has a declared total of `3758096384` samples.
+One 36-bit wrap gives an expected recovered total of `72477573120` samples,
+or `90596966400` packed-LDS bytes. Recovering it needs at least 85 GiB of free
+scratch space for the output alone:
+
+```sh
+legacy_capture=reference/discs/indiana_jones_and_the_temple_of_doom_s1.flac.ldf
+legacy_output=/path/with/scratch/indy1-full.lds
+
+build/ld-compress-ng decompress --progress "$legacy_capture" "$legacy_output"
+stat -f %z "$legacy_output"  # expected: 90596966400
+```
+
+Use `ld-decode` with a start field past the former 2,523-frame cutoff to check
+that recovery continues beyond the opening credits.
+
 ### Linux Accelerated Writer Lifetime Validation
 
 OpenCL, Vulkan, and Metal all queue selected-frame writer jobs through the same

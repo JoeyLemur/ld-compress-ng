@@ -1340,7 +1340,68 @@ void test_native_streaminfo_md5_mismatch_is_reported()
     std::filesystem::remove_all(temp_dir);
 }
 
-void test_native_streaminfo_total_samples_mismatch_is_rejected()
+void test_native_streaminfo_underreported_total_recovers_all_frames()
+{
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+        ("ld-compress-ng-native-underreported-total-test-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directory(temp_dir);
+
+    const auto flac_path = temp_dir / "underreported-total.flac";
+    const auto first_frame_samples = make_samples();
+    auto second_frame_samples = make_samples();
+    for (auto& sample : second_frame_samples) {
+        sample += 64;
+    }
+    auto all_samples = first_frame_samples;
+    all_samples.insert(all_samples.end(), second_frame_samples.begin(), second_frame_samples.end());
+
+    std::ofstream output(flac_path, std::ios::binary);
+    if (!output) {
+        throw std::runtime_error("could not create test FLAC file");
+    }
+    const ldcompress::FlacStreamInfo stream_info {
+        .min_block_size = static_cast<unsigned>(first_frame_samples.size()),
+        .max_block_size = static_cast<unsigned>(first_frame_samples.size()),
+        .min_frame_size = 0,
+        .max_frame_size = 0,
+        .sample_rate = 40000,
+        .channels = 1,
+        .bits_per_sample = 16,
+        .total_samples = first_frame_samples.size(),
+        .md5 = md5_samples_s16le(all_samples),
+    };
+    ldcompress::write_native_flac_streaminfo(output, stream_info);
+
+    auto first_frame_info = make_frame_info();
+    ldcompress::write_mono_verbatim_frame(output, first_frame_samples, first_frame_info);
+    auto second_frame_info = first_frame_info;
+    second_frame_info.frame_number = 1;
+    ldcompress::write_mono_verbatim_frame(output, second_frame_samples, second_frame_info);
+    output.close();
+
+    std::ostringstream decoded;
+    ldcompress::FileDigest compressed_digest;
+    const auto stats = ldcompress::decompress_flac_to_lds_with_input_digest(
+        flac_path.string(), decoded, compressed_digest);
+    const auto expected_digest = ldcompress::md5_file(flac_path.string());
+    require(stats.samples == all_samples.size(),
+        "underreported STREAMINFO did not decode every valid frame");
+    require(stats.streaminfo_declared_total_samples == first_frame_samples.size(),
+        "underreported STREAMINFO declared total was not retained in decode stats");
+    require(stats.streaminfo_total_samples_underreported,
+        "underreported STREAMINFO total was not reported");
+    require(decoded.str() == pack_expected_lds(all_samples),
+        "underreported STREAMINFO changed recovered LDS bytes");
+    require(compressed_digest.bytes == expected_digest.bytes,
+        "underreported STREAMINFO digest did not cover complete input");
+    require(compressed_digest.md5.digest() == expected_digest.md5.digest(),
+        "underreported STREAMINFO digest did not match compressed input");
+
+    std::filesystem::remove_all(temp_dir);
+}
+
+void test_native_streaminfo_total_samples_shorter_than_stream_is_rejected()
 {
     const auto temp_dir = std::filesystem::temp_directory_path() /
         ("ld-compress-ng-native-sample-count-test-" + std::to_string(::getpid()));
@@ -1381,7 +1442,7 @@ void test_native_streaminfo_total_samples_mismatch_is_rejected()
     } catch (const std::runtime_error&) {
         threw = true;
     }
-    require(threw, "native FLAC decode accepted a bad STREAMINFO sample count");
+    require(threw, "native FLAC decode accepted a stream shorter than STREAMINFO");
 
     std::filesystem::remove_all(temp_dir);
 }
@@ -1501,7 +1562,8 @@ int main()
         test_native_streaminfo_large_total_samples_are_unknown();
         test_native_encoder_streaminfo_block_bounds_for_short_tail();
         test_native_streaminfo_md5_mismatch_is_reported();
-        test_native_streaminfo_total_samples_mismatch_is_rejected();
+        test_native_streaminfo_underreported_total_recovers_all_frames();
+        test_native_streaminfo_total_samples_shorter_than_stream_is_rejected();
         test_native_streaminfo_non_lds_sample_count_is_rejected_before_writing();
         test_native_off_grid_sample_is_rejected_before_writing();
     } catch (const std::exception& ex) {

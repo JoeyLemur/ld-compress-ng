@@ -152,6 +152,11 @@ Implemented:
 - Native FLAC decode hardening for STREAMINFO presence, RF-shaped 40 kHz mono
   16-bit streams, exact LDS 10-bit sample-grid alignment, decoded sample count,
   and reported decoded PCM MD5 status.
+- Legacy FlaLDF decompression follows valid frames through physical EOF rather
+  than using a nonzero STREAMINFO total as a hard capture boundary. When that
+  advisory count is underreported by a 36-bit overflow, `decompress` and
+  `verify` report the declared and recovered counts; a physical stream shorter
+  than its declared total remains an error and is not published.
 - FLAC decompression now batches 8,192 LDS groups per output write and records
   libFLAC's final STREAMINFO PCM-MD5 result through
   `FLAC__stream_decoder_finish()`, avoiding a redundant per-sample MD5 pass.

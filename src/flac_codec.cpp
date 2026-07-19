@@ -241,14 +241,6 @@ FLAC__StreamDecoderWriteStatus write_callback(
         set_error_once(client, "FLAC stream sample rate is not 40000 Hz");
         return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
     }
-    if (client.expected_total_samples != 0 &&
-        (client.stats.samples > client.expected_total_samples ||
-            frame->header.blocksize >
-                client.expected_total_samples - client.stats.samples)) {
-        set_error_once(client, "decoded FLAC sample count exceeded STREAMINFO");
-        return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
-    }
-
     for (std::uint32_t i = 0; i < frame->header.blocksize; ++i) {
         const auto sample = buffer[0][i];
         if (sample < -32768 || sample > 32767) {
@@ -429,7 +421,7 @@ ConversionStats compress_lds_to_flac(
 
 namespace {
 
-bool process_until_declared_end(FLAC__StreamDecoder* decoder, DecoderClient& client)
+bool process_until_end_of_stream(FLAC__StreamDecoder* decoder, DecoderClient& client)
 {
     while (true) {
         if (!FLAC__stream_decoder_process_single(decoder)) {
@@ -438,13 +430,6 @@ bool process_until_declared_end(FLAC__StreamDecoder* decoder, DecoderClient& cli
         if (!client.error.empty()) {
             return false;
         }
-        // Legacy ld-compress captures use the declared STREAMINFO sample count
-        // as the capture boundary even when trailing FLAC frames are present.
-        if (client.expected_total_samples != 0 &&
-            client.stats.samples == client.expected_total_samples) {
-            return true;
-        }
-
         const auto state = FLAC__stream_decoder_get_state(decoder);
         if (state == FLAC__STREAM_DECODER_END_OF_STREAM ||
             state == FLAC__STREAM_DECODER_END_OF_LINK) {
@@ -523,7 +508,7 @@ ConversionStats decompress_flac_to_lds_impl(
             FLAC__StreamDecoderInitStatusString[init_status]);
     }
 
-    if (!process_until_declared_end(decoder.get(), client)) {
+    if (!process_until_end_of_stream(decoder.get(), client)) {
         if (!client.error.empty()) {
             throw std::runtime_error(client.error);
         }
@@ -549,9 +534,14 @@ ConversionStats decompress_flac_to_lds_impl(
     if (client.expected_sample_rate != kSampleRate) {
         throw std::runtime_error("FLAC STREAMINFO sample rate is not 40000 Hz");
     }
-    if (client.expected_total_samples != 0 &&
-        client.stats.samples != client.expected_total_samples) {
-        throw std::runtime_error("decoded FLAC sample count did not match STREAMINFO");
+    client.stats.streaminfo_declared_total_samples = client.expected_total_samples;
+    if (client.expected_total_samples != 0) {
+        if (client.stats.samples < client.expected_total_samples) {
+            throw std::runtime_error("decoded FLAC ended before STREAMINFO total sample count");
+        }
+        if (client.stats.samples > client.expected_total_samples) {
+            client.stats.streaminfo_total_samples_underreported = true;
+        }
     }
     if (!FLAC__stream_decoder_finish(decoder.get())) {
         // Original ld-compress Ogg and FlaLDF captures may have a stale

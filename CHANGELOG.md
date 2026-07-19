@@ -11,6 +11,11 @@
   decoded-sample progress and elapsed time. It starts after STREAMINFO is read,
   shows a percentage when the stream declares a total sample count, and still
   reports useful decoded-sample counts for FLAC streams with an unknown total.
+- Legacy FlaLDF captures with an overflowed STREAMINFO total now decompress
+  through physical end of stream rather than stopping at the stale header
+  count. The completed output and `verify` report a warning with the declared
+  and recovered sample counts; a stream that ends before its declared total
+  still fails transactionally.
 - Decompression now batches packed LDS output instead of issuing one stream
   write per four decoded samples. It uses libFLAC's final PCM-MD5 result rather
   than a second, per-sample MD5 pass, substantially improving Ogg and native
