@@ -50,7 +50,10 @@ void update_md5_s16le(Md5& md5, const SampleGroup& samples)
 }
 
 template <typename OnGroup>
-ConversionStats process_lds_sample_groups(std::istream& input, OnGroup&& on_group)
+ConversionStats process_lds_sample_groups(
+    std::istream& input,
+    OnGroup&& on_group,
+    const CompressionProgressCallback& progress_callback)
 {
     ConversionStats stats;
     std::vector<std::uint8_t> input_buffer(5 * kGroupsPerChunk);
@@ -76,6 +79,9 @@ ConversionStats process_lds_sample_groups(std::istream& input, OnGroup&& on_grou
 
         stats.input_bytes += static_cast<std::uint64_t>(got);
         stats.samples += groups * 4;
+        if (progress_callback) {
+            progress_callback(stats.input_bytes, stats.samples);
+        }
     }
 
     if (input.bad()) {
@@ -392,7 +398,8 @@ ConversionStats compress_lds_to_native_flac(
     unsigned lpc_precision,
     unsigned max_rice_partition_order,
     NativeAnalysisProfile analysis_profile,
-    NativeCompressionStats* native_stats)
+    NativeCompressionStats* native_stats,
+    CompressionProgressCallback progress_callback)
 {
     if (thread_count == 0) {
         throw std::runtime_error("native FLAC thread count must be at least 1");
@@ -462,18 +469,21 @@ ConversionStats compress_lds_to_native_flac(
         frame_pool->submit(current_frame, std::move(samples));
     };
 
-    auto stats = process_lds_sample_groups(lds_input, [&](const SampleGroup& samples) {
-        update_md5_s16le(pcm_md5, samples);
-        for (const auto sample : samples) {
-            frame_samples.push_back(sample);
-            if (frame_samples.size() == frame_sample_count) {
-                submit_frame(std::move(frame_samples), frame_number);
-                ++frame_number;
-                frame_samples.clear();
-                frame_samples.reserve(frame_sample_count);
+    auto stats = process_lds_sample_groups(
+        lds_input,
+        [&](const SampleGroup& samples) {
+            update_md5_s16le(pcm_md5, samples);
+            for (const auto sample : samples) {
+                frame_samples.push_back(sample);
+                if (frame_samples.size() == frame_sample_count) {
+                    submit_frame(std::move(frame_samples), frame_number);
+                    ++frame_number;
+                    frame_samples.clear();
+                    frame_samples.reserve(frame_sample_count);
+                }
             }
-        }
-    });
+        },
+        progress_callback);
     if (!frame_samples.empty()) {
         submit_frame(std::move(frame_samples), frame_number);
         ++frame_number;
@@ -511,12 +521,13 @@ ConversionStats compress_lds_to_native_verbatim_flac(
     unsigned max_lpc_order,
     unsigned lpc_precision,
     unsigned max_rice_partition_order,
-    NativeCompressionStats* stats)
+    NativeCompressionStats* stats,
+    CompressionProgressCallback progress_callback)
 {
     return compress_lds_to_native_flac(
         lds_input, output_path, sample_rate, NativeFrameCoding::Verbatim, thread_count,
         frame_samples, max_lpc_order, lpc_precision, max_rice_partition_order,
-        NativeAnalysisProfile::Exact, stats);
+        NativeAnalysisProfile::Exact, stats, std::move(progress_callback));
 }
 
 ConversionStats compress_lds_to_native_fixed_flac(
@@ -529,12 +540,13 @@ ConversionStats compress_lds_to_native_fixed_flac(
     unsigned lpc_precision,
     unsigned max_rice_partition_order,
     NativeAnalysisProfile analysis_profile,
-    NativeCompressionStats* stats)
+    NativeCompressionStats* stats,
+    CompressionProgressCallback progress_callback)
 {
     return compress_lds_to_native_flac(
         lds_input, output_path, sample_rate, NativeFrameCoding::FixedRice, thread_count,
         frame_samples, max_lpc_order, lpc_precision, max_rice_partition_order,
-        analysis_profile, stats);
+        analysis_profile, stats, std::move(progress_callback));
 }
 
 }  // namespace ldcompress

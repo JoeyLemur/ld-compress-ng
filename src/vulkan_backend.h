@@ -29,6 +29,7 @@ struct VulkanCompressionOptions {
     NativeAnalysisProfile analysis_profile = NativeAnalysisProfile::Exact;
     std::optional<std::size_t> device_index;
     NativeCompressionStats* native_stats = nullptr;
+    CompressionProgressCallback progress_callback;
 };
 
 class VulkanCompressionSession final {

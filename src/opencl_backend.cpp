@@ -251,6 +251,7 @@ ConversionStats compress_lds_to_opencl_native_flac_with_session(
         .max_rice_partition_order = options.max_rice_partition_order,
         .batch_frames = kOpenClBatchFrames,
         .native_stats = options.native_stats,
+        .progress_callback = options.progress_callback,
     };
 
     auto stats = compress_lds_to_accelerated_native_flac(

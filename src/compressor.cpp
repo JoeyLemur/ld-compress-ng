@@ -39,6 +39,7 @@ ConversionStats compress_lds(
             .container = options.container,
             .compression_level = options.compression_level,
             .sample_rate = options.sample_rate,
+            .progress_callback = options.progress_callback,
         };
         return compress_lds_to_flac(lds_input, output_path, flac_options);
     }
@@ -51,7 +52,8 @@ ConversionStats compress_lds(
             options.native_frame_samples, options.native_max_lpc_order,
             options.native_lpc_precision,
             options.native_max_rice_partition_order,
-            options.native_stats);
+            options.native_stats,
+            options.progress_callback);
     case CompressionBackend::NativeFixedFlac:
         if (options.container != FlacContainer::Native) {
             throw std::runtime_error("native-fixed backend writes native FLAC only");
@@ -62,7 +64,8 @@ ConversionStats compress_lds(
             options.native_lpc_precision,
             options.native_max_rice_partition_order,
             options.native_analysis_profile,
-            options.native_stats);
+            options.native_stats,
+            options.progress_callback);
     case CompressionBackend::OpenClNativeFlac:
         return compress_lds_to_opencl_native_flac(lds_input, output_path, OpenClCompressionOptions {
             .container = options.container,
@@ -75,6 +78,7 @@ ConversionStats compress_lds(
             .analysis_profile = options.native_analysis_profile,
             .device_index = options.opencl_device_index,
             .native_stats = options.native_stats,
+            .progress_callback = options.progress_callback,
         });
     case CompressionBackend::VulkanNativeFlac:
         return compress_lds_to_vulkan_native_flac(lds_input, output_path, VulkanCompressionOptions {
@@ -88,6 +92,7 @@ ConversionStats compress_lds(
             .analysis_profile = options.native_analysis_profile,
             .device_index = options.vulkan_device_index,
             .native_stats = options.native_stats,
+            .progress_callback = options.progress_callback,
         });
     case CompressionBackend::MetalNativeFlac:
         return compress_lds_to_metal_native_flac(lds_input, output_path, MetalCompressionOptions {
@@ -101,6 +106,7 @@ ConversionStats compress_lds(
             .analysis_profile = options.native_analysis_profile,
             .device_index = options.metal_device_index,
             .native_stats = options.native_stats,
+            .progress_callback = options.progress_callback,
         });
     }
 

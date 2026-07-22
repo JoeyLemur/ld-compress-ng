@@ -26,6 +26,7 @@ struct AcceleratedNativeCompressionOptions {
     unsigned max_rice_partition_order = 5;
     std::size_t batch_frames = 32;
     NativeCompressionStats* native_stats = nullptr;
+    CompressionProgressCallback progress_callback;
 };
 
 struct AcceleratedSelectedFrameAnalysis {

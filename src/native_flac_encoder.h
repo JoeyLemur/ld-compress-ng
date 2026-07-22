@@ -18,7 +18,8 @@ ConversionStats compress_lds_to_native_verbatim_flac(
     unsigned max_lpc_order,
     unsigned lpc_precision,
     unsigned max_rice_partition_order,
-    NativeCompressionStats* stats = nullptr);
+    NativeCompressionStats* stats = nullptr,
+    CompressionProgressCallback progress_callback = {});
 
 ConversionStats compress_lds_to_native_fixed_flac(
     std::istream& lds_input,
@@ -30,6 +31,7 @@ ConversionStats compress_lds_to_native_fixed_flac(
     unsigned lpc_precision,
     unsigned max_rice_partition_order,
     NativeAnalysisProfile analysis_profile = NativeAnalysisProfile::Exact,
-    NativeCompressionStats* stats = nullptr);
+    NativeCompressionStats* stats = nullptr,
+    CompressionProgressCallback progress_callback = {});
 
 }  // namespace ldcompress

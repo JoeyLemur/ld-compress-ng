@@ -401,6 +401,9 @@ ConversionStats compress_lds_to_flac(
 
         stats.input_bytes += static_cast<std::uint64_t>(got);
         stats.samples += groups * 4;
+        if (options.progress_callback) {
+            options.progress_callback(stats.input_bytes, stats.samples);
+        }
     }
 
     if (lds_input.bad()) {

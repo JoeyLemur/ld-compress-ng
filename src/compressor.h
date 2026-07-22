@@ -105,6 +105,7 @@ struct CompressionOptions {
     unsigned native_max_rice_partition_order = 5;
     NativeAnalysisProfile native_analysis_profile = NativeAnalysisProfile::Exact;
     NativeCompressionStats* native_stats = nullptr;
+    CompressionProgressCallback progress_callback;
     std::optional<std::size_t> opencl_device_index;
     std::optional<std::size_t> vulkan_device_index;
     std::optional<std::size_t> metal_device_index;

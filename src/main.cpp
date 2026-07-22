@@ -262,6 +262,7 @@ struct Options {
         << "  --metal-device INDEX         Explicit Metal device index.\n"
         << "  --stats                      Print native backend decision stats and timings.\n"
         << "  --container ogg|flac         cpu can write Ogg or native FLAC; native/opencl/vulkan/metal write flac.\n"
+        << "  --progress                   Show input progress and elapsed time on stderr.\n"
         << "  --overwrite                  Replace an existing output path.\n\n"
         << "Decompress options:\n"
         << "  --overwrite                  Replace an existing output path.\n"
@@ -483,6 +484,21 @@ std::string default_decompress_output(const std::string& input)
         return filename.substr(0, filename.size() - std::string_view(".ldf").size()) + ".lds";
     }
     return input_path.stem().string() + ".lds";
+}
+
+std::optional<std::uint64_t> regular_input_size_or_unknown(const std::string& input)
+{
+    std::error_code ec;
+    const auto status = std::filesystem::status(input, ec);
+    if (ec || !std::filesystem::is_regular_file(status)) {
+        return std::nullopt;
+    }
+
+    const auto size = std::filesystem::file_size(input, ec);
+    if (ec || size > std::numeric_limits<std::uint64_t>::max()) {
+        return std::nullopt;
+    }
+    return static_cast<std::uint64_t>(size);
 }
 
 void ensure_output_allowed(const std::string& path, bool overwrite)
@@ -777,6 +793,8 @@ Options parse_compress(int argc, char** argv)
             options.overwrite = true;
         } else if (arg == "--stats") {
             options.show_stats = true;
+        } else if (arg == "--progress") {
+            options.show_progress = true;
         } else if (arg == "--backend") {
             if (++i >= argc) {
                 throw std::runtime_error("--backend requires a value");
@@ -1313,6 +1331,158 @@ private:
     std::uint64_t total_samples_ = 0;
 };
 
+class CompressionProgressReporter final {
+public:
+    CompressionProgressReporter(bool enabled, std::optional<std::uint64_t> total_input_bytes)
+        : enabled_(enabled)
+        , total_input_bytes_(total_input_bytes)
+        , started_(std::chrono::steady_clock::now())
+    {
+    }
+
+    ~CompressionProgressReporter()
+    {
+        finish();
+    }
+
+    void report(std::uint64_t consumed_input_bytes, std::uint64_t consumed_samples)
+    {
+        if (!enabled_ || finished_) {
+            return;
+        }
+
+        consumed_input_bytes_ = consumed_input_bytes;
+        consumed_samples_ = consumed_samples;
+        have_progress_ = true;
+        const auto now = std::chrono::steady_clock::now();
+        if (!rendered_ || now - last_render_ >= kUpdateInterval) {
+            render(now);
+        }
+    }
+
+    void finish() noexcept
+    {
+        if (!enabled_ || finished_ || !have_progress_) {
+            return;
+        }
+
+        try {
+            render(std::chrono::steady_clock::now());
+            std::cerr << '\n' << std::flush;
+        } catch (...) {
+            // Progress reporting must never obscure the compression result.
+        }
+        finished_ = true;
+    }
+
+private:
+    static constexpr auto kUpdateInterval = std::chrono::milliseconds(250);
+
+    static std::string format_binary_size(std::uint64_t value)
+    {
+        constexpr std::array<std::string_view, 5> units {"B", "KiB", "MiB", "GiB", "TiB"};
+        double scaled = static_cast<double>(value);
+        std::size_t unit = 0;
+        while (scaled >= 1024.0 && unit + 1U < units.size()) {
+            scaled /= 1024.0;
+            ++unit;
+        }
+
+        std::ostringstream output;
+        if (unit == 0) {
+            output << value;
+        } else if (scaled < 10.0) {
+            output << std::fixed << std::setprecision(1) << scaled;
+        } else {
+            output << std::fixed << std::setprecision(0) << scaled;
+        }
+        output << ' ' << units[unit];
+        return output.str();
+    }
+
+    static std::string format_sample_count(std::uint64_t value)
+    {
+        constexpr std::array<std::string_view, 5> units {
+            "samples", "ksamples", "Msamples", "Gsamples", "Tsamples"};
+        double scaled = static_cast<double>(value);
+        std::size_t unit = 0;
+        while (scaled >= 1000.0 && unit + 1U < units.size()) {
+            scaled /= 1000.0;
+            ++unit;
+        }
+
+        std::ostringstream output;
+        if (unit == 0) {
+            output << value;
+        } else if (scaled < 10.0) {
+            output << std::fixed << std::setprecision(1) << scaled;
+        } else {
+            output << std::fixed << std::setprecision(0) << scaled;
+        }
+        output << ' ' << units[unit];
+        return output.str();
+    }
+
+    void update_rate(std::chrono::steady_clock::time_point now)
+    {
+        if (!have_rendered_progress_ || consumed_input_bytes_ <= rendered_input_bytes_) {
+            return;
+        }
+
+        const auto elapsed = std::chrono::duration<double>(now - last_render_).count();
+        if (elapsed <= 0.0) {
+            return;
+        }
+        bytes_per_second_ = static_cast<std::uint64_t>(
+            static_cast<double>(consumed_input_bytes_ - rendered_input_bytes_) / elapsed);
+    }
+
+    void render(std::chrono::steady_clock::time_point now)
+    {
+        update_rate(now);
+        std::cerr << "\rcompressing: ";
+        if (total_input_bytes_.has_value() && *total_input_bytes_ != 0) {
+            if (consumed_input_bytes_ > *total_input_bytes_) {
+                std::cerr << ">=100% (";
+            } else {
+                const auto percent = static_cast<unsigned>(
+                    ((consumed_input_bytes_ / *total_input_bytes_) * 100U) +
+                    (((consumed_input_bytes_ % *total_input_bytes_) * 100U) /
+                        *total_input_bytes_));
+                std::cerr << percent << "% (";
+            }
+            std::cerr << format_binary_size(consumed_input_bytes_) << '/'
+                      << format_binary_size(*total_input_bytes_) << ", "
+                      << format_sample_count(consumed_samples_) << ')';
+        } else {
+            std::cerr << format_binary_size(consumed_input_bytes_) << ", "
+                      << format_sample_count(consumed_samples_);
+        }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - started_);
+        std::cerr << ", " << elapsed.count() << "s" << std::flush;
+        if (bytes_per_second_.has_value()) {
+            std::cerr << ", " << format_binary_size(*bytes_per_second_) << "/s" << std::flush;
+        }
+        last_render_ = now;
+        rendered_input_bytes_ = consumed_input_bytes_;
+        have_rendered_progress_ = true;
+        rendered_ = true;
+    }
+
+    bool enabled_ = false;
+    bool have_progress_ = false;
+    bool rendered_ = false;
+    bool finished_ = false;
+    std::optional<std::uint64_t> total_input_bytes_;
+    std::chrono::steady_clock::time_point started_;
+    std::chrono::steady_clock::time_point last_render_ {};
+    std::uint64_t consumed_input_bytes_ = 0;
+    std::uint64_t consumed_samples_ = 0;
+    std::uint64_t rendered_input_bytes_ = 0;
+    std::optional<std::uint64_t> bytes_per_second_;
+    bool have_rendered_progress_ = false;
+};
+
 template <std::size_t N>
 void print_nonzero_counts(
     std::ostream& output,
@@ -1597,6 +1767,18 @@ int run_compress(const Options& options)
         throw std::runtime_error("could not open input: " + options.input);
     }
 
+    CompressionProgressReporter progress_reporter(
+        options.show_progress, regular_input_size_or_unknown(options.input));
+    ldcompress::CompressionProgressCallback progress_callback;
+    if (options.show_progress) {
+        progress_reporter.report(0, 0);
+        progress_callback = [&progress_reporter](
+                                std::uint64_t consumed_input_bytes,
+                                std::uint64_t consumed_samples) {
+            progress_reporter.report(consumed_input_bytes, consumed_samples);
+        };
+    }
+
     ldcompress::NativeCompressionStats native_stats;
     const ldcompress::CompressionOptions compress_options {
         .backend = options.backend,
@@ -1609,6 +1791,7 @@ int run_compress(const Options& options)
         .native_lpc_precision = options.native_lpc_precision,
         .native_max_rice_partition_order = options.native_max_rice_partition_order,
         .native_stats = options.show_stats ? &native_stats : nullptr,
+        .progress_callback = std::move(progress_callback),
         .opencl_device_index = effective_opencl_device_index(options),
         .vulkan_device_index = effective_vulkan_device_index(options),
         .metal_device_index = effective_metal_device_index(options),
@@ -1621,6 +1804,7 @@ int run_compress(const Options& options)
 
     publish_temporary_output(staging_output, options.output, options.overwrite);
 
+    progress_reporter.finish();
     std::cerr << "compressed " << stats.input_bytes << " bytes to "
               << stats.output_bytes << " bytes (" << stats.samples
               << " samples, " << ldcompress::backend_name(options.backend)

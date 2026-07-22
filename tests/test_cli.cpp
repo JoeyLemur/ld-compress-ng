@@ -109,6 +109,31 @@ void run_fails_with_stderr(
     }
 }
 
+void require_compression_progress(std::string_view text, const char* message_prefix)
+{
+    if (text.find("compressing: 0% (0 B/") == std::string_view::npos) {
+        throw std::runtime_error(
+            std::string(message_prefix) + " did not report initial progress");
+    }
+    if (text.find("100%") == std::string_view::npos) {
+        throw std::runtime_error(
+            std::string(message_prefix) + " did not report final input progress");
+    }
+    if (text.find("B/") == std::string_view::npos ||
+        text.find("samples)") == std::string_view::npos) {
+        throw std::runtime_error(
+            std::string(message_prefix) + " did not report compact bytes and samples");
+    }
+    if (text.find("/s") == std::string_view::npos) {
+        throw std::runtime_error(
+            std::string(message_prefix) + " did not report input throughput");
+    }
+    if (text.find("s\ncompressed ") == std::string_view::npos) {
+        throw std::runtime_error(
+            std::string(message_prefix) + " did not finish progress before success output");
+    }
+}
+
 void write_file(const std::filesystem::path& path, std::string_view data)
 {
     std::ofstream output(path, std::ios::binary);
@@ -419,6 +444,7 @@ void test_cli(const std::filesystem::path& exe)
     const auto protected_unpack = temp_dir / "protected-unpack.s16";
     const auto protected_pack = temp_dir / "protected-pack.lds";
     const auto compressed = temp_dir / "fixture.ldf";
+    const auto compressed_progress = temp_dir / "fixture.progress.ldf";
     const auto explicit_auto = temp_dir / "fixture.explicit-auto.ldf";
     const auto protected_cpu_compress_output = temp_dir / "protected-cpu.ldf";
     const auto protected_native_compress_output = temp_dir / "protected-native.flac.ldf";
@@ -440,6 +466,7 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_native_verbatim_lpc_precision = temp_dir / "fixture.bad-native-verbatim-lpc-precision.flac.ldf";
     const auto bad_native_verbatim_rice_partition_order = temp_dir / "fixture.bad-native-verbatim-rice-partition-order.flac.ldf";
     const auto native_fixed = temp_dir / "fixture.native-fixed.flac.ldf";
+    const auto native_fixed_progress = temp_dir / "fixture.native-fixed-progress.flac.ldf";
     const auto native_fixed_out = temp_dir / "fixture.native-fixed.out.lds";
     const auto native_fixed_unknown_total = temp_dir / "fixture.native-fixed.unknown-total.flac.ldf";
     const auto native_fixed_unknown_total_out = temp_dir / "fixture.native-fixed.unknown-total.out.lds";
@@ -498,7 +525,9 @@ void test_cli(const std::filesystem::path& exe)
     const auto empty_native_verbatim_out = temp_dir / "empty.native-verbatim.out.lds";
     const auto empty_native_fixed = temp_dir / "empty.native-fixed.flac.ldf";
     const auto empty_native_fixed_out = temp_dir / "empty.native-fixed.out.lds";
+    const auto empty_native_fixed_progress = temp_dir / "empty.native-fixed-progress.flac.ldf";
     const auto opencl_output = temp_dir / "fixture.opencl.flac.ldf";
+    const auto opencl_progress = temp_dir / "fixture.opencl-progress.flac.ldf";
     const auto opencl_output_out = temp_dir / "fixture.opencl.out.lds";
     const auto opencl_stats = temp_dir / "fixture.opencl-stats.flac.ldf";
     const auto opencl_stats_out = temp_dir / "fixture.opencl-stats.out.lds";
@@ -515,6 +544,7 @@ void test_cli(const std::filesystem::path& exe)
     const auto bad_opencl_device = temp_dir / "fixture.bad-opencl-device.flac.ldf";
     const auto bad_opencl_container = temp_dir / "fixture.bad-opencl-container.ldf";
     const auto vulkan_output = temp_dir / "fixture.vulkan.flac.ldf";
+    const auto vulkan_progress = temp_dir / "fixture.vulkan-progress.flac.ldf";
     const auto vulkan_output_out = temp_dir / "fixture.vulkan.out.lds";
     const auto vulkan_fixed_only = temp_dir / "fixture.vulkan-fixed-only.flac.ldf";
     const auto vulkan_fixed_only_out = temp_dir / "fixture.vulkan-fixed-only.out.lds";
@@ -528,6 +558,7 @@ void test_cli(const std::filesystem::path& exe)
         temp_dir / "fixture.bad-vulkan-device-out-of-range.flac.ldf";
     const auto bad_vulkan_container = temp_dir / "fixture.bad-vulkan-container.ldf";
     const auto metal_output = temp_dir / "fixture.metal.flac.ldf";
+    const auto metal_progress = temp_dir / "fixture.metal-progress.flac.ldf";
     const auto metal_output_out = temp_dir / "fixture.metal.out.lds";
     const auto metal_stats = temp_dir / "fixture.metal-stats.flac.ldf";
     const auto metal_stats_out = temp_dir / "fixture.metal-stats.out.lds";
@@ -643,6 +674,13 @@ void test_cli(const std::filesystem::path& exe)
         "implicit auto backend did not follow the documented priority");
     require(read_file(compressed).substr(0, 4) == automatic_container_magic,
         "implicit auto backend selected the wrong FLAC container");
+    const auto cpu_progress_text = run_ok_with_stderr(
+        shell_quote(exe) + " compress --backend cpu --progress " + shell_quote(lds) + " " +
+            shell_quote(compressed_progress),
+        command_stderr);
+    require_compression_progress(cpu_progress_text, "cpu compress --progress");
+    run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " +
+        shell_quote(compressed_progress));
     const auto explicit_auto_stderr = run_ok_with_stderr(
         shell_quote(exe) + " compress --backend cpu --backend auto " + shell_quote(lds) +
             " " + shell_quote(explicit_auto),
@@ -692,6 +730,13 @@ void test_cli(const std::filesystem::path& exe)
         shell_quote(protected_native_compress_output));
     require(!has_temporary_output_sibling(protected_native_compress_output),
         "successful native compression left a temporary output behind");
+    const auto native_fixed_progress_text = run_ok_with_stderr(
+        shell_quote(exe) + " compress --backend native-fixed --progress " + shell_quote(lds) +
+            " " + shell_quote(native_fixed_progress),
+        command_stderr);
+    require_compression_progress(native_fixed_progress_text, "native-fixed compress --progress");
+    run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " +
+        shell_quote(native_fixed_progress));
 
     run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(compressed));
     run_ok(shell_quote(exe) + " decompress " + shell_quote(compressed) + " " + shell_quote(decompressed));
@@ -927,6 +972,16 @@ void test_cli(const std::filesystem::path& exe)
     run_ok(shell_quote(exe) + " verify --source " + shell_quote(empty_lds) + " " + shell_quote(empty_native_fixed));
     run_ok(shell_quote(exe) + " decompress " + shell_quote(empty_native_fixed) + " " + shell_quote(empty_native_fixed_out));
     require(read_file(empty_native_fixed_out).empty(), "empty native-fixed FLAC produced decoded LDS bytes");
+    const auto empty_progress_text = run_ok_with_stderr(
+        shell_quote(exe) + " compress --backend native-fixed --progress " + shell_quote(empty_lds) +
+            " " + shell_quote(empty_native_fixed_progress),
+        command_stderr);
+    require(empty_progress_text.find("compressing: 0 B, 0 samples, ") != std::string::npos,
+        "empty compress --progress did not report non-percent input progress");
+    require(empty_progress_text.find("0%") == std::string::npos,
+        "empty compress --progress unexpectedly reported a percentage");
+    run_ok(shell_quote(exe) + " verify --source " + shell_quote(empty_lds) + " " +
+        shell_quote(empty_native_fixed_progress));
     const auto opencl_device_index = first_available_opencl_device_index();
     if (opencl_device_index.has_value()) {
         const auto opencl_device_arg = " --device " + std::to_string(*opencl_device_index);
@@ -934,6 +989,13 @@ void test_cli(const std::filesystem::path& exe)
         run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(opencl_output));
         run_ok(shell_quote(exe) + " decompress " + shell_quote(opencl_output) + " " + shell_quote(opencl_output_out));
         require(read_file(opencl_output_out) == fixture, "OpenCL FLAC round trip changed LDS bytes");
+        const auto opencl_progress_text = run_ok_with_stderr(
+            shell_quote(exe) + " compress --backend opencl --progress" + opencl_device_arg + " " +
+                shell_quote(lds) + " " + shell_quote(opencl_progress),
+            command_stderr);
+        require_compression_progress(opencl_progress_text, "OpenCL compress --progress");
+        run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " +
+            shell_quote(opencl_progress));
         const auto preserved_opencl_output = read_file(opencl_output);
         run_fails(shell_quote(exe) + " compress --backend opencl --overwrite" +
             opencl_device_arg + " " + shell_quote(truncated_lds) + " " +
@@ -985,6 +1047,13 @@ void test_cli(const std::filesystem::path& exe)
         run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(vulkan_output));
         run_ok(shell_quote(exe) + " decompress " + shell_quote(vulkan_output) + " " + shell_quote(vulkan_output_out));
         require(read_file(vulkan_output_out) == fixture, "Vulkan FLAC round trip changed LDS bytes");
+        const auto vulkan_progress_text = run_ok_with_stderr(
+            shell_quote(exe) + " compress --backend vulkan --progress" + vulkan_device_arg + " " +
+                shell_quote(lds) + " " + shell_quote(vulkan_progress),
+            command_stderr);
+        require_compression_progress(vulkan_progress_text, "Vulkan compress --progress");
+        run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " +
+            shell_quote(vulkan_progress));
         const auto preserved_vulkan_output = read_file(vulkan_output);
         run_fails(shell_quote(exe) + " compress --backend vulkan --overwrite --lpc-order 0" +
             vulkan_device_arg + " " + shell_quote(truncated_lds) + " " +
@@ -1047,6 +1116,13 @@ void test_cli(const std::filesystem::path& exe)
         run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " + shell_quote(metal_output));
         run_ok(shell_quote(exe) + " decompress " + shell_quote(metal_output) + " " + shell_quote(metal_output_out));
         require(read_file(metal_output_out) == fixture, "Metal FLAC round trip changed LDS bytes");
+        const auto metal_progress_text = run_ok_with_stderr(
+            shell_quote(exe) + " compress --backend metal --progress" + metal_device_arg + " " +
+                shell_quote(lds) + " " + shell_quote(metal_progress),
+            command_stderr);
+        require_compression_progress(metal_progress_text, "Metal compress --progress");
+        run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " +
+            shell_quote(metal_progress));
         const auto preserved_metal_output = read_file(metal_output);
         run_fails(shell_quote(exe) + " compress --backend metal --overwrite" +
             metal_device_arg + " " + shell_quote(truncated_lds) + " " +

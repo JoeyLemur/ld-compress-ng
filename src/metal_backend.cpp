@@ -209,6 +209,7 @@ ConversionStats compress_lds_to_metal_native_flac_with_session(
         .max_rice_partition_order = options.max_rice_partition_order,
         .batch_frames = kMetalBatchFrames,
         .native_stats = options.native_stats,
+        .progress_callback = options.progress_callback,
     };
 
     auto stats = compress_lds_to_accelerated_native_flac(

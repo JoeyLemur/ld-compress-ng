@@ -16,10 +16,16 @@ enum class FlacContainer {
     Native,
 };
 
+// Called after each valid LDS input chunk has been accepted by an encoder.
+using CompressionProgressCallback = std::function<void(
+    std::uint64_t consumed_input_bytes,
+    std::uint64_t consumed_samples)>;
+
 struct FlacEncodeOptions {
     FlacContainer container = FlacContainer::Ogg;
     unsigned compression_level = 11;
     unsigned sample_rate = 40000;
+    CompressionProgressCallback progress_callback;
 };
 
 // Called after STREAMINFO and after each decoded FLAC frame. A total of zero

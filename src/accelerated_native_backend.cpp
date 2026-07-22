@@ -712,6 +712,9 @@ ConversionStats compress_lds_to_accelerated_native_flac(
         }
         stats.input_bytes += static_cast<std::uint64_t>(got);
         stats.samples += groups * 4U;
+        if (options.progress_callback) {
+            options.progress_callback(stats.input_bytes, stats.samples);
+        }
     }
 
     if (lds_input.bad()) {
