@@ -92,7 +92,7 @@ std::string read_file(const std::filesystem::path& path)
     return out.str();
 }
 
-void run_fails_with_stderr(
+std::string run_fails_with_stderr(
     const std::string& command,
     const std::filesystem::path& stderr_path,
     std::string_view expected)
@@ -107,6 +107,7 @@ void run_fails_with_stderr(
         throw std::runtime_error("command stderr did not contain expected text '" +
             std::string(expected) + "': " + stderr_text);
     }
+    return stderr_text;
 }
 
 void require_compression_progress(std::string_view text, const char* message_prefix)
@@ -710,6 +711,15 @@ void test_cli(const std::filesystem::path& exe)
         "failed CPU compression replaced existing output");
     require(!has_temporary_output_sibling(protected_cpu_compress_output),
         "failed CPU compression left a temporary output behind");
+    const auto failed_cpu_progress_text = run_fails_with_stderr(
+        shell_quote(exe) + " compress --backend cpu --progress --overwrite " +
+            shell_quote(truncated_lds) + " " + shell_quote(protected_cpu_compress_output),
+        command_stderr,
+        "truncated LDS input");
+    require(failed_cpu_progress_text.find("ETA ") != std::string::npos,
+        "incomplete compress --progress did not report an ETA");
+    require(read_file(protected_cpu_compress_output) == "keep this CPU output",
+        "failed progress-enabled CPU compression replaced an existing output");
     run_ok(shell_quote(exe) + " compress --backend cpu --overwrite " + shell_quote(lds) +
         " " + shell_quote(protected_cpu_compress_output));
     run_ok(shell_quote(exe) + " verify --source " + shell_quote(lds) + " " +

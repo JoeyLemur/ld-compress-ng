@@ -1423,6 +1423,32 @@ private:
         return output.str();
     }
 
+    static std::string format_eta(std::uint64_t seconds)
+    {
+        std::ostringstream output;
+        if (seconds < 60U) {
+            output << seconds << 's';
+            return output.str();
+        }
+
+        const auto minutes = seconds / 60U;
+        const auto remaining_seconds = seconds % 60U;
+        if (minutes < 60U) {
+            output << minutes << 'm' << ' ' << remaining_seconds << 's';
+            return output.str();
+        }
+
+        const auto hours = minutes / 60U;
+        const auto remaining_minutes = minutes % 60U;
+        if (hours < 24U) {
+            output << hours << 'h' << ' ' << remaining_minutes << 'm';
+            return output.str();
+        }
+
+        output << (hours / 24U) << 'd' << ' ' << (hours % 24U) << 'h';
+        return output.str();
+    }
+
     void update_rate(std::chrono::steady_clock::time_point now)
     {
         if (!have_rendered_progress_ || consumed_input_bytes_ <= rendered_input_bytes_) {
@@ -1462,6 +1488,13 @@ private:
         std::cerr << ", " << elapsed.count() << "s" << std::flush;
         if (bytes_per_second_.has_value()) {
             std::cerr << ", " << format_binary_size(*bytes_per_second_) << "/s" << std::flush;
+        }
+        if (total_input_bytes_.has_value() && *total_input_bytes_ > consumed_input_bytes_ &&
+            bytes_per_second_.has_value() && *bytes_per_second_ != 0) {
+            const auto remaining_bytes = *total_input_bytes_ - consumed_input_bytes_;
+            const auto eta_seconds = (remaining_bytes / *bytes_per_second_) +
+                ((remaining_bytes % *bytes_per_second_) == 0 ? 0U : 1U);
+            std::cerr << ", ETA " << format_eta(eta_seconds) << std::flush;
         }
         last_render_ = now;
         rendered_input_bytes_ = consumed_input_bytes_;
