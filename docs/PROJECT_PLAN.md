@@ -489,6 +489,24 @@ Metal size/speed tuning checkpoint:
   `ctest --test-dir build-metal --output-on-failure`, a plain Metal
   `compress --backend metal` on `issue176.lds`, `verify --source` against the
   original LDS, and `git diff --check`.
+- Fixed-order-guess common-subexpression pass: the Metal speed-profile kernel
+  previously reloaded and re-shifted the same five samples separately for each
+  fixed predictor order. It now shifts each of those samples once per input
+  position and derives the order `0..4` finite differences from the cached
+  integer values. This leaves the residuals, order-selection comparison, and
+  selected output exactly unchanged. On the Apple M1 device `0`, the focused
+  `issue176.lds` Rice-order-`6` row stayed at `4,293,022` bytes and improved
+  from `0.130s` to `0.107s`; `metal_fguess_s` fell from `0.041257s` to
+  `0.017830s`. The fresh six-fixture pre-edit baseline is
+  `build/real-fixture-sweeps/real-fixture-sweep-20260727-184949.{csv,md}`:
+  Metal Rice order `6` wrote `79,946,720` bytes in `2.021s`, with
+  `metal_fguess_s=0.724969s`. The retained sweep is
+  `build/real-fixture-sweeps/real-fixture-sweep-20260727-185519.{csv,md}`:
+  the byte count remained `79,946,720` while elapsed time fell to `1.538s`
+  and `metal_fguess_s` to `0.259093s` (a `23.9%` aggregate speedup). The
+  Metal smoke and analysis tests passed on device `0`; the complete
+  GPU-visible `build-metal` CTest suite passed (`23/23`, with two optional
+  PyAV compatibility tests skipped), and `git diff --check` passed.
 
 ## Implementation Checkpoint - 2026-07-16, automatic backend policy
 

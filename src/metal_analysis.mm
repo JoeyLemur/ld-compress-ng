@@ -1183,20 +1183,36 @@ kernel void prune_fixed_order_guess(
     }
 
     for (int pos = int(lane); pos < bs; pos += int(kWorkgroupSize)) {
+        const long sample0 = shifted_sample(data, pos, wbits);
+        const long sample1 = pos >= 1
+            ? shifted_sample(data, pos - 1, wbits)
+            : 0L;
+        const long sample2 = pos >= 2
+            ? shifted_sample(data, pos - 2, wbits)
+            : 0L;
+        const long sample3 = pos >= 3
+            ? shifted_sample(data, pos - 3, wbits)
+            : 0L;
+        const long sample4 = pos >= 4
+            ? shifted_sample(data, pos - 4, wbits)
+            : 0L;
         if (fixed_task_no[0] >= 0) {
-            local_sums[0] += abs_long(fixed_residual(data, pos, 0, wbits));
+            local_sums[0] += abs_long(sample0);
         }
         if (fixed_task_no[1] >= 0 && pos >= 1) {
-            local_sums[1] += abs_long(fixed_residual(data, pos, 1, wbits));
+            local_sums[1] += abs_long(sample0 - sample1);
         }
         if (fixed_task_no[2] >= 0 && pos >= 2) {
-            local_sums[2] += abs_long(fixed_residual(data, pos, 2, wbits));
+            local_sums[2] += abs_long(sample0 - (2L * sample1) + sample2);
         }
         if (fixed_task_no[3] >= 0 && pos >= 3) {
-            local_sums[3] += abs_long(fixed_residual(data, pos, 3, wbits));
+            local_sums[3] += abs_long(
+                sample0 - (3L * sample1) + (3L * sample2) - sample3);
         }
         if (fixed_task_no[4] >= 0 && pos >= 4) {
-            local_sums[4] += abs_long(fixed_residual(data, pos, 4, wbits));
+            local_sums[4] += abs_long(
+                sample0 - (4L * sample1) + (6L * sample2) -
+                (4L * sample3) + sample4);
         }
     }
 
