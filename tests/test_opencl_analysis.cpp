@@ -2202,6 +2202,43 @@ void test_opencl_order_guess_mean_rice_profile_smoke()
     require_mean_estimate_sizes_diverge(mean_full.analyzed_tasks, estimate_full.analyzed_tasks,
         "OpenCL mean-estimate Rice profile still returned exact-recost predictive sizes");
 
+    auto generic_reanalysis_plan = estimate_plan;
+    generic_reanalysis_plan.residual_tasks = estimate_full.analyzed_tasks;
+    const auto generic_reanalysis = run_opencl_mono_lpc_analysis(
+        samples, generic_reanalysis_plan, device_index, 5);
+    require(generic_reanalysis.analyzed_tasks.size() == estimate_full.analyzed_tasks.size(),
+        "OpenCL mean-estimate generic reanalysis task count mismatch");
+    require(generic_reanalysis.best_tasks.size() == estimate_full.best_tasks.size(),
+        "OpenCL mean-estimate generic reanalysis best task count mismatch");
+    for (std::size_t i = 0; i < estimate_full.analyzed_tasks.size(); ++i) {
+        const auto& expected = estimate_full.analyzed_tasks[i];
+        const auto& actual = generic_reanalysis.analyzed_tasks[i];
+        if (expected.data.type == kFlacClSubframeLpc) {
+            require_lpc_task_matches(actual, expected,
+                "OpenCL mean-estimate generic reanalysis LPC task diverged from fast path");
+        } else {
+            require_task_matches_task(actual, expected,
+                "OpenCL mean-estimate generic reanalysis task diverged from fast path");
+        }
+    }
+    for (std::size_t i = 0; i < estimate_full.best_tasks.size(); ++i) {
+        const auto& expected = estimate_full.best_tasks[i];
+        const auto& actual = generic_reanalysis.best_tasks[i];
+        if (expected.data.type == kFlacClSubframeLpc) {
+            require_lpc_task_matches(actual, expected,
+                "OpenCL mean-estimate generic reanalysis best LPC task diverged from fast path");
+        } else {
+            require_task_matches_task(actual, expected,
+                "OpenCL mean-estimate generic reanalysis best task diverged from fast path");
+        }
+    }
+    require_selected_rice_parameters_match(
+        generic_reanalysis.best_tasks,
+        generic_reanalysis.best_rice_parameters,
+        estimate_full.best_tasks,
+        estimate_full.best_rice_parameters,
+        "OpenCL mean-estimate generic reanalysis Rice sidecar diverged from fast path");
+
     const auto estimate_best =
         session.run_generated_best_analysis(samples, estimate_plan, 12, 5);
     require(estimate_best.best_tasks.size() == estimate_full.best_tasks.size(),

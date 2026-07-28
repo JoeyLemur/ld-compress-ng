@@ -1107,6 +1107,54 @@ skipped), `cmake --build build/local-check/no-vulkan --parallel`, and the
 no-Vulkan lane (`23/23`, the same two optional skips). The default lane includes
 the native selected-writer recost regression coverage.
 
+## OpenCL Shifted-Sample Speed-Profile Pass - 2026-07-27
+
+The matching OpenCL optimization is retained for the same generated-LPC
+speed-profile shape only: `order-guess-mean-estimate-rice`, three windows, one
+LPC task per window, maximum LPC order `12`, and maximum Rice partition order
+`6`. Its existing one-work-item-per-frame preparation kernel now writes a
+reusable device buffer of signed shifted samples while it computes `wbits` and
+`abits`. Generated autocorrelation and fixed-order pruning use that buffer;
+leaf mean-estimate residual analysis retains original samples for constant
+checks, uses the Metal-derived overflow proof before 32-bit LPC
+multiply/accumulate, explicitly unrolls orders `10` through `12`, and keeps
+the 64-bit dynamic loop as an exact fallback. Generic calls retain the original
+input path. No CLI or public-library API changed, and no low-scratch OpenCL
+kernel variant was added.
+
+`test_opencl_analysis` now reanalyzes populated mean-estimate generated tasks
+through the generic unshifted path and requires identical task type, predictor
+order, LPC coefficients, `wbits`, `abits`, partition order, estimated size,
+and selected Rice sidecars.
+
+The retained measurement used OpenCL device `1` (NVIDIA RTX 5070 Ti) and this
+six-fixture command with session reuse:
+
+```
+python3 tools/sweep_real_fixtures.py --binary build/local-check/default/ld-compress-ng --fixtures reference/testdata/ld-decode-testdata-ci/1cf698d2025e8515e9ef57e34adaf85a194da96a --out-dir build/opencl-post-shift-sweeps --threads 8 --frame-samples 4608 --lpc-order 12 --lpc-precision 12 --rice-partition-order 6 --analysis-profile order-guess-mean-estimate-rice --include-opencl --opencl-device 1 --reuse-opencl-session
+```
+
+The corresponding three pre-change reports are under
+`build/opencl-pre-shift-baselines/`. The aggregate output-byte gate stayed
+exactly `79,946,987` bytes:
+
+| Sweep | Aggregate elapsed time |
+| --- | ---: |
+| Pre-change | `0.822s`, `0.825s`, `0.817s` (median `0.822s`) |
+| Post-change | `0.794s`, `0.788s`, `0.802s` (median `0.794s`) |
+
+Every post-change run improved, and the median improved by `0.028s` (3.4%).
+The focused `issue176.lds` speed-profile benchmark retained its
+`4,293,074`-byte OpenCL output: `opencl_ac_s` fell from `0.004293s` to
+`0.000532s`, and exact analysis fell from `0.004301s` to `0.000942s`.
+
+Validation passed with `cmake --build build/local-check/default --parallel`,
+`ctest --test-dir build/local-check/default -L opencl --output-on-failure`
+(`2/2`), the full default lane (`23/23`, with two optional local loader tests
+skipped), `cmake --build build/local-check/no-opencl --parallel`, and the
+no-OpenCL lane (`23/23`, the same two optional skips). The default lane includes
+the native selected-writer recost regression coverage.
+
 ## Recommendation
 
 Build a single native CLI named `ld-compress-ng`, using C++20 and CMake.

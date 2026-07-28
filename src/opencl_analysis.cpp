@@ -81,6 +81,19 @@ LDCOMPRESS_OPENCL_ONLY_USED bool analysis_profile_uses_mean_estimated_size(
         profile == NativeAnalysisProfile::SubdivideTukey3MeanEstimateRice;
 }
 
+LDCOMPRESS_OPENCL_ONLY_USED bool uses_shifted_speed_profile(
+    const OpenClMonoAnalysisTaskPlan& plan,
+    std::size_t lpc_tasks_per_window,
+    std::size_t generated_window_count,
+    unsigned max_rice_partition_order)
+{
+    return plan.analysis_profile == NativeAnalysisProfile::OrderGuessMeanEstimateRice &&
+        generated_window_count == 3U &&
+        lpc_tasks_per_window == 1U &&
+        plan.max_lpc_order <= 12U &&
+        max_rice_partition_order <= kOpenClExactLeafMaxRicePartitionOrder;
+}
+
 LDCOMPRESS_OPENCL_ONLY_USED std::int32_t opencl_analysis_profile_arg(
     NativeAnalysisProfile profile)
 {
@@ -625,12 +638,19 @@ LDCOMPRESS_OPENCL_ONLY_USED void validate_lpc_analysis_inputs(
     }
 
     for (const auto& task : plan.residual_tasks) {
-        if (task.data.type != kFlacClSubframeLpc) {
-            throw std::runtime_error("OpenCL mono LPC analysis received non-LPC task");
+        if (task.data.type != kFlacClSubframeConstant &&
+            task.data.type != kFlacClSubframeFixed &&
+            task.data.type != kFlacClSubframeLpc) {
+            throw std::runtime_error("OpenCL mono LPC analysis received unsupported task");
         }
-        if (task.data.residualOrder <= 0 ||
-            task.data.residualOrder > static_cast<std::int32_t>(kFlacClMaxOrder)) {
+        if (task.data.type == kFlacClSubframeLpc &&
+            (task.data.residualOrder <= 0 ||
+                task.data.residualOrder > static_cast<std::int32_t>(kFlacClMaxOrder))) {
             throw std::runtime_error("OpenCL mono LPC analysis received invalid LPC order");
+        }
+        if (task.data.type == kFlacClSubframeFixed &&
+            (task.data.residualOrder < 0 || task.data.residualOrder > 4)) {
+            throw std::runtime_error("OpenCL mono LPC analysis received invalid fixed order");
         }
         if (task.data.obits != static_cast<std::int32_t>(kOpenClAnalysisBitsPerSample)) {
             throw std::runtime_error("OpenCL mono LPC analysis currently supports 16-bit tasks only");
@@ -639,8 +659,10 @@ LDCOMPRESS_OPENCL_ONLY_USED void validate_lpc_analysis_inputs(
             static_cast<std::size_t>(task.data.blocksize) > kOpenClAnalysisMaxBlockSize) {
             throw std::runtime_error("OpenCL mono LPC analysis block size is unsupported");
         }
-        if (task.data.residualOrder >= task.data.blocksize) {
-            throw std::runtime_error("OpenCL mono LPC analysis LPC order exceeds block size");
+        if ((task.data.type == kFlacClSubframeFixed ||
+                task.data.type == kFlacClSubframeLpc) &&
+            task.data.residualOrder >= task.data.blocksize) {
+            throw std::runtime_error("OpenCL mono LPC analysis predictor order exceeds block size");
         }
         if (task.data.samplesOffs < 0 ||
             static_cast<std::size_t>(task.data.samplesOffs) > samples.size() ||
@@ -648,17 +670,22 @@ LDCOMPRESS_OPENCL_ONLY_USED void validate_lpc_analysis_inputs(
                 samples.size() - static_cast<std::size_t>(task.data.samplesOffs)) {
             throw std::runtime_error("OpenCL mono LPC analysis task samples are out of range");
         }
-        if (task.data.shift < 0 || task.data.shift > 15) {
-            throw std::runtime_error("OpenCL mono LPC analysis task shift is unsupported");
-        }
-        if (task.data.cbits <= 0 || task.data.cbits > 15) {
-            throw std::runtime_error("OpenCL mono LPC analysis coefficient precision is unsupported");
-        }
-        for (int i = 0; i < task.data.residualOrder; ++i) {
-            if (!signed_value_fits_bits(task.coefs[static_cast<std::size_t>(i)],
-                    static_cast<unsigned>(task.data.cbits))) {
-                throw std::runtime_error("OpenCL mono LPC analysis coefficient does not fit precision");
+        if (task.data.type == kFlacClSubframeLpc) {
+            if (task.data.shift < 0 || task.data.shift > 15) {
+                throw std::runtime_error("OpenCL mono LPC analysis task shift is unsupported");
             }
+            if (task.data.cbits <= 0 || task.data.cbits > 15) {
+                throw std::runtime_error("OpenCL mono LPC analysis coefficient precision is unsupported");
+            }
+            for (int i = 0; i < task.data.residualOrder; ++i) {
+                if (!signed_value_fits_bits(task.coefs[static_cast<std::size_t>(i)],
+                        static_cast<unsigned>(task.data.cbits))) {
+                    throw std::runtime_error(
+                        "OpenCL mono LPC analysis coefficient does not fit precision");
+                }
+            }
+        } else if (task.data.shift < 0 || task.data.shift > 30) {
+            throw std::runtime_error("OpenCL mono LPC analysis task shift is unsupported");
         }
     }
 }
@@ -1031,7 +1058,9 @@ __kernel __attribute__((reqd_work_group_size(1, 1, 1)))
 void ldcompressFindWastedBits(
     __global FLACCLSubframeTask* tasks,
     __global const int* samples,
-    int tasksPerChannel)
+    int tasksPerChannel,
+    __global int* shiftedSamples,
+    int writeShiftedSamples)
 {
     __global FLACCLSubframeTask* ptask = &tasks[get_group_id(0) * tasksPerChannel];
     int w_or = 0;
@@ -1051,6 +1080,16 @@ void ldcompressFindWastedBits(
     {
         ptask[i].data.wbits = w;
         ptask[i].data.abits = a;
+    }
+
+    if (writeShiftedSamples)
+    {
+        const int offset = ptask->data.samplesOffs;
+        for (int pos = 0; pos < ptask->data.blocksize; pos++)
+        {
+            const int smp = samples[offset + pos];
+            shiftedSamples[offset + pos] = w == 0 ? smp : smp / (1 << w);
+        }
     }
 }
 
@@ -1076,7 +1115,8 @@ void ldcompressComputeAutocor(
     __global const int* samples,
     __global const float* window,
     __global FLACCLSubframeTask* tasks,
-    int tasksPerFrame)
+    int tasksPerFrame,
+    int samplesAlreadyShifted)
 {
     __local float reduceScratch[AUTOCOR_WORKGROUP_SIZE];
     const int frame = (int)get_group_id(0);
@@ -1089,17 +1129,34 @@ void ldcompressComputeAutocor(
         ((frame * (int)get_num_groups(1) + windowIndex) * (MAX_ORDER + 1)) + lag;
 
     float sum = 0.0f;
-    for (int pos = lag + (int)get_local_id(0);
-         pos < blocksize;
-         pos += AUTOCOR_WORKGROUP_SIZE)
+    if (samplesAlreadyShifted)
     {
-        const float sample0 =
-            (float)ldcompressShiftedSample(samples, task.samplesOffs + pos, task.wbits) *
-            window[windowOffset + pos];
-        const float sample1 =
-            (float)ldcompressShiftedSample(samples, task.samplesOffs + pos - lag, task.wbits) *
-            window[windowOffset + pos - lag];
-        sum += sample0 * sample1;
+        for (int pos = lag + (int)get_local_id(0);
+             pos < blocksize;
+             pos += AUTOCOR_WORKGROUP_SIZE)
+        {
+            const float sample0 =
+                (float)samples[task.samplesOffs + pos] * window[windowOffset + pos];
+            const float sample1 =
+                (float)samples[task.samplesOffs + pos - lag] *
+                window[windowOffset + pos - lag];
+            sum += sample0 * sample1;
+        }
+    }
+    else
+    {
+        for (int pos = lag + (int)get_local_id(0);
+             pos < blocksize;
+             pos += AUTOCOR_WORKGROUP_SIZE)
+        {
+            const float sample0 =
+                (float)ldcompressShiftedSample(samples, task.samplesOffs + pos, task.wbits) *
+                window[windowOffset + pos];
+            const float sample1 =
+                (float)ldcompressShiftedSample(samples, task.samplesOffs + pos - lag, task.wbits) *
+                window[windowOffset + pos - lag];
+            sum += sample0 * sample1;
+        }
     }
 
     const float total = ldcompressReduceSumFloat(sum, reduceScratch);
@@ -1494,6 +1551,134 @@ long ldcompressResidual(__global const int* data, int pos, FLACCLSubframeTask ta
         data, pos, task.data.residualOrder, task.data.wbits);
 }
 
+long ldcompressFixedResidualShifted(__global const int* data, int pos, int order)
+{
+    const long sample = (long)data[pos];
+    switch (order)
+    {
+    case 0:
+        return sample;
+    case 1:
+        return sample - (long)data[pos - 1];
+    case 2:
+        return sample - (2L * (long)data[pos - 1]) + (long)data[pos - 2];
+    case 3:
+        return sample -
+            (3L * (long)data[pos - 1]) +
+            (3L * (long)data[pos - 2]) -
+            (long)data[pos - 3];
+    case 4:
+        return sample -
+            (4L * (long)data[pos - 1]) +
+            (6L * (long)data[pos - 2]) -
+            (4L * (long)data[pos - 3]) +
+            (long)data[pos - 4];
+    default:
+        return 0L;
+    }
+}
+
+long ldcompressLpcResidualShiftedI64(
+    __global const int* data,
+    int pos,
+    FLACCLSubframeTask task)
+{
+    const int order = task.data.residualOrder;
+    long sum = 0L;
+    for (int i = 0; i < order; i++)
+        sum += (long)task.coefs[i] * (long)data[pos - order + i];
+    const long predicted = ldcompressArithmeticShiftRight(sum, task.data.shift);
+    return (long)data[pos] - predicted;
+}
+
+int ldcompressShiftedLpcResidualFitsInt(FLACCLSubframeTask task)
+{
+    if (task.data.type != LPC || task.data.abits <= 0 || task.data.abits >= 31)
+        return 0;
+
+    ulong coefficientAbsSum = 0UL;
+    for (int i = 0; i < task.data.residualOrder; i++)
+    {
+        const int coefficient = task.coefs[i];
+        coefficientAbsSum += coefficient >= 0
+            ? (ulong)coefficient
+            : (ulong)(-(coefficient + 1)) + 1UL;
+    }
+    const ulong maxSample = 1UL << (uint)task.data.abits;
+    return coefficientAbsSum <= (0x7fffffffUL - maxSample) / maxSample;
+}
+
+int ldcompressLpcResidualShiftedI32(
+    __global const int* data,
+    int pos,
+    FLACCLSubframeTask task)
+{
+    const int order = task.data.residualOrder;
+    if (order == 12)
+    {
+        int sum = task.coefs[0] * data[pos - 12];
+        sum += task.coefs[1] * data[pos - 11];
+        sum += task.coefs[2] * data[pos - 10];
+        sum += task.coefs[3] * data[pos - 9];
+        sum += task.coefs[4] * data[pos - 8];
+        sum += task.coefs[5] * data[pos - 7];
+        sum += task.coefs[6] * data[pos - 6];
+        sum += task.coefs[7] * data[pos - 5];
+        sum += task.coefs[8] * data[pos - 4];
+        sum += task.coefs[9] * data[pos - 3];
+        sum += task.coefs[10] * data[pos - 2];
+        sum += task.coefs[11] * data[pos - 1];
+        return data[pos] - (int)ldcompressArithmeticShiftRight((long)sum, task.data.shift);
+    }
+    if (order == 11)
+    {
+        int sum = task.coefs[0] * data[pos - 11];
+        sum += task.coefs[1] * data[pos - 10];
+        sum += task.coefs[2] * data[pos - 9];
+        sum += task.coefs[3] * data[pos - 8];
+        sum += task.coefs[4] * data[pos - 7];
+        sum += task.coefs[5] * data[pos - 6];
+        sum += task.coefs[6] * data[pos - 5];
+        sum += task.coefs[7] * data[pos - 4];
+        sum += task.coefs[8] * data[pos - 3];
+        sum += task.coefs[9] * data[pos - 2];
+        sum += task.coefs[10] * data[pos - 1];
+        return data[pos] - (int)ldcompressArithmeticShiftRight((long)sum, task.data.shift);
+    }
+    if (order == 10)
+    {
+        int sum = task.coefs[0] * data[pos - 10];
+        sum += task.coefs[1] * data[pos - 9];
+        sum += task.coefs[2] * data[pos - 8];
+        sum += task.coefs[3] * data[pos - 7];
+        sum += task.coefs[4] * data[pos - 6];
+        sum += task.coefs[5] * data[pos - 5];
+        sum += task.coefs[6] * data[pos - 4];
+        sum += task.coefs[7] * data[pos - 3];
+        sum += task.coefs[8] * data[pos - 2];
+        sum += task.coefs[9] * data[pos - 1];
+        return data[pos] - (int)ldcompressArithmeticShiftRight((long)sum, task.data.shift);
+    }
+
+    int sum = 0;
+    for (int i = 0; i < order; i++)
+        sum += task.coefs[i] * data[pos - order + i];
+    return data[pos] - (int)ldcompressArithmeticShiftRight((long)sum, task.data.shift);
+}
+
+long ldcompressResidualShifted(
+    __global const int* data,
+    int pos,
+    FLACCLSubframeTask task,
+    int useIntLpc)
+{
+    if (task.data.type != LPC)
+        return ldcompressFixedResidualShifted(data, pos, task.data.residualOrder);
+    return useIntLpc
+        ? (long)ldcompressLpcResidualShiftedI32(data, pos, task)
+        : ldcompressLpcResidualShiftedI64(data, pos, task);
+}
+
 int ldcompressSignedValueFitsBits(int value, int bits)
 {
     if (bits <= 0 || bits > 31)
@@ -1551,7 +1736,8 @@ void ldcompressPruneFixedOrderGuess(
     __global const int* samples,
     __global const int* selectedTasks,
     __global FLACCLSubframeTask* tasks,
-    int taskCount)
+    int taskCount,
+    int samplesAlreadyShifted)
 {
     __local ulong reduceScratch[5 * EXACT_WORKGROUP_SIZE];
     const int lane = (int)get_local_id(0);
@@ -1580,18 +1766,45 @@ void ldcompressPruneFixedOrderGuess(
     for (int order = 0; order <= 4; order++)
         localSums[order] = 0UL;
 
-    for (int pos = lane; pos < bs; pos += EXACT_WORKGROUP_SIZE)
+    if (samplesAlreadyShifted)
     {
-        if (fixedTaskNo[0] >= 0)
-            localSums[0] += ldcompressAbsLong(ldcompressFixedResidual(data, pos, 0, wbits));
-        if (fixedTaskNo[1] >= 0 && pos >= 1)
-            localSums[1] += ldcompressAbsLong(ldcompressFixedResidual(data, pos, 1, wbits));
-        if (fixedTaskNo[2] >= 0 && pos >= 2)
-            localSums[2] += ldcompressAbsLong(ldcompressFixedResidual(data, pos, 2, wbits));
-        if (fixedTaskNo[3] >= 0 && pos >= 3)
-            localSums[3] += ldcompressAbsLong(ldcompressFixedResidual(data, pos, 3, wbits));
-        if (fixedTaskNo[4] >= 0 && pos >= 4)
-            localSums[4] += ldcompressAbsLong(ldcompressFixedResidual(data, pos, 4, wbits));
+        for (int pos = lane; pos < bs; pos += EXACT_WORKGROUP_SIZE)
+        {
+            const long sample0 = (long)data[pos];
+            const long sample1 = pos >= 1 ? (long)data[pos - 1] : 0L;
+            const long sample2 = pos >= 2 ? (long)data[pos - 2] : 0L;
+            const long sample3 = pos >= 3 ? (long)data[pos - 3] : 0L;
+            const long sample4 = pos >= 4 ? (long)data[pos - 4] : 0L;
+            if (fixedTaskNo[0] >= 0)
+                localSums[0] += ldcompressAbsLong(sample0);
+            if (fixedTaskNo[1] >= 0 && pos >= 1)
+                localSums[1] += ldcompressAbsLong(sample0 - sample1);
+            if (fixedTaskNo[2] >= 0 && pos >= 2)
+                localSums[2] += ldcompressAbsLong(sample0 - (2L * sample1) + sample2);
+            if (fixedTaskNo[3] >= 0 && pos >= 3)
+                localSums[3] += ldcompressAbsLong(
+                    sample0 - (3L * sample1) + (3L * sample2) - sample3);
+            if (fixedTaskNo[4] >= 0 && pos >= 4)
+                localSums[4] += ldcompressAbsLong(
+                    sample0 - (4L * sample1) + (6L * sample2) -
+                    (4L * sample3) + sample4);
+        }
+    }
+    else
+    {
+        for (int pos = lane; pos < bs; pos += EXACT_WORKGROUP_SIZE)
+        {
+            if (fixedTaskNo[0] >= 0)
+                localSums[0] += ldcompressAbsLong(ldcompressFixedResidual(data, pos, 0, wbits));
+            if (fixedTaskNo[1] >= 0 && pos >= 1)
+                localSums[1] += ldcompressAbsLong(ldcompressFixedResidual(data, pos, 1, wbits));
+            if (fixedTaskNo[2] >= 0 && pos >= 2)
+                localSums[2] += ldcompressAbsLong(ldcompressFixedResidual(data, pos, 2, wbits));
+            if (fixedTaskNo[3] >= 0 && pos >= 3)
+                localSums[3] += ldcompressAbsLong(ldcompressFixedResidual(data, pos, 3, wbits));
+            if (fixedTaskNo[4] >= 0 && pos >= 4)
+                localSums[4] += ldcompressAbsLong(ldcompressFixedResidual(data, pos, 4, wbits));
+        }
     }
 
     ulong sums[5];
@@ -1859,7 +2072,9 @@ void ldcompressAnalyzeSubframeExact(
     int maxRicePartitionOrder,
     int analysisProfile,
     __global uint* taskRiceParameters,
-    __local ulong* exactRiceLeafSums)
+    __local ulong* exactRiceLeafSums,
+    __global const int* shiftedSamples,
+    int useShiftedSamples)
 {
     __local ulong reduceScratchUlong[EXACT_WORKGROUP_SIZE];
     __local uint reduceScratchUint[EXACT_WORKGROUP_SIZE];
@@ -1872,7 +2087,10 @@ void ldcompressAnalyzeSubframeExact(
     const int bs = task.data.blocksize;
     const int wbits = task.data.wbits;
     const int obits = task.data.obits - wbits;
-    __global const int* data = &samples[task.data.samplesOffs];
+    __global const int* originalData = &samples[task.data.samplesOffs];
+    __global const int* data = useShiftedSamples
+        ? &shiftedSamples[task.data.samplesOffs]
+        : originalData;
     const int riceOutputBase = selectedTask * MAX_RICE_PARTITION_COUNT;
 
     for (int i = lane; i < MAX_RICE_PARTITION_COUNT; i += EXACT_WORKGROUP_SIZE)
@@ -1891,7 +2109,7 @@ void ldcompressAnalyzeSubframeExact(
     if (task.data.type == Constant)
     {
         const int equal =
-            ldcompressCooperativeAllFrameSamplesEqual(data, bs, reduceScratchUint);
+            ldcompressCooperativeAllFrameSamplesEqual(originalData, bs, reduceScratchUint);
 
         if (!equal)
             task.data.size = 0x7fffffff;
@@ -1946,6 +2164,8 @@ void ldcompressAnalyzeSubframeExact(
         useMeanEstimatedSize &&
         maxPartitionOrder <= EXACT_LEAF_MAX_RICE_PARTITION_ORDER &&
         ldcompressValidPartitionOrder(bs, ro, maxPartitionOrder);
+    const int useIntLpc =
+        useShiftedSamples && ldcompressShiftedLpcResidualFitsInt(task);
     const ulong baseBits = task.data.type == LPC
         ? 8UL +
             (wbits == 0 ? 0UL : (ulong)wbits) +
@@ -2058,7 +2278,9 @@ void ldcompressAnalyzeSubframeExact(
             const int end = (leaf + 1) * leafSamples;
             for (int pos = start; pos < end; pos++)
             {
-                const long residual = ldcompressResidual(data, pos, task);
+                const long residual = useShiftedSamples
+                    ? ldcompressResidualShifted(data, pos, task, useIntLpc)
+                    : ldcompressResidual(data, pos, task);
                 absSum += ldcompressAbsLong(residual);
             }
             exactRiceLeafSums[leaf] = absSum;
@@ -2506,6 +2728,7 @@ struct OpenClGeneratedAnalysisRuntime {
     ClKernel choose_kernel;
     ClKernel rice_kernel;
     ClMem samples_buffer;
+    ClMem shifted_samples_buffer;
     ClMem tasks_buffer;
     ClMem selected_buffer;
     ClMem window_buffer;
@@ -2516,6 +2739,7 @@ struct OpenClGeneratedAnalysisRuntime {
     ClMem best_rice_parameters_buffer;
     std::vector<float> cached_window;
     std::size_t samples_buffer_bytes = 0;
+    std::size_t shifted_samples_buffer_bytes = 0;
     std::size_t tasks_buffer_bytes = 0;
     std::size_t selected_buffer_bytes = 0;
     std::size_t window_buffer_bytes = 0;
@@ -3264,10 +3488,12 @@ OpenClMonoFixedConstantAnalysisResult internal::execute_opencl_exact_task_batch(
 
     cl_mem tasks_mem = tasks_buffer.get();
     cl_mem samples_mem = samples_buffer.get();
+    cl_mem shifted_samples_mem = tasks_mem;
     cl_mem selected_mem = selected_buffer.get();
     cl_mem best_mem = best_buffer.get();
     cl_mem task_rice_mem = task_rice_parameters_buffer.get();
     const auto task_count = static_cast<std::int32_t>(plan.estimate_tasks_per_frame);
+    const std::int32_t use_shifted_samples = 0;
 
     require_cl(clSetKernelArg(wasted_kernel.get(), 0, sizeof(tasks_mem), &tasks_mem),
         "clSetKernelArg(wasted.tasks)");
@@ -3275,6 +3501,12 @@ OpenClMonoFixedConstantAnalysisResult internal::execute_opencl_exact_task_batch(
         "clSetKernelArg(wasted.samples)");
     require_cl(clSetKernelArg(wasted_kernel.get(), 2, sizeof(task_count), &task_count),
         "clSetKernelArg(wasted.tasksPerChannel)");
+    require_cl(clSetKernelArg(wasted_kernel.get(), 3, sizeof(shifted_samples_mem),
+                   &shifted_samples_mem),
+        "clSetKernelArg(wasted.shiftedSamples)");
+    require_cl(clSetKernelArg(wasted_kernel.get(), 4, sizeof(use_shifted_samples),
+                   &use_shifted_samples),
+        "clSetKernelArg(wasted.writeShiftedSamples)");
 
     const std::size_t one = 1;
     const std::size_t frame_global_work_size = frame_count;
@@ -3285,10 +3517,10 @@ OpenClMonoFixedConstantAnalysisResult internal::execute_opencl_exact_task_batch(
     const auto max_rice_partition_order_arg =
         static_cast<std::int32_t>(max_rice_partition_order);
     const auto exact_analysis_profile_arg =
-        opencl_analysis_profile_arg(NativeAnalysisProfile::Exact);
+        opencl_analysis_profile_arg(plan.analysis_profile);
     const auto exact_leaf_rice_bytes =
         exact_leaf_rice_local_bytes(
-            plan, NativeAnalysisProfile::Exact, max_rice_partition_order);
+            plan, plan.analysis_profile, max_rice_partition_order);
     require_cl(clSetKernelArg(exact_kernel.get(), 0, sizeof(samples_mem), &samples_mem),
         "clSetKernelArg(exact.samples)");
     require_cl(clSetKernelArg(exact_kernel.get(), 1, sizeof(selected_mem), &selected_mem),
@@ -3305,6 +3537,12 @@ OpenClMonoFixedConstantAnalysisResult internal::execute_opencl_exact_task_batch(
         "clSetKernelArg(exact.taskRiceParameters)");
     require_cl(clSetKernelArg(exact_kernel.get(), 6, exact_leaf_rice_bytes, nullptr),
         "clSetKernelArg(exact.leafRiceSums)");
+    require_cl(clSetKernelArg(exact_kernel.get(), 7, sizeof(shifted_samples_mem),
+                   &shifted_samples_mem),
+        "clSetKernelArg(exact.shiftedSamples)");
+    require_cl(clSetKernelArg(exact_kernel.get(), 8, sizeof(use_shifted_samples),
+                   &use_shifted_samples),
+        "clSetKernelArg(exact.useShiftedSamples)");
 
     const std::size_t exact_local_work_size = kOpenClExactWorkgroupSize;
     const std::size_t estimate_global_work_size =
@@ -3399,6 +3637,11 @@ OpenClMonoFixedConstantAnalysisResult execute_opencl_generated_analysis_validate
     if (max_rice_partition_order > kExactMaxRicePartitionOrder) {
         throw std::runtime_error("OpenCL generated analysis max Rice partition order must be 0..8");
     }
+    const bool use_shifted_samples = uses_shifted_speed_profile(
+        plan,
+        lpc_tasks_per_window,
+        generated_window_count,
+        max_rice_partition_order);
 
     if (timings != nullptr) {
         ++timings->batches;
@@ -3419,6 +3662,11 @@ OpenClMonoFixedConstantAnalysisResult execute_opencl_generated_analysis_validate
         runtime.samples_buffer_bytes, CL_MEM_READ_ONLY, samples_bytes, "samples");
     write_opencl_buffer(
         runtime.queue, runtime.samples_buffer, samples.data(), samples_bytes, "samples");
+    if (use_shifted_samples) {
+        ensure_opencl_buffer(runtime.context, runtime.shifted_samples_buffer,
+            runtime.shifted_samples_buffer_bytes, CL_MEM_READ_WRITE, samples_bytes,
+            "shiftedSamples");
+    }
 
     const auto tasks_bytes = plan.residual_tasks.size() * sizeof(FlacClSubframeTask);
     ensure_opencl_buffer(runtime.context, runtime.tasks_buffer,
@@ -3493,6 +3741,9 @@ OpenClMonoFixedConstantAnalysisResult execute_opencl_generated_analysis_validate
 
     cl_mem tasks_mem = runtime.tasks_buffer.get();
     cl_mem samples_mem = runtime.samples_buffer.get();
+    cl_mem shifted_samples_mem = use_shifted_samples
+        ? runtime.shifted_samples_buffer.get()
+        : tasks_mem;
     cl_mem selected_mem = runtime.selected_buffer.get();
     cl_mem window_mem = runtime.window_buffer.get();
     cl_mem autocor_mem = runtime.autocor_buffer.get();
@@ -3503,6 +3754,7 @@ OpenClMonoFixedConstantAnalysisResult execute_opencl_generated_analysis_validate
         static_cast<std::int32_t>(plan.residual_tasks_per_frame);
     const auto estimate_tasks_per_frame =
         static_cast<std::int32_t>(plan.estimate_tasks_per_frame);
+    const std::int32_t use_shifted_samples_arg = use_shifted_samples ? 1 : 0;
 
     require_cl(clSetKernelArg(runtime.wasted_kernel.get(), 0, sizeof(tasks_mem), &tasks_mem),
         "clSetKernelArg(wasted.tasks)");
@@ -3511,6 +3763,12 @@ OpenClMonoFixedConstantAnalysisResult execute_opencl_generated_analysis_validate
     require_cl(clSetKernelArg(runtime.wasted_kernel.get(), 2, sizeof(residual_tasks_per_frame),
                    &residual_tasks_per_frame),
         "clSetKernelArg(wasted.tasksPerChannel)");
+    require_cl(clSetKernelArg(runtime.wasted_kernel.get(), 3, sizeof(shifted_samples_mem),
+                   &shifted_samples_mem),
+        "clSetKernelArg(wasted.shiftedSamples)");
+    require_cl(clSetKernelArg(runtime.wasted_kernel.get(), 4, sizeof(use_shifted_samples_arg),
+                   &use_shifted_samples_arg),
+        "clSetKernelArg(wasted.writeShiftedSamples)");
 
     const std::size_t one = 1;
     const std::size_t frame_global_work_size = frame_count;
@@ -3525,7 +3783,9 @@ OpenClMonoFixedConstantAnalysisResult execute_opencl_generated_analysis_validate
 
     require_cl(clSetKernelArg(runtime.autocor_kernel.get(), 0, sizeof(autocor_mem), &autocor_mem),
         "clSetKernelArg(autocor.output)");
-    require_cl(clSetKernelArg(runtime.autocor_kernel.get(), 1, sizeof(samples_mem), &samples_mem),
+    const cl_mem autocor_samples_mem = use_shifted_samples ? shifted_samples_mem : samples_mem;
+    require_cl(clSetKernelArg(runtime.autocor_kernel.get(), 1, sizeof(autocor_samples_mem),
+                   &autocor_samples_mem),
         "clSetKernelArg(autocor.samples)");
     require_cl(clSetKernelArg(runtime.autocor_kernel.get(), 2, sizeof(window_mem), &window_mem),
         "clSetKernelArg(autocor.window)");
@@ -3534,6 +3794,9 @@ OpenClMonoFixedConstantAnalysisResult execute_opencl_generated_analysis_validate
     require_cl(clSetKernelArg(runtime.autocor_kernel.get(), 4, sizeof(residual_tasks_per_frame),
                    &residual_tasks_per_frame),
         "clSetKernelArg(autocor.tasksPerFrame)");
+    require_cl(clSetKernelArg(runtime.autocor_kernel.get(), 5, sizeof(use_shifted_samples_arg),
+                   &use_shifted_samples_arg),
+        "clSetKernelArg(autocor.samplesAlreadyShifted)");
 
     const std::array<std::size_t, 2> generation_global {
         frame_count,
@@ -3623,8 +3886,10 @@ OpenClMonoFixedConstantAnalysisResult execute_opencl_generated_analysis_validate
         "clFinish(ldcompressQuantizeLpcOrders)");
 
     if (plan.fixed_order_guess_on_gpu) {
-        require_cl(clSetKernelArg(runtime.fixed_guess_kernel.get(), 0, sizeof(samples_mem),
-                       &samples_mem),
+        const cl_mem fixed_guess_samples_mem =
+            use_shifted_samples ? shifted_samples_mem : samples_mem;
+        require_cl(clSetKernelArg(runtime.fixed_guess_kernel.get(), 0,
+                       sizeof(fixed_guess_samples_mem), &fixed_guess_samples_mem),
             "clSetKernelArg(fixedGuess.samples)");
         require_cl(clSetKernelArg(runtime.fixed_guess_kernel.get(), 1, sizeof(selected_mem),
                        &selected_mem),
@@ -3635,6 +3900,9 @@ OpenClMonoFixedConstantAnalysisResult execute_opencl_generated_analysis_validate
         require_cl(clSetKernelArg(runtime.fixed_guess_kernel.get(), 3,
                        sizeof(estimate_tasks_per_frame), &estimate_tasks_per_frame),
             "clSetKernelArg(fixedGuess.taskCount)");
+        require_cl(clSetKernelArg(runtime.fixed_guess_kernel.get(), 4,
+                       sizeof(use_shifted_samples_arg), &use_shifted_samples_arg),
+            "clSetKernelArg(fixedGuess.samplesAlreadyShifted)");
 
         const std::size_t fixed_guess_local_work_size = kOpenClExactWorkgroupSize;
         const std::size_t fixed_guess_global_work_size =
@@ -3673,6 +3941,12 @@ OpenClMonoFixedConstantAnalysisResult execute_opencl_generated_analysis_validate
         "clSetKernelArg(exact.taskRiceParameters)");
     require_cl(clSetKernelArg(runtime.exact_kernel.get(), 6, exact_leaf_rice_bytes, nullptr),
         "clSetKernelArg(exact.leafRiceSums)");
+    require_cl(clSetKernelArg(runtime.exact_kernel.get(), 7, sizeof(shifted_samples_mem),
+                   &shifted_samples_mem),
+        "clSetKernelArg(exact.shiftedSamples)");
+    require_cl(clSetKernelArg(runtime.exact_kernel.get(), 8, sizeof(use_shifted_samples_arg),
+                   &use_shifted_samples_arg),
+        "clSetKernelArg(exact.useShiftedSamples)");
 
     const std::size_t exact_local_work_size = kOpenClExactWorkgroupSize;
     const std::size_t estimate_global_work_size =
