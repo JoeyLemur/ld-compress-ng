@@ -507,6 +507,31 @@ Metal size/speed tuning checkpoint:
   Metal smoke and analysis tests passed on device `0`; the complete
   GPU-visible `build-metal` CTest suite passed (`23/23`, with two optional
   PyAV compatibility tests skipped), and `git diff --check` passed.
+- Pre-shift reuse and exact-kernel occupancy pass: the fixed-order guess now
+  reads the speed profile's already-prepared shifted-sample buffer instead of
+  repeating five integer divisions per position. Generic profiles retain the
+  original sample/wasted-bit path. The shifted mean-Rice exact kernel now
+  reserves only the `64` leaf sums it uses rather than the generic exact
+  kernel's `64 * 15` Rice-parameter scratch shape. Its LPC residual loop also
+  uses 32-bit multiply/accumulate only when the prepared amplitude and actual
+  coefficient sum prove that the predictor and residual cannot overflow
+  `int32`; every other task retains the original 64-bit path.
+- The fresh pre-edit sweep was
+  `build/real-fixture-sweeps/real-fixture-sweep-20260727-185519.{csv,md}`.
+  The retained apples-to-apples sweep is
+  `build/real-fixture-sweeps/real-fixture-sweep-20260727-193235.{csv,md}`.
+  On Apple M1 device `0`, the Rice-order-`6` aggregate stayed byte-identical at
+  `79,946,720` bytes while elapsed time fell from `1.538s` to `1.211s`
+  (`21.3%`). `metal_fguess_s` fell from `0.259093s` to `0.032282s`, and
+  `metal_exact_s` fell from `0.709794s` to `0.592006s`; scan and writer time
+  remained stable. Focused Metal smoke/analysis tests and the complete
+  GPU-visible `build-metal` CTest suite passed (`23/23`, with the same two
+  optional PyAV compatibility tests skipped), and `git diff --check` passed.
+- A dedicated pre-shifted residual helper and deferred per-task Rice-sidecar
+  clearing were also measured. The helper did not improve the focused exact
+  stage, while deferred clearing produced only a marginal aggregate change
+  after the occupancy and bounded-accumulator wins. Neither experiment was
+  retained.
 
 ## Implementation Checkpoint - 2026-07-16, automatic backend policy
 

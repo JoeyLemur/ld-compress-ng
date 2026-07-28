@@ -62,7 +62,7 @@ struct GeneratedLpcParams {
     std::uint32_t analysis_profile = 0;
     std::uint32_t blocksize = 0;
     std::uint32_t fixed_order_guess_on_gpu = 0;
-    std::uint32_t reserved0 = 0;
+    std::uint32_t shifted_samples_ready = 0;
     std::uint32_t reserved1 = 0;
 };
 
@@ -522,7 +522,7 @@ struct GeneratedLpcParams {
     uint analysisProfile;
     uint blocksize;
     uint fixedOrderGuessOnGpu;
-    uint reserved0;
+    uint shiftedSamplesReady;
     uint reserved1;
 };
 
@@ -719,6 +719,17 @@ long residual(device const int* data, int pos, thread const FlacClSubframeTask& 
         return lpc_residual(data, pos, task);
     }
     return fixed_residual(data, pos, task.data.residualOrder, task.data.wbits);
+}
+
+int lpc_residual_shifted_i32(
+    device const int* data, int pos, thread const FlacClSubframeTask& task)
+{
+    const int order = task.data.residualOrder;
+    int sum = 0;
+    for (int i = 0; i < order; ++i) {
+        sum += task.coefs[i] * data[pos - order + i];
+    }
+    return data[pos] - int(arithmetic_shift_right(long(sum), task.data.shift));
 }
 
 ulong fold_residual(long value)
@@ -1150,6 +1161,7 @@ kernel void prune_fixed_order_guess(
     device const int* selected_tasks [[buffer(1)]],
     device FlacClSubframeTask* tasks [[buffer(2)]],
     constant GeneratedLpcParams& params [[buffer(3)]],
+    device const int* shifted_samples [[buffer(4)]],
     uint lane [[thread_index_in_threadgroup]],
     uint frame [[threadgroup_position_in_grid]])
 {
@@ -1176,43 +1188,73 @@ kernel void prune_fixed_order_guess(
     const int bs = first_task.data.blocksize;
     const int wbits = first_task.data.wbits;
     device const int* data = samples + first_task.data.samplesOffs;
+    device const int* shifted_data =
+        shifted_samples + first_task.data.samplesOffs;
 
     ulong local_sums[5];
     for (uint order = 0u; order <= 4u; ++order) {
         local_sums[order] = 0UL;
     }
 
-    for (int pos = int(lane); pos < bs; pos += int(kWorkgroupSize)) {
-        const long sample0 = shifted_sample(data, pos, wbits);
-        const long sample1 = pos >= 1
-            ? shifted_sample(data, pos - 1, wbits)
-            : 0L;
-        const long sample2 = pos >= 2
-            ? shifted_sample(data, pos - 2, wbits)
-            : 0L;
-        const long sample3 = pos >= 3
-            ? shifted_sample(data, pos - 3, wbits)
-            : 0L;
-        const long sample4 = pos >= 4
-            ? shifted_sample(data, pos - 4, wbits)
-            : 0L;
-        if (fixed_task_no[0] >= 0) {
-            local_sums[0] += abs_long(sample0);
+    if (params.shiftedSamplesReady != 0u) {
+        for (int pos = int(lane); pos < bs; pos += int(kWorkgroupSize)) {
+            const long sample0 = long(shifted_data[pos]);
+            const long sample1 = pos >= 1 ? long(shifted_data[pos - 1]) : 0L;
+            const long sample2 = pos >= 2 ? long(shifted_data[pos - 2]) : 0L;
+            const long sample3 = pos >= 3 ? long(shifted_data[pos - 3]) : 0L;
+            const long sample4 = pos >= 4 ? long(shifted_data[pos - 4]) : 0L;
+            if (fixed_task_no[0] >= 0) {
+                local_sums[0] += abs_long(sample0);
+            }
+            if (fixed_task_no[1] >= 0 && pos >= 1) {
+                local_sums[1] += abs_long(sample0 - sample1);
+            }
+            if (fixed_task_no[2] >= 0 && pos >= 2) {
+                local_sums[2] += abs_long(sample0 - (2L * sample1) + sample2);
+            }
+            if (fixed_task_no[3] >= 0 && pos >= 3) {
+                local_sums[3] += abs_long(
+                    sample0 - (3L * sample1) + (3L * sample2) - sample3);
+            }
+            if (fixed_task_no[4] >= 0 && pos >= 4) {
+                local_sums[4] += abs_long(
+                    sample0 - (4L * sample1) + (6L * sample2) -
+                    (4L * sample3) + sample4);
+            }
         }
-        if (fixed_task_no[1] >= 0 && pos >= 1) {
-            local_sums[1] += abs_long(sample0 - sample1);
-        }
-        if (fixed_task_no[2] >= 0 && pos >= 2) {
-            local_sums[2] += abs_long(sample0 - (2L * sample1) + sample2);
-        }
-        if (fixed_task_no[3] >= 0 && pos >= 3) {
-            local_sums[3] += abs_long(
-                sample0 - (3L * sample1) + (3L * sample2) - sample3);
-        }
-        if (fixed_task_no[4] >= 0 && pos >= 4) {
-            local_sums[4] += abs_long(
-                sample0 - (4L * sample1) + (6L * sample2) -
-                (4L * sample3) + sample4);
+    } else {
+        for (int pos = int(lane); pos < bs; pos += int(kWorkgroupSize)) {
+            const long sample0 = shifted_sample(data, pos, wbits);
+            const long sample1 = pos >= 1
+                ? shifted_sample(data, pos - 1, wbits)
+                : 0L;
+            const long sample2 = pos >= 2
+                ? shifted_sample(data, pos - 2, wbits)
+                : 0L;
+            const long sample3 = pos >= 3
+                ? shifted_sample(data, pos - 3, wbits)
+                : 0L;
+            const long sample4 = pos >= 4
+                ? shifted_sample(data, pos - 4, wbits)
+                : 0L;
+            if (fixed_task_no[0] >= 0) {
+                local_sums[0] += abs_long(sample0);
+            }
+            if (fixed_task_no[1] >= 0 && pos >= 1) {
+                local_sums[1] += abs_long(sample0 - sample1);
+            }
+            if (fixed_task_no[2] >= 0 && pos >= 2) {
+                local_sums[2] += abs_long(sample0 - (2L * sample1) + sample2);
+            }
+            if (fixed_task_no[3] >= 0 && pos >= 3) {
+                local_sums[3] += abs_long(
+                    sample0 - (3L * sample1) + (3L * sample2) - sample3);
+            }
+            if (fixed_task_no[4] >= 0 && pos >= 4) {
+                local_sums[4] += abs_long(
+                    sample0 - (4L * sample1) + (6L * sample2) -
+                    (4L * sample3) + sample4);
+            }
         }
     }
 
@@ -1666,7 +1708,7 @@ kernel void analyze_exact_shifted(
     uint group [[threadgroup_position_in_grid]])
 {
     threadgroup uint reduce_uints[64];
-    threadgroup ulong exact_rice_leaf_sums[64 * 15];
+    threadgroup ulong exact_rice_leaf_sums[64];
     threadgroup uint candidate_rice_parameters[256];
 
     if (group >= params.selectedTaskCount) {
@@ -1770,14 +1812,39 @@ kernel void analyze_exact_shifted(
     const int leaf_partition_order = max_partition_order;
     const int leaf_count = 1 << leaf_partition_order;
     const int leaf_samples = bs >> leaf_partition_order;
-    for (int leaf = int(lane); leaf < leaf_count; leaf += int(kWorkgroupSize)) {
-        ulong abs_sum = 0UL;
-        const int start = leaf == 0 ? ro : leaf * leaf_samples;
-        const int end = (leaf + 1) * leaf_samples;
-        for (int pos = start; pos < end; ++pos) {
-            abs_sum += abs_long(residual(data, pos, residual_task));
+
+    int use_i32_lpc = task.data.type == kSubframeLpc && task.data.abits < 31;
+    if (use_i32_lpc) {
+        ulong coefficient_abs_sum = 0UL;
+        for (int i = 0; i < ro; ++i) {
+            coefficient_abs_sum += abs_long(long(task.coefs[i]));
         }
-        exact_rice_leaf_sums[leaf] = abs_sum;
+        const ulong max_sample = 1UL << uint(task.data.abits);
+        use_i32_lpc =
+            coefficient_abs_sum <=
+                (ulong(kIntMax) - max_sample) / max_sample;
+    }
+
+    if (use_i32_lpc) {
+        for (int leaf = int(lane); leaf < leaf_count; leaf += int(kWorkgroupSize)) {
+            ulong abs_sum = 0UL;
+            const int start = leaf == 0 ? ro : leaf * leaf_samples;
+            const int end = (leaf + 1) * leaf_samples;
+            for (int pos = start; pos < end; ++pos) {
+                abs_sum += abs_long(long(lpc_residual_shifted_i32(data, pos, task)));
+            }
+            exact_rice_leaf_sums[leaf] = abs_sum;
+        }
+    } else {
+        for (int leaf = int(lane); leaf < leaf_count; leaf += int(kWorkgroupSize)) {
+            ulong abs_sum = 0UL;
+            const int start = leaf == 0 ? ro : leaf * leaf_samples;
+            const int end = (leaf + 1) * leaf_samples;
+            for (int pos = start; pos < end; ++pos) {
+                abs_sum += abs_long(residual(data, pos, residual_task));
+            }
+            exact_rice_leaf_sums[leaf] = abs_sum;
+        }
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
@@ -2183,7 +2250,7 @@ public:
                     .analysis_profile = metal_analysis_profile_arg(plan.analysis_profile),
                     .blocksize = checked_u32(generated_config->blocksize, "block size"),
                     .fixed_order_guess_on_gpu = plan.fixed_order_guess_on_gpu ? 1U : 0U,
-                    .reserved0 = 0,
+                    .shifted_samples_ready = use_shifted_autocor ? 1U : 0U,
                     .reserved1 = 0,
                 };
 
@@ -2312,6 +2379,11 @@ public:
                     [fixed_encoder setBytes:&(*generated_params)
                                       length:sizeof(*generated_params)
                                      atIndex:3];
+                    [fixed_encoder setBuffer:(use_shifted_autocor
+                            ? shifted_samples_buffer_
+                            : samples_buffer_)
+                                      offset:0
+                                     atIndex:4];
                     [fixed_encoder dispatchThreadgroups:MTLSizeMake(
                                                             generated_config->frame_count, 1, 1)
                                      threadsPerThreadgroup:MTLSizeMake(kWorkgroupSize, 1, 1)];
