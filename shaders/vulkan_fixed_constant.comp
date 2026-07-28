@@ -113,6 +113,10 @@ layout(std430, set = 0, binding = 7) buffer RiceParameters {
     uint rice_parameters[];
 };
 
+layout(std430, set = 0, binding = 8) buffer ShiftedSamples {
+    int shifted_samples[];
+};
+
 layout(push_constant) uniform PushConstants {
     uint mode;
     uint task_count;
@@ -126,6 +130,7 @@ layout(push_constant) uniform PushConstants {
     uint generated_window_count;
     uint max_lpc_order;
     uint analysis_profile;
+    uint use_shifted_samples;
 } pc;
 
 shared int shared_ints[64];
@@ -312,6 +317,15 @@ void prepare_frame(uint frame)
         task.data.abits = amplitude_bits;
         tasks[task_base + i] = task;
     }
+    if (pc.use_shifted_samples != 0u) {
+        for (uint pos = gl_LocalInvocationID.x;
+             pos < uint(first_task.data.blocksize);
+             pos += kWorkgroupSize) {
+            const int smp = samples[first_task.data.samplesOffs + int(pos)];
+            shifted_samples[first_task.data.samplesOffs + int(pos)] =
+                wasted_bits == 0 ? smp : smp / (1 << wasted_bits);
+        }
+    }
 }
 
 bool all_frame_samples_equal(FlacClSubframeTask task)
@@ -356,14 +370,26 @@ void compute_generated_autocorrelation(uint frame, uint window, uint lag)
     const uint window_offset = window * block_size;
     float sum = 0.0f;
 
-    for (uint pos = lag + gl_LocalInvocationID.x; pos < block_size; pos += kWorkgroupSize) {
-        const float sample0 =
-            float(shifted_sample(task.data.samplesOffs, int(pos), task.data.wbits)) *
-            windows[window_offset + pos];
-        const float sample1 =
-            float(shifted_sample(task.data.samplesOffs, int(pos - lag), task.data.wbits)) *
-            windows[window_offset + pos - lag];
-        sum += sample0 * sample1;
+    if (pc.use_shifted_samples != 0u) {
+        for (uint pos = lag + gl_LocalInvocationID.x; pos < block_size; pos += kWorkgroupSize) {
+            const float sample0 =
+                float(shifted_samples[task.data.samplesOffs + int(pos)]) *
+                windows[window_offset + pos];
+            const float sample1 =
+                float(shifted_samples[task.data.samplesOffs + int(pos - lag)]) *
+                windows[window_offset + pos - lag];
+            sum += sample0 * sample1;
+        }
+    } else {
+        for (uint pos = lag + gl_LocalInvocationID.x; pos < block_size; pos += kWorkgroupSize) {
+            const float sample0 =
+                float(shifted_sample(task.data.samplesOffs, int(pos), task.data.wbits)) *
+                windows[window_offset + pos];
+            const float sample1 =
+                float(shifted_sample(task.data.samplesOffs, int(pos - lag), task.data.wbits)) *
+                windows[window_offset + pos - lag];
+            sum += sample0 * sample1;
+        }
     }
 
     const uint output_offset =
@@ -423,6 +449,133 @@ int64_t lpc_residual(FlacClSubframeTask task, int index, int wasted_bits)
     }
     const int64_t predicted = arithmetic_shift_right(sum, task.data.shift);
     return int64_t(shifted_sample(task.data.samplesOffs, index, wasted_bits)) - predicted;
+}
+
+int64_t fixed_residual_shifted(FlacClSubframeTask task, int index)
+{
+    const int offset = task.data.samplesOffs;
+    switch (task.data.residualOrder) {
+    case 0:
+        return int64_t(shifted_samples[offset + index]);
+    case 1:
+        return int64_t(shifted_samples[offset + index]) -
+            int64_t(shifted_samples[offset + index - 1]);
+    case 2:
+        return int64_t(shifted_samples[offset + index]) -
+            (int64_t(2) * int64_t(shifted_samples[offset + index - 1])) +
+            int64_t(shifted_samples[offset + index - 2]);
+    case 3:
+        return int64_t(shifted_samples[offset + index]) -
+            (int64_t(3) * int64_t(shifted_samples[offset + index - 1])) +
+            (int64_t(3) * int64_t(shifted_samples[offset + index - 2])) -
+            int64_t(shifted_samples[offset + index - 3]);
+    default:
+        return int64_t(shifted_samples[offset + index]) -
+            (int64_t(4) * int64_t(shifted_samples[offset + index - 1])) +
+            (int64_t(6) * int64_t(shifted_samples[offset + index - 2])) -
+            (int64_t(4) * int64_t(shifted_samples[offset + index - 3])) +
+            int64_t(shifted_samples[offset + index - 4]);
+    }
+}
+
+int64_t lpc_residual_shifted_i64(FlacClSubframeTask task, int index)
+{
+    const int order = task.data.residualOrder;
+    int64_t sum = int64_t(0);
+    for (int i = 0; i < order; ++i) {
+        sum += int64_t(task.coefs[i]) *
+            int64_t(shifted_samples[task.data.samplesOffs + index - order + i]);
+    }
+    const int64_t predicted = arithmetic_shift_right(sum, task.data.shift);
+    return int64_t(shifted_samples[task.data.samplesOffs + index]) - predicted;
+}
+
+bool shifted_lpc_residual_fits_i32(FlacClSubframeTask task)
+{
+    if (task.data.type != kSubframeLpc || task.data.abits <= 0 || task.data.abits >= 31) {
+        return false;
+    }
+    uint64_t coefficient_abs_sum = uint64_t(0);
+    for (int i = 0; i < task.data.residualOrder; ++i) {
+        const int coefficient = task.coefs[i];
+        coefficient_abs_sum += coefficient >= 0
+            ? uint64_t(coefficient)
+            : uint64_t(-(coefficient + 1)) + uint64_t(1);
+    }
+    const uint64_t max_sample = uint64_t(1) << uint(task.data.abits);
+    return coefficient_abs_sum <=
+        (uint64_t(kIntMax) - max_sample) / max_sample;
+}
+
+int lpc_residual_shifted_i32(FlacClSubframeTask task, int index)
+{
+    const int offset = task.data.samplesOffs;
+    const int order = task.data.residualOrder;
+    if (order == 12) {
+        int sum = task.coefs[0] * shifted_samples[offset + index - 12];
+        sum += task.coefs[1] * shifted_samples[offset + index - 11];
+        sum += task.coefs[2] * shifted_samples[offset + index - 10];
+        sum += task.coefs[3] * shifted_samples[offset + index - 9];
+        sum += task.coefs[4] * shifted_samples[offset + index - 8];
+        sum += task.coefs[5] * shifted_samples[offset + index - 7];
+        sum += task.coefs[6] * shifted_samples[offset + index - 6];
+        sum += task.coefs[7] * shifted_samples[offset + index - 5];
+        sum += task.coefs[8] * shifted_samples[offset + index - 4];
+        sum += task.coefs[9] * shifted_samples[offset + index - 3];
+        sum += task.coefs[10] * shifted_samples[offset + index - 2];
+        sum += task.coefs[11] * shifted_samples[offset + index - 1];
+        return shifted_samples[offset + index] -
+            int(arithmetic_shift_right(int64_t(sum), task.data.shift));
+    }
+    if (order == 11) {
+        int sum = task.coefs[0] * shifted_samples[offset + index - 11];
+        sum += task.coefs[1] * shifted_samples[offset + index - 10];
+        sum += task.coefs[2] * shifted_samples[offset + index - 9];
+        sum += task.coefs[3] * shifted_samples[offset + index - 8];
+        sum += task.coefs[4] * shifted_samples[offset + index - 7];
+        sum += task.coefs[5] * shifted_samples[offset + index - 6];
+        sum += task.coefs[6] * shifted_samples[offset + index - 5];
+        sum += task.coefs[7] * shifted_samples[offset + index - 4];
+        sum += task.coefs[8] * shifted_samples[offset + index - 3];
+        sum += task.coefs[9] * shifted_samples[offset + index - 2];
+        sum += task.coefs[10] * shifted_samples[offset + index - 1];
+        return shifted_samples[offset + index] -
+            int(arithmetic_shift_right(int64_t(sum), task.data.shift));
+    }
+    if (order == 10) {
+        int sum = task.coefs[0] * shifted_samples[offset + index - 10];
+        sum += task.coefs[1] * shifted_samples[offset + index - 9];
+        sum += task.coefs[2] * shifted_samples[offset + index - 8];
+        sum += task.coefs[3] * shifted_samples[offset + index - 7];
+        sum += task.coefs[4] * shifted_samples[offset + index - 6];
+        sum += task.coefs[5] * shifted_samples[offset + index - 5];
+        sum += task.coefs[6] * shifted_samples[offset + index - 4];
+        sum += task.coefs[7] * shifted_samples[offset + index - 3];
+        sum += task.coefs[8] * shifted_samples[offset + index - 2];
+        sum += task.coefs[9] * shifted_samples[offset + index - 1];
+        return shifted_samples[offset + index] -
+            int(arithmetic_shift_right(int64_t(sum), task.data.shift));
+    }
+
+    int sum = 0;
+    for (int i = 0; i < order; ++i) {
+        sum += task.coefs[i] * shifted_samples[offset + index - order + i];
+    }
+    return shifted_samples[offset + index] -
+        int(arithmetic_shift_right(int64_t(sum), task.data.shift));
+}
+
+int64_t shifted_leaf_mean_residual(
+    FlacClSubframeTask task,
+    int index,
+    bool use_i32_lpc)
+{
+    if (task.data.type != kSubframeLpc) {
+        return fixed_residual_shifted(task, index);
+    }
+    return use_i32_lpc
+        ? int64_t(lpc_residual_shifted_i32(task, index))
+        : lpc_residual_shifted_i64(task, index);
 }
 
 int64_t residual(FlacClSubframeTask task, int index, int wasted_bits)
@@ -907,6 +1060,8 @@ void cooperative_leaf_mean_rice_search(
     const uint block_size = uint(task.data.blocksize);
     const uint leaf_count = 1u << leaf_partition_order;
     const uint leaf_samples = block_size >> leaf_partition_order;
+    const bool use_i32_lpc =
+        pc.use_shifted_samples != 0u && shifted_lpc_residual_fits_i32(task);
 
     for (uint leaf = lane; leaf < leaf_count; leaf += kWorkgroupSize) {
         uint64_t abs_sum = uint64_t(0u);
@@ -920,7 +1075,9 @@ void cooperative_leaf_mean_rice_search(
         const uint start = leaf == 0u ? order : leaf * leaf_samples;
         const uint end = (leaf + 1u) * leaf_samples;
         for (uint pos = start; pos < end; ++pos) {
-            const int64_t sample_residual = residual(task, int(pos), wasted_bits);
+            const int64_t sample_residual = pc.use_shifted_samples != 0u
+                ? shifted_leaf_mean_residual(task, int(pos), use_i32_lpc)
+                : residual(task, int(pos), wasted_bits);
             abs_sum += absolute_i64(sample_residual);
             if (!use_estimated_size) {
                 const uint64_t folded = fold_signed_residual(sample_residual);
@@ -1543,11 +1700,43 @@ void prune_fixed_order_guess(uint frame)
         local_sums[order] = uint64_t(0u);
     }
 
-    for (uint pos = lane; pos < uint(block_size); pos += kWorkgroupSize) {
-        for (int order = 0; order <= 4; ++order) {
-            if (fixed_task_no[order] >= 0 && pos >= uint(order)) {
-                local_sums[order] += absolute_i64(
-                    fixed_residual(tasks[fixed_task_no[order]], int(pos), wasted_bits));
+    if (pc.use_shifted_samples != 0u) {
+        const int offset = first_task.data.samplesOffs;
+        for (uint pos = lane; pos < uint(block_size); pos += kWorkgroupSize) {
+            const int sample0 = shifted_samples[offset + int(pos)];
+            const int sample1 = pos >= 1u ? shifted_samples[offset + int(pos) - 1] : 0;
+            const int sample2 = pos >= 2u ? shifted_samples[offset + int(pos) - 2] : 0;
+            const int sample3 = pos >= 3u ? shifted_samples[offset + int(pos) - 3] : 0;
+            const int sample4 = pos >= 4u ? shifted_samples[offset + int(pos) - 4] : 0;
+            if (fixed_task_no[0] >= 0) {
+                local_sums[0] += absolute_i64(int64_t(sample0));
+            }
+            if (fixed_task_no[1] >= 0 && pos >= 1u) {
+                local_sums[1] += absolute_i64(int64_t(sample0) - int64_t(sample1));
+            }
+            if (fixed_task_no[2] >= 0 && pos >= 2u) {
+                local_sums[2] += absolute_i64(
+                    int64_t(sample0) - (int64_t(2) * int64_t(sample1)) + int64_t(sample2));
+            }
+            if (fixed_task_no[3] >= 0 && pos >= 3u) {
+                local_sums[3] += absolute_i64(
+                    int64_t(sample0) - (int64_t(3) * int64_t(sample1)) +
+                    (int64_t(3) * int64_t(sample2)) - int64_t(sample3));
+            }
+            if (fixed_task_no[4] >= 0 && pos >= 4u) {
+                local_sums[4] += absolute_i64(
+                    int64_t(sample0) - (int64_t(4) * int64_t(sample1)) +
+                    (int64_t(6) * int64_t(sample2)) -
+                    (int64_t(4) * int64_t(sample3)) + int64_t(sample4));
+            }
+        }
+    } else {
+        for (uint pos = lane; pos < uint(block_size); pos += kWorkgroupSize) {
+            for (int order = 0; order <= 4; ++order) {
+                if (fixed_task_no[order] >= 0 && pos >= uint(order)) {
+                    local_sums[order] += absolute_i64(
+                        fixed_residual(tasks[fixed_task_no[order]], int(pos), wasted_bits));
+                }
             }
         }
     }

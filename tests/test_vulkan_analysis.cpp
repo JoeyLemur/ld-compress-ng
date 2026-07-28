@@ -1008,6 +1008,42 @@ void test_vulkan_order_guess_mean_rice_profile_smoke(const Options& options)
     require_mean_estimate_sizes_diverge(result.analyzed_tasks, estimate_result.analyzed_tasks,
         "Vulkan mean-estimate Rice profile still returned exact-recost predictive sizes");
 
+    auto generic_reanalysis_plan = estimate_plan;
+    generic_reanalysis_plan.residual_tasks = estimate_result.analyzed_tasks;
+    const auto generic_reanalysis = ldcompress::vulkan_detail::run_vulkan_mono_lpc_analysis(
+        samples, generic_reanalysis_plan, device_index, 5);
+    require(generic_reanalysis.analyzed_tasks.size() == estimate_result.analyzed_tasks.size(),
+        "Vulkan mean-estimate generic reanalysis task count mismatch");
+    require(generic_reanalysis.best_tasks.size() == estimate_result.best_tasks.size(),
+        "Vulkan mean-estimate generic reanalysis best task count mismatch");
+    for (std::size_t i = 0; i < estimate_result.analyzed_tasks.size(); ++i) {
+        const auto& expected = estimate_result.analyzed_tasks[i];
+        const auto& actual = generic_reanalysis.analyzed_tasks[i];
+        if (expected.data.type == kFlacClSubframeLpc) {
+            require_lpc_task_matches(actual, expected,
+                "Vulkan mean-estimate generic reanalysis LPC task diverged from fast path");
+        } else {
+            require_task_matches_task(actual, expected,
+                "Vulkan mean-estimate generic reanalysis task diverged from fast path");
+        }
+    }
+    for (std::size_t i = 0; i < estimate_result.best_tasks.size(); ++i) {
+        const auto& expected = estimate_result.best_tasks[i];
+        const auto& actual = generic_reanalysis.best_tasks[i];
+        if (expected.data.type == kFlacClSubframeLpc) {
+            require_lpc_task_matches(actual, expected,
+                "Vulkan mean-estimate generic reanalysis best LPC task diverged from fast path");
+        } else {
+            require_task_matches_task(actual, expected,
+                "Vulkan mean-estimate generic reanalysis best task diverged from fast path");
+        }
+    }
+    require_rice_parameters_match(
+        estimate_result.best_tasks,
+        generic_reanalysis.best_rice_parameters,
+        estimate_result.best_rice_parameters,
+        "Vulkan mean-estimate generic reanalysis Rice sidecar diverged from fast path");
+
     const auto estimate_best =
         session.run_generated_best_analysis(samples, estimate_plan, 12, 5);
     require(estimate_best.best_tasks.size() == estimate_result.best_tasks.size(),

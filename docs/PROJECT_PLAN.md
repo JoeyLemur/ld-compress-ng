@@ -1059,6 +1059,54 @@ Immediate engineering focus:
   reference/debug backends for native writer coverage, tuning, and accelerator
   oracle work.
 
+## Vulkan Shifted-Sample Speed-Profile Pass - 2026-07-27
+
+The Vulkan speed-profile path now reuses a device-local shifted-sample buffer
+for the current generated-LPC shape only: `order-guess-mean-estimate-rice`,
+three windows, one LPC task per window, maximum LPC order `12`, and maximum
+Rice partition order `6`. Frame preparation computes the existing `wbits` and
+`abits` facts and writes signed shifted samples before generated analysis. The
+shader uses them for autocorrelation, fixed-order pruning, and predictive
+residual/Rice analysis, while retaining original samples for constant checks.
+LPC orders `10` through `12` use the Metal-derived, overflow-proven 32-bit
+multiply/accumulate path; the previous 64-bit dynamic loop remains the exact
+fallback. Generic profiles bind the original sample buffer as the inert shifted
+descriptor, so their dispatch and decision ordering are unchanged. No CLI or
+public-library API changed, and no low-scratch SPIR-V variant was added.
+
+`test_vulkan_analysis` now reanalyzes populated mean-estimate generated tasks
+through the generic exact path and requires identical task type, predictor
+order, coefficients, `wbits`, `abits`, partition order, estimated size, and
+selected Rice sidecars.
+
+The retained measurement used Vulkan device `1` (NVIDIA RTX 5070 Ti) and this
+six-fixture command with Vulkan session reuse:
+
+```
+python3 tools/sweep_real_fixtures.py --binary build/local-check/default/ld-compress-ng --fixtures reference/testdata/ld-decode-testdata-ci/1cf698d2025e8515e9ef57e34adaf85a194da96a --out-dir build/vulkan-post-shift-sweeps --threads 8 --frame-samples 4608 --lpc-order 12 --lpc-precision 12 --rice-partition-order 6 --analysis-profile order-guess-mean-estimate-rice --include-vulkan --vulkan-device 1 --reuse-vulkan-session
+```
+
+All three pre-change runs were captured with the equivalent command and reports
+under `build/vulkan-pre-shift-baselines/`. The output-byte gate stayed exactly
+`79,946,934` bytes in every run:
+
+| Sweep | Aggregate elapsed time |
+| --- | ---: |
+| Pre-change | `0.840s`, `0.829s`, `0.835s` (median `0.835s`) |
+| Post-change | `0.790s`, `0.804s`, `0.783s` (median `0.790s`) |
+
+Every post-change run improved, and the median improved by `0.045s` (5.4%).
+The focused `issue176.lds` speed-profile benchmark also kept the same
+`4,293,221`-byte Vulkan output: `vk_gpu_ac_s` fell from `0.014173s` to
+`0.005399s`, while GPU exact analysis fell from `0.003583s` to `0.001989s`.
+
+Validation passed with `cmake --build build/local-check/default --parallel`,
+`ctest --test-dir build/local-check/default -L vulkan --output-on-failure`
+(`6/6`), the full default lane (`23/23`, with two optional local loader tests
+skipped), `cmake --build build/local-check/no-vulkan --parallel`, and the
+no-Vulkan lane (`23/23`, the same two optional skips). The default lane includes
+the native selected-writer recost regression coverage.
+
 ## Recommendation
 
 Build a single native CLI named `ld-compress-ng`, using C++20 and CMake.

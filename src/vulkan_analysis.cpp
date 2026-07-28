@@ -1049,7 +1049,20 @@ struct PushConstants {
     std::uint32_t generated_window_count = 0;
     std::uint32_t max_lpc_order = 0;
     std::uint32_t analysis_profile = 0;
+    std::uint32_t use_shifted_samples = 0;
 };
+
+bool uses_shifted_speed_profile(
+    const std::optional<GeneratedLpcConfig>& generated_lpc,
+    unsigned max_rice_partition_order)
+{
+    return generated_lpc.has_value() &&
+        generated_lpc->analysis_profile == NativeAnalysisProfile::OrderGuessMeanEstimateRice &&
+        generated_lpc->window_count == 3U &&
+        generated_lpc->lpc_tasks_per_window == 1U &&
+        generated_lpc->max_lpc_order <= 12U &&
+        max_rice_partition_order <= 6U;
+}
 
 std::uint32_t dispatch_groups(std::uint32_t items)
 {
@@ -1118,7 +1131,7 @@ public:
                 vkCreateShaderModule(device_, &shader_module_info, nullptr, &shader_module_),
                 "vkCreateShaderModule");
 
-            std::array<VkDescriptorSetLayoutBinding, 8> layout_bindings {};
+            std::array<VkDescriptorSetLayoutBinding, 9> layout_bindings {};
             for (std::uint32_t i = 0; i < layout_bindings.size(); ++i) {
                 layout_bindings[i] = VkDescriptorSetLayoutBinding {
                     .binding = i,
@@ -1272,6 +1285,8 @@ public:
 
         const auto frame_count = plan.selected_tasks.size() / plan.estimate_tasks_per_frame;
         const auto task_count_u32 = checked_u32(plan.residual_tasks.size(), "task count");
+        const bool use_shifted_samples =
+            uses_shifted_speed_profile(generated_lpc, max_rice_partition_order);
         const PushConstants base_push {
             .mode = 0,
             .task_count = task_count_u32,
@@ -1297,9 +1312,8 @@ public:
             .max_lpc_order = generated_lpc.has_value()
                 ? checked_u32(generated_lpc->max_lpc_order, "max LPC order")
                 : 0,
-            .analysis_profile = generated_lpc.has_value()
-                ? vulkan_analysis_profile_arg(generated_lpc->analysis_profile)
-                : 0,
+            .analysis_profile = vulkan_analysis_profile_arg(plan.analysis_profile),
+            .use_shifted_samples = use_shifted_samples ? 1U : 0U,
         };
 
         std::vector<FlacClSubframeTask> best_tasks(frame_count);
@@ -1357,6 +1371,12 @@ public:
             samples_buffer_,
             samples_bytes,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        DeviceBuffer& shifted_samples_buffer = use_shifted_samples
+            ? ensure_device_buffer(
+                shifted_samples_buffer_,
+                samples_bytes,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)
+            : samples_buffer;
         DeviceBuffer& tasks_buffer = ensure_device_buffer(
             tasks_buffer_,
             tasks_bytes,
@@ -1419,7 +1439,7 @@ public:
         selected_upload_buffer.flush();
         window_upload_buffer.flush();
 
-        const std::array<VkDescriptorBufferInfo, 8> descriptor_buffers {{
+        const std::array<VkDescriptorBufferInfo, 9> descriptor_buffers {{
             VkDescriptorBufferInfo {
                 .buffer = samples_buffer.get(),
                 .offset = 0,
@@ -1460,8 +1480,13 @@ public:
                 .offset = 0,
                 .range = best_rice_parameter_buffer.size(),
             },
+            VkDescriptorBufferInfo {
+                .buffer = shifted_samples_buffer.get(),
+                .offset = 0,
+                .range = shifted_samples_buffer.size(),
+            },
         }};
-        std::array<VkWriteDescriptorSet, 8> descriptor_writes {};
+        std::array<VkWriteDescriptorSet, 9> descriptor_writes {};
         for (std::uint32_t i = 0; i < descriptor_writes.size(); ++i) {
             descriptor_writes[i] = VkWriteDescriptorSet {
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -1785,6 +1810,7 @@ private:
     {
         if (device_ != VK_NULL_HANDLE) {
             samples_buffer_.reset();
+            shifted_samples_buffer_.reset();
             tasks_buffer_.reset();
             selected_buffer_.reset();
             best_buffer_.reset();
@@ -1856,6 +1882,7 @@ private:
     VkFence fence_ = VK_NULL_HANDLE;
     VkQueryPool query_pool_ = VK_NULL_HANDLE;
     std::unique_ptr<DeviceBuffer> samples_buffer_;
+    std::unique_ptr<DeviceBuffer> shifted_samples_buffer_;
     std::unique_ptr<DeviceBuffer> tasks_buffer_;
     std::unique_ptr<DeviceBuffer> selected_buffer_;
     std::unique_ptr<DeviceBuffer> best_buffer_;
