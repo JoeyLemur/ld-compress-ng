@@ -1155,6 +1155,23 @@ skipped), `cmake --build build/local-check/no-opencl --parallel`, and the
 no-OpenCL lane (`23/23`, the same two optional skips). The default lane includes
 the native selected-writer recost regression coverage.
 
+## Portable MD5 Transform Speed Pass - 2026-07-27
+
+The portable MD5 fallback now specializes the fixed 64-round MD5 schedule.
+The former table-driven round loop compiled to per-round control flow,
+index arithmetic, and variable-count rotates; the specialized schedule leaves
+the public `Md5` API and the Apple CommonCrypto path unchanged. This affects
+the ordered PCM-MD5 ingest used by native and accelerated encoders, as well as
+the file-digest and decoder-read paths on non-Apple platforms.
+
+On `ntsc/issue176.lds`, a 20-run native-verbatim comparison was byte-identical
+and improved from `156.0 ± 0.6 ms` to `151.4 ± 0.4 ms` (about `3%`). The
+single-thread exact native-fixed reference path remained analysis-bound
+(`13.70s` before, `13.73s` after), so this is not represented as an LPC
+analysis win. `test_hash` now also verifies the standard one-million-`a` MD5
+vector, exercising the transform across many complete blocks; focused hash,
+FLAC roundtrip/native-writer, accelerated-native-backend, and CLI tests passed.
+
 ## Recommendation
 
 Build a single native CLI named `ld-compress-ng`, using C++20 and CMake.

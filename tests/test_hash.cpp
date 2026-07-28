@@ -34,6 +34,10 @@ void test_md5_vectors()
         "message digest MD5");
     require_equal(md5_hex_chunked("abcdefghijklmnopqrstuvwxyz"),
         "c3fcd3d76192e4007dfb496cca67e13b", "alphabet MD5");
+
+    const std::string million_as(1'000'000, 'a');
+    require_equal(md5_hex_chunked(million_as), "7707d6ae4e027c70eea2a935c2296f21",
+        "million-a MD5");
 }
 
 }  // namespace

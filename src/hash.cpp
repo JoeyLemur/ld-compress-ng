@@ -178,31 +178,83 @@ void Md5::transform(const std::uint8_t* block)
     auto c = state_[2];
     auto d = state_[3];
 
-    for (std::size_t i = 0; i < 64; ++i) {
-        std::uint32_t f = 0;
-        std::size_t g = 0;
-        if (i < 16) {
-            f = (b & c) | (~b & d);
-            g = i;
-        } else if (i < 32) {
-            f = (d & b) | (~d & c);
-            g = ((5 * i) + 1) % 16;
-        } else if (i < 48) {
-            f = b ^ c ^ d;
-            g = ((3 * i) + 5) % 16;
-        } else {
-            f = c ^ (b | ~d);
-            g = (7 * i) % 16;
-        }
+    // The MD5 schedule is fixed. Keeping its indices and rotations compile-time
+    // constants avoids per-round dispatch and variable-count rotates.
+#define MD5_STEP(expression, target, addend, word_index, round_index) \
+    do { \
+        target += (expression) + kMd5RoundConstants[round_index] + words[word_index]; \
+        target = addend + rotate_left(target, kMd5Shifts[round_index]); \
+    } while (false)
 
-        const auto next_d = c;
-        const auto next_c = b;
-        const auto next_b = b + rotate_left(a + f + kMd5RoundConstants[i] + words[g], kMd5Shifts[i]);
-        a = d;
-        b = next_b;
-        c = next_c;
-        d = next_d;
-    }
+    MD5_STEP((b & c) | (~b & d), a, b, 0, 0);
+    MD5_STEP((a & b) | (~a & c), d, a, 1, 1);
+    MD5_STEP((d & a) | (~d & b), c, d, 2, 2);
+    MD5_STEP((c & d) | (~c & a), b, c, 3, 3);
+    MD5_STEP((b & c) | (~b & d), a, b, 4, 4);
+    MD5_STEP((a & b) | (~a & c), d, a, 5, 5);
+    MD5_STEP((d & a) | (~d & b), c, d, 6, 6);
+    MD5_STEP((c & d) | (~c & a), b, c, 7, 7);
+    MD5_STEP((b & c) | (~b & d), a, b, 8, 8);
+    MD5_STEP((a & b) | (~a & c), d, a, 9, 9);
+    MD5_STEP((d & a) | (~d & b), c, d, 10, 10);
+    MD5_STEP((c & d) | (~c & a), b, c, 11, 11);
+    MD5_STEP((b & c) | (~b & d), a, b, 12, 12);
+    MD5_STEP((a & b) | (~a & c), d, a, 13, 13);
+    MD5_STEP((d & a) | (~d & b), c, d, 14, 14);
+    MD5_STEP((c & d) | (~c & a), b, c, 15, 15);
+
+    MD5_STEP((b & d) | (c & ~d), a, b, 1, 16);
+    MD5_STEP((a & c) | (b & ~c), d, a, 6, 17);
+    MD5_STEP((d & b) | (a & ~b), c, d, 11, 18);
+    MD5_STEP((c & a) | (d & ~a), b, c, 0, 19);
+    MD5_STEP((b & d) | (c & ~d), a, b, 5, 20);
+    MD5_STEP((a & c) | (b & ~c), d, a, 10, 21);
+    MD5_STEP((d & b) | (a & ~b), c, d, 15, 22);
+    MD5_STEP((c & a) | (d & ~a), b, c, 4, 23);
+    MD5_STEP((b & d) | (c & ~d), a, b, 9, 24);
+    MD5_STEP((a & c) | (b & ~c), d, a, 14, 25);
+    MD5_STEP((d & b) | (a & ~b), c, d, 3, 26);
+    MD5_STEP((c & a) | (d & ~a), b, c, 8, 27);
+    MD5_STEP((b & d) | (c & ~d), a, b, 13, 28);
+    MD5_STEP((a & c) | (b & ~c), d, a, 2, 29);
+    MD5_STEP((d & b) | (a & ~b), c, d, 7, 30);
+    MD5_STEP((c & a) | (d & ~a), b, c, 12, 31);
+
+    MD5_STEP(b ^ c ^ d, a, b, 5, 32);
+    MD5_STEP(a ^ b ^ c, d, a, 8, 33);
+    MD5_STEP(d ^ a ^ b, c, d, 11, 34);
+    MD5_STEP(c ^ d ^ a, b, c, 14, 35);
+    MD5_STEP(b ^ c ^ d, a, b, 1, 36);
+    MD5_STEP(a ^ b ^ c, d, a, 4, 37);
+    MD5_STEP(d ^ a ^ b, c, d, 7, 38);
+    MD5_STEP(c ^ d ^ a, b, c, 10, 39);
+    MD5_STEP(b ^ c ^ d, a, b, 13, 40);
+    MD5_STEP(a ^ b ^ c, d, a, 0, 41);
+    MD5_STEP(d ^ a ^ b, c, d, 3, 42);
+    MD5_STEP(c ^ d ^ a, b, c, 6, 43);
+    MD5_STEP(b ^ c ^ d, a, b, 9, 44);
+    MD5_STEP(a ^ b ^ c, d, a, 12, 45);
+    MD5_STEP(d ^ a ^ b, c, d, 15, 46);
+    MD5_STEP(c ^ d ^ a, b, c, 2, 47);
+
+    MD5_STEP(c ^ (b | ~d), a, b, 0, 48);
+    MD5_STEP(b ^ (a | ~c), d, a, 7, 49);
+    MD5_STEP(a ^ (d | ~b), c, d, 14, 50);
+    MD5_STEP(d ^ (c | ~a), b, c, 5, 51);
+    MD5_STEP(c ^ (b | ~d), a, b, 12, 52);
+    MD5_STEP(b ^ (a | ~c), d, a, 3, 53);
+    MD5_STEP(a ^ (d | ~b), c, d, 10, 54);
+    MD5_STEP(d ^ (c | ~a), b, c, 1, 55);
+    MD5_STEP(c ^ (b | ~d), a, b, 8, 56);
+    MD5_STEP(b ^ (a | ~c), d, a, 15, 57);
+    MD5_STEP(a ^ (d | ~b), c, d, 6, 58);
+    MD5_STEP(d ^ (c | ~a), b, c, 13, 59);
+    MD5_STEP(c ^ (b | ~d), a, b, 4, 60);
+    MD5_STEP(b ^ (a | ~c), d, a, 11, 61);
+    MD5_STEP(a ^ (d | ~b), c, d, 2, 62);
+    MD5_STEP(d ^ (c | ~a), b, c, 9, 63);
+
+#undef MD5_STEP
 
     state_[0] += a;
     state_[1] += b;
