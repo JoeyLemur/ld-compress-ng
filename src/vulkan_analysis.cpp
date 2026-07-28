@@ -1131,6 +1131,23 @@ public:
                 vkCreateShaderModule(device_, &shader_module_info, nullptr, &shader_module_),
                 "vkCreateShaderModule");
 
+            const auto generated_shader = generated_shader_spirv();
+            if (generated_shader.data == nullptr || generated_shader.size_bytes == 0 ||
+                (generated_shader.size_bytes % sizeof(std::uint32_t)) != 0) {
+                throw std::runtime_error("embedded Vulkan generated shader is invalid");
+            }
+            const VkShaderModuleCreateInfo generated_shader_module_info {
+                .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .codeSize = generated_shader.size_bytes,
+                .pCode = generated_shader.data,
+            };
+            require_vk(
+                vkCreateShaderModule(
+                    device_, &generated_shader_module_info, nullptr, &generated_shader_module_),
+                "vkCreateShaderModule(generated)");
+
             std::array<VkDescriptorSetLayoutBinding, 9> layout_bindings {};
             for (std::uint32_t i = 0; i < layout_bindings.size(); ++i) {
                 layout_bindings[i] = VkDescriptorSetLayoutBinding {
@@ -1191,6 +1208,29 @@ public:
             require_vk(vkCreateComputePipelines(
                            device_, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline_),
                 "vkCreateComputePipelines");
+
+            const VkPipelineShaderStageCreateInfo generated_shader_stage_info {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                .module = generated_shader_module_,
+                .pName = "main",
+                .pSpecializationInfo = nullptr,
+            };
+            const VkComputePipelineCreateInfo generated_pipeline_info {
+                .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .stage = generated_shader_stage_info,
+                .layout = pipeline_layout_,
+                .basePipelineHandle = VK_NULL_HANDLE,
+                .basePipelineIndex = 0,
+            };
+            require_vk(vkCreateComputePipelines(
+                           device_, VK_NULL_HANDLE, 1, &generated_pipeline_info, nullptr,
+                           &generated_pipeline_),
+                "vkCreateComputePipelines(generated)");
 
             const VkDescriptorPoolSize pool_size {
                 .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -1563,7 +1603,6 @@ public:
             nullptr);
         write_timestamp(kTimestampAfterUpload, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
-        vkCmdBindPipeline(command_buffer_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
         vkCmdBindDescriptorSets(
             command_buffer_,
             VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -1574,10 +1613,16 @@ public:
             0,
             nullptr);
 
-        auto dispatch_mode = [&](std::uint32_t mode,
+        VkPipeline bound_pipeline = VK_NULL_HANDLE;
+        auto dispatch_mode = [&](VkPipeline pipeline,
+                                 std::uint32_t mode,
                                  std::uint32_t groups_x,
                                  std::uint32_t groups_y = 1,
                                  std::uint32_t groups_z = 1) {
+            if (bound_pipeline != pipeline) {
+                vkCmdBindPipeline(command_buffer_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+                bound_pipeline = pipeline;
+            }
             auto push = base_push;
             push.mode = mode;
             vkCmdPushConstants(
@@ -1609,12 +1654,13 @@ public:
                 nullptr);
         };
 
-        dispatch_mode(2, base_push.frame_count);
+        dispatch_mode(generated_pipeline_, 2, base_push.frame_count);
         shader_write_to_read_barrier();
         write_timestamp(kTimestampAfterPrepare, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
         if (generated_lpc.has_value()) {
             dispatch_mode(
+                generated_pipeline_,
                 3,
                 base_push.frame_count,
                 base_push.generated_window_count,
@@ -1623,10 +1669,12 @@ public:
             write_timestamp(
                 kTimestampAfterGeneratedAutocorrelation,
                 VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-            dispatch_mode(4, base_push.frame_count, base_push.generated_window_count);
+            dispatch_mode(
+                generated_pipeline_, 4, base_push.frame_count, base_push.generated_window_count);
             shader_write_to_read_barrier();
             write_timestamp(kTimestampAfterGeneratedLpc, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-            dispatch_mode(5, base_push.frame_count, base_push.generated_window_count);
+            dispatch_mode(
+                generated_pipeline_, 5, base_push.frame_count, base_push.generated_window_count);
             shader_write_to_read_barrier();
             write_timestamp(
                 kTimestampAfterGeneratedQuantize, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
@@ -1640,17 +1688,17 @@ public:
         }
 
         if (plan.fixed_order_guess_on_gpu) {
-            dispatch_mode(7, base_push.frame_count);
+            dispatch_mode(pipeline_, 7, base_push.frame_count);
             shader_write_to_read_barrier();
         }
         write_timestamp(kTimestampAfterFixedOrderGuess, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
-        dispatch_mode(0, base_push.task_count);
+        dispatch_mode(pipeline_, 0, base_push.task_count);
         shader_write_to_read_barrier();
         write_timestamp(kTimestampAfterExactAnalysis, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-        dispatch_mode(1, dispatch_groups(base_push.frame_count));
+        dispatch_mode(pipeline_, 1, dispatch_groups(base_push.frame_count));
         shader_write_to_read_barrier();
-        dispatch_mode(6, base_push.frame_count);
+        dispatch_mode(pipeline_, 6, base_push.frame_count);
 
         const VkMemoryBarrier shader_to_transfer_barrier {
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
@@ -1846,6 +1894,10 @@ private:
                 vkDestroyPipeline(device_, pipeline_, nullptr);
                 pipeline_ = VK_NULL_HANDLE;
             }
+            if (generated_pipeline_ != VK_NULL_HANDLE) {
+                vkDestroyPipeline(device_, generated_pipeline_, nullptr);
+                generated_pipeline_ = VK_NULL_HANDLE;
+            }
             if (pipeline_layout_ != VK_NULL_HANDLE) {
                 vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr);
                 pipeline_layout_ = VK_NULL_HANDLE;
@@ -1857,6 +1909,10 @@ private:
             if (shader_module_ != VK_NULL_HANDLE) {
                 vkDestroyShaderModule(device_, shader_module_, nullptr);
                 shader_module_ = VK_NULL_HANDLE;
+            }
+            if (generated_shader_module_ != VK_NULL_HANDLE) {
+                vkDestroyShaderModule(device_, generated_shader_module_, nullptr);
+                generated_shader_module_ = VK_NULL_HANDLE;
             }
             vkDestroyDevice(device_, nullptr);
             device_ = VK_NULL_HANDLE;
@@ -1872,9 +1928,11 @@ private:
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue queue_ = VK_NULL_HANDLE;
     VkShaderModule shader_module_ = VK_NULL_HANDLE;
+    VkShaderModule generated_shader_module_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptor_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
+    VkPipeline generated_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
     VkDescriptorSet descriptor_set_ = VK_NULL_HANDLE;
     VkCommandPool command_pool_ = VK_NULL_HANDLE;

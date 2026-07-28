@@ -16,5 +16,6 @@ struct VulkanShaderBytes {
 };
 
 VulkanShaderBytes fixed_constant_shader_spirv();
+VulkanShaderBytes generated_shader_spirv();
 
 }  // namespace ldcompress::vulkan_detail

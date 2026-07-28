@@ -1155,6 +1155,36 @@ skipped), `cmake --build build/local-check/no-opencl --parallel`, and the
 no-OpenCL lane (`23/23`, the same two optional skips). The default lane includes
 the native selected-writer recost regression coverage.
 
+## Vulkan Low-Scratch Generated-LPC Speed Pass - 2026-07-27
+
+The Vulkan backend previously compiled every dispatch mode into one SPIR-V
+module. Its exact Rice path declares roughly 10 KiB of workgroup scratch for
+leaf partition sums, which also constrained the generated-LPC preparation,
+autocorrelation, LPC, and quantization dispatches even though those stages do
+not use it. The build now emits a second, low-scratch SPIR-V variant from the
+same GLSL source. It keeps the descriptor and push-constant ABI unchanged,
+contains modes `2` through `5`, and is used for preparation and generated-LPC
+work; the original high-scratch pipeline retains fixed-order pruning, exact
+analysis, best-task selection, and Rice-sidecar output.
+
+On Vulkan device `1` (NVIDIA RTX 5070 Ti), the focused `issue176.lds`
+speed-profile output remained exactly `4,293,221` bytes. GPU autocorrelation
+fell from `0.005416s` to `0.002673s` (50.6%), and total timed GPU work fell
+from `0.009903s` to `0.006801s` (31.3%). The end-to-end row remains partly
+host/pipeline limited, so the six-fixture sweep is the accepted throughput
+gate. With the established `threads=8`, `frame=4608`, `lpc=12`, `prec=12`,
+Rice order `6`, `order-guess-mean-estimate-rice`, and session reuse shape:
+
+| Sweep | Aggregate elapsed time | Vulkan output bytes |
+| --- | ---: | ---: |
+| Previous | `0.783s`, `0.790s`, `0.804s` (median `0.790s`) | `79,946,934` |
+| Low-scratch generated pipeline | `0.695s`, `0.697s`, `0.699s` (median `0.697s`) | `79,946,934` |
+
+The median improved by `0.093s` (11.8%) with no output-size or selected-task
+change. GPU-visible validation passed `test_vulkan_analysis --device 1`, the
+Vulkan CTest label (`6/6`), and the full default lane (`23/23`, with two
+optional local loader tests skipped). The no-Vulkan lane also passed `23/23`.
+
 ## Portable MD5 Transform Speed Pass - 2026-07-27
 
 The portable MD5 fallback now specializes the fixed 64-round MD5 schedule.

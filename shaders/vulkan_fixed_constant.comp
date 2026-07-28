@@ -17,6 +17,13 @@
 #version 450
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 
+// The generated-LPC stages do not need the exact Rice analyzer's large
+// workgroup scratch. CMake builds a second SPIR-V module with this set so the
+// autocorrelation workgroups can run at normal occupancy.
+#ifndef LDCOMPRESS_VULKAN_LOW_SCRATCH
+#define LDCOMPRESS_VULKAN_LOW_SCRATCH 0
+#endif
+
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 const uint kWorkgroupSize = 64u;
@@ -135,11 +142,13 @@ layout(push_constant) uniform PushConstants {
 
 shared int shared_ints[64];
 shared uint shared_uints[64];
+#if !LDCOMPRESS_VULKAN_LOW_SCRATCH
 shared uint64_t shared_u64s[64];
-shared float shared_floats[64];
 shared uint shared_rice_parameters[kMaxRicePartitionCount];
 shared uint64_t shared_leaf_abs_sums[kExactLeafMaxPartitionCount];
 shared uint64_t shared_leaf_rice_sums[kExactLeafMaxPartitionCount * kRiceParameterCount];
+#endif
+shared float shared_floats[64];
 
 uint bit_width_u32(uint value)
 {
@@ -211,6 +220,7 @@ uint reduce_or_u32(uint value)
     return shared_uints[0];
 }
 
+#if !LDCOMPRESS_VULKAN_LOW_SCRATCH
 uint64_t reduce_sum_u64(uint64_t value)
 {
     const uint lane = gl_LocalInvocationID.x;
@@ -224,6 +234,7 @@ uint64_t reduce_sum_u64(uint64_t value)
     }
     return shared_u64s[0];
 }
+#endif
 
 float reduce_sum_float(float value)
 {
@@ -400,6 +411,7 @@ void compute_generated_autocorrelation(uint frame, uint window, uint lag)
     }
 }
 
+#if !LDCOMPRESS_VULKAN_LOW_SCRATCH
 int64_t fixed_residual(FlacClSubframeTask task, int index, int wasted_bits)
 {
     const int offset = task.data.samplesOffs;
@@ -1496,6 +1508,8 @@ void cooperative_analyze_task(uint task_index)
     }
 }
 
+#endif
+
 bool finite_float(float value)
 {
     return !isnan(value) && !isinf(value);
@@ -1672,6 +1686,7 @@ void quantize_generated_lpc(uint frame, uint window)
     }
 }
 
+#if !LDCOMPRESS_VULKAN_LOW_SCRATCH
 void prune_fixed_order_guess(uint frame)
 {
     const uint lane = gl_LocalInvocationID.x;
@@ -1809,9 +1824,40 @@ void write_best_rice_parameters(uint frame)
     }
 }
 
+#endif
+
 void main()
 {
     const uint id = gl_GlobalInvocationID.x;
+#if LDCOMPRESS_VULKAN_LOW_SCRATCH
+    if (pc.mode == kModePrepareFrames) {
+        const uint frame = gl_WorkGroupID.x;
+        if (frame < pc.frame_count) {
+            prepare_frame(frame);
+        }
+    } else if (pc.mode == kModeComputeAutocorrelation) {
+        const uint frame = gl_WorkGroupID.x;
+        const uint window = gl_WorkGroupID.y;
+        const uint lag = gl_WorkGroupID.z;
+        if (frame < pc.frame_count &&
+            window < pc.generated_window_count &&
+            lag <= kMaxLpcOrder) {
+            compute_generated_autocorrelation(frame, window, lag);
+        }
+    } else if (pc.mode == kModeComputeLpc) {
+        const uint frame = gl_WorkGroupID.x;
+        const uint window = gl_WorkGroupID.y;
+        if (frame < pc.frame_count && window < pc.generated_window_count) {
+            compute_generated_lpc(frame, window);
+        }
+    } else if (pc.mode == kModeQuantizeLpc) {
+        const uint frame = gl_WorkGroupID.x;
+        const uint window = gl_WorkGroupID.y;
+        if (frame < pc.frame_count && window < pc.generated_window_count) {
+            quantize_generated_lpc(frame, window);
+        }
+    }
+#else
     if (pc.mode == kModeAnalyzeExact) {
         const uint task_index = gl_WorkGroupID.x;
         if (task_index < pc.task_count) {
@@ -1856,4 +1902,5 @@ void main()
             prune_fixed_order_guess(frame);
         }
     }
+#endif
 }

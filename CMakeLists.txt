@@ -155,6 +155,10 @@ if(LDCOMPRESS_HAVE_VULKAN)
         "${CMAKE_CURRENT_BINARY_DIR}/shaders/vulkan_fixed_constant.comp.spv")
     set(LDCOMPRESS_VULKAN_FIXED_CONSTANT_SHADER_CPP
         "${CMAKE_CURRENT_BINARY_DIR}/generated/vulkan_fixed_constant_shader.cpp")
+    set(LDCOMPRESS_VULKAN_GENERATED_SHADER
+        "${CMAKE_CURRENT_BINARY_DIR}/shaders/vulkan_generated.comp.spv")
+    set(LDCOMPRESS_VULKAN_GENERATED_SHADER_CPP
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/vulkan_generated_shader.cpp")
     add_custom_command(
         OUTPUT "${LDCOMPRESS_VULKAN_FIXED_CONSTANT_SHADER}"
         COMMAND ${CMAKE_COMMAND} -E make_directory
@@ -180,13 +184,41 @@ if(LDCOMPRESS_HAVE_VULKAN)
             "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake"
         VERBATIM
     )
+    add_custom_command(
+        OUTPUT "${LDCOMPRESS_VULKAN_GENERATED_SHADER}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${CMAKE_CURRENT_BINARY_DIR}/shaders"
+        COMMAND "${LDCOMPRESS_GLSLANG_VALIDATOR}" -V
+            -DLDCOMPRESS_VULKAN_LOW_SCRATCH=1
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan_fixed_constant.comp"
+            -o "${LDCOMPRESS_VULKAN_GENERATED_SHADER}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan_fixed_constant.comp"
+        VERBATIM
+    )
+    add_custom_command(
+        OUTPUT "${LDCOMPRESS_VULKAN_GENERATED_SHADER_CPP}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${CMAKE_CURRENT_BINARY_DIR}/generated"
+        COMMAND ${CMAKE_COMMAND}
+            -DINPUT=${LDCOMPRESS_VULKAN_GENERATED_SHADER}
+            -DOUTPUT=${LDCOMPRESS_VULKAN_GENERATED_SHADER_CPP}
+            -DFUNCTION_NAME=generated_shader_spirv
+            -DARRAY_NAME=kVulkanGeneratedShaderSpirv
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake"
+        DEPENDS
+            "${LDCOMPRESS_VULKAN_GENERATED_SHADER}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spirv.cmake"
+        VERBATIM
+    )
     set_source_files_properties(
         "${LDCOMPRESS_VULKAN_FIXED_CONSTANT_SHADER_CPP}"
+        "${LDCOMPRESS_VULKAN_GENERATED_SHADER_CPP}"
         PROPERTIES GENERATED TRUE
     )
     target_sources(ldcompress_core
         PRIVATE
             "${LDCOMPRESS_VULKAN_FIXED_CONSTANT_SHADER_CPP}"
+            "${LDCOMPRESS_VULKAN_GENERATED_SHADER_CPP}"
     )
 
 endif()
