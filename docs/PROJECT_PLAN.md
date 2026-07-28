@@ -532,6 +532,24 @@ Metal size/speed tuning checkpoint:
   stage, while deferred clearing produced only a marginal aggregate change
   after the occupancy and bounded-accumulator wins. Neither experiment was
   retained.
+- Exact LPC specialization pass: the overflow-proved 32-bit shifted residual
+  path now explicitly unrolls the common order-`10`, `11`, and `12` predictors.
+  The generated speed profile selects those orders for nearly all real-frame
+  LPC candidates; all other orders retain the previous bounded dynamic loop,
+  and unsafe tasks retain the original 64-bit fallback. This changes no LPC
+  arithmetic or selected bitstream decisions.
+- The fresh pre-edit reference is
+  `build/real-fixture-sweeps/real-fixture-sweep-20260727-193235.{csv,md}`.
+  The retained sweep is
+  `build/real-fixture-sweeps/real-fixture-sweep-20260727-194208.{csv,md}`.
+  The Apple M1 Rice-order-`6` aggregate remained exactly `79,946,720` bytes
+  while elapsed time improved from `1.211s` to `1.113s` (`8.1%`); exact
+  analysis fell from `0.592006s` to `0.321438s`. Focused Metal smoke/analysis
+  tests and the complete GPU-visible `build-metal` CTest suite passed
+  (`23/23`, with two optional PyAV compatibility tests skipped).
+- A 4,608-sample threadgroup cache of the shifted exact input was also tested.
+  It regressed the focused `issue176.lds` exact stage to about `0.058s`, as its
+  18 KiB allocation reduced occupancy, and was reverted.
 
 ## Implementation Checkpoint - 2026-07-16, automatic backend policy
 

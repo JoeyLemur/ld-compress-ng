@@ -725,6 +725,48 @@ int lpc_residual_shifted_i32(
     device const int* data, int pos, thread const FlacClSubframeTask& task)
 {
     const int order = task.data.residualOrder;
+    if (order == 12) {
+        int sum = task.coefs[0] * data[pos - 12];
+        sum += task.coefs[1] * data[pos - 11];
+        sum += task.coefs[2] * data[pos - 10];
+        sum += task.coefs[3] * data[pos - 9];
+        sum += task.coefs[4] * data[pos - 8];
+        sum += task.coefs[5] * data[pos - 7];
+        sum += task.coefs[6] * data[pos - 6];
+        sum += task.coefs[7] * data[pos - 5];
+        sum += task.coefs[8] * data[pos - 4];
+        sum += task.coefs[9] * data[pos - 3];
+        sum += task.coefs[10] * data[pos - 2];
+        sum += task.coefs[11] * data[pos - 1];
+        return data[pos] - int(arithmetic_shift_right(long(sum), task.data.shift));
+    }
+    if (order == 11) {
+        int sum = task.coefs[0] * data[pos - 11];
+        sum += task.coefs[1] * data[pos - 10];
+        sum += task.coefs[2] * data[pos - 9];
+        sum += task.coefs[3] * data[pos - 8];
+        sum += task.coefs[4] * data[pos - 7];
+        sum += task.coefs[5] * data[pos - 6];
+        sum += task.coefs[6] * data[pos - 5];
+        sum += task.coefs[7] * data[pos - 4];
+        sum += task.coefs[8] * data[pos - 3];
+        sum += task.coefs[9] * data[pos - 2];
+        sum += task.coefs[10] * data[pos - 1];
+        return data[pos] - int(arithmetic_shift_right(long(sum), task.data.shift));
+    }
+    if (order == 10) {
+        int sum = task.coefs[0] * data[pos - 10];
+        sum += task.coefs[1] * data[pos - 9];
+        sum += task.coefs[2] * data[pos - 8];
+        sum += task.coefs[3] * data[pos - 7];
+        sum += task.coefs[4] * data[pos - 6];
+        sum += task.coefs[5] * data[pos - 5];
+        sum += task.coefs[6] * data[pos - 4];
+        sum += task.coefs[7] * data[pos - 3];
+        sum += task.coefs[8] * data[pos - 2];
+        sum += task.coefs[9] * data[pos - 1];
+        return data[pos] - int(arithmetic_shift_right(long(sum), task.data.shift));
+    }
     int sum = 0;
     for (int i = 0; i < order; ++i) {
         sum += task.coefs[i] * data[pos - order + i];
