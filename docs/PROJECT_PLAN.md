@@ -1239,7 +1239,7 @@ Implemented behavior:
 - `compress` defaults to automatic Metal, Vulkan, hardware OpenCL, then CPU
   selection; explicit `--level` or `--container ogg` retains CPU/libFLAC
   selection. CPU fallback uses Ogg FLAC-compatible `.ldf` output and
-  accelerators use native `.flac.ldf` output.
+  accelerators use native FLAC `.ldf` output.
 - `compress --backend auto|cpu|native-verbatim|native-fixed|opencl|vulkan|metal`
   selects between automatic capability selection, the CPU/libFLAC path,
   reference/debug native FLAC writer paths, and the accelerated encoders.
@@ -1264,8 +1264,7 @@ Implemented behavior:
 Default output naming preserves existing conventions unless explicitly
 overridden:
 
-- CPU compressed output: `INPUT_BASENAME.ldf`
-- Native FLAC output, including accelerated output: `INPUT_BASENAME.flac.ldf`
+- Compressed output for every backend: `INPUT_BASENAME.ldf`
 - Decompressed output: `INPUT_BASENAME.lds`
 
 The tool refuses to overwrite existing outputs unless `--overwrite` is provided.
@@ -1356,8 +1355,8 @@ The tool refuses to overwrite existing outputs unless `--overwrite` is provided.
   the OpenCL-native FLAC compression backend.
 - Add the `devices` subcommand. Done for grouped OpenCL, Vulkan, and Metal
   enumeration.
-- Preserve current GPU-style native FLAC `.flac.ldf` output unless a deliberate
-  format migration is chosen later.
+- Use `.ldf` as the default output suffix for every FLAC container; retain
+  compatibility with historical `.flac.ldf` inputs.
 - Treat Metal support on macOS as an optional backend after the OpenCL path and
   CPU compatibility suite are working. Done for the first 1.2.0 Metal backend.
 

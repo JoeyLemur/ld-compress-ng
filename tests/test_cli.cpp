@@ -489,8 +489,8 @@ void test_cli(const std::filesystem::path& exe)
     const auto native_fixed_tuned_out = temp_dir / "fixture.native-fixed-tuned.out.lds";
     const auto native_fixed_tuned_threads = temp_dir / "fixture.native-fixed-tuned-threads.flac.ldf";
     const auto native_fixed_tuned_threads_out = temp_dir / "fixture.native-fixed-tuned-threads.out.lds";
-    const auto default_native_fixed = temp_dir / "default-name.flac.ldf";
-    const auto alias_native_fixed = temp_dir / "alias-name.flac.ldf";
+    const auto default_native_fixed = temp_dir / "default-name.ldf";
+    const auto alias_native_fixed = temp_dir / "alias-name.ldf";
     const auto backend_order_cpu = temp_dir / "backend-order-cpu.ldf";
     const auto backend_order_native = temp_dir / "backend-order-native.flac.ldf";
     const auto bad_native_fixed = temp_dir / "fixture.bad-native-fixed.ldf";
@@ -538,7 +538,7 @@ void test_cli(const std::filesystem::path& exe)
     const auto opencl_fixed_only_out = temp_dir / "fixture.opencl-fixed-only.out.lds";
     const auto opencl_threads = temp_dir / "fixture.opencl-threads.flac.ldf";
     const auto opencl_threads_out = temp_dir / "fixture.opencl-threads.out.lds";
-    const auto opencl_default = temp_dir / "opencl-default.flac.ldf";
+    const auto opencl_default = temp_dir / "opencl-default.ldf";
     const auto opencl_default_out = temp_dir / "opencl-default.out.lds";
     const auto empty_opencl = temp_dir / "empty.opencl.flac.ldf";
     const auto empty_opencl_out = temp_dir / "empty.opencl.out.lds";
@@ -617,8 +617,8 @@ void test_cli(const std::filesystem::path& exe)
         "help output did not label native-fixed as reference/debug");
     require(help_text.find("vulkan") != std::string::npos,
         "help output did not mention the Vulkan backend");
-    require(help_text.find("native-fixed/opencl/vulkan/metal/native-verbatim") != std::string::npos,
-        "help output did not include Metal in native default output description");
+    require(help_text.find("Output is INPUT.ldf for every backend.") != std::string::npos,
+        "help output did not describe the shared default output suffix");
     require(help_text.find("native/opencl/vulkan/metal write flac") != std::string::npos,
         "help output did not include Metal in native container description");
     require(help_text.find("More details: README.md and docs/build-and-testing.md") != std::string::npos,
@@ -692,10 +692,7 @@ void test_cli(const std::filesystem::path& exe)
         "explicit auto backend did not override the preceding backend");
     require(read_file(explicit_auto).substr(0, 4) == automatic_container_magic,
         "explicit auto backend selected the wrong FLAC container");
-    const auto automatic_default_output = temp_dir /
-        (uses_native_flac_container(selected_automatic_backend)
-            ? "auto-default.flac.ldf"
-            : "auto-default.ldf");
+    const auto automatic_default_output = temp_dir / "auto-default.ldf";
     run_ok("cd " + shell_quote(temp_dir) + " && " + shell_quote(exe) +
         " compress auto-default.lds");
     require(std::filesystem::exists(automatic_default_output),
@@ -961,9 +958,9 @@ void test_cli(const std::filesystem::path& exe)
         "--metal-device is currently supported only by the metal backend");
     require(!std::filesystem::exists(bad_native_metal_device), "native --metal-device rejection wrote output");
     run_ok("cd " + shell_quote(temp_dir) + " && " + shell_quote(exe) + " compress --backend native-fixed default-name.lds");
-    require(std::filesystem::exists(default_native_fixed), "native-fixed default output name was not .flac.ldf");
+    require(std::filesystem::exists(default_native_fixed), "native-fixed default output name was not .ldf");
     run_ok("cd " + shell_quote(temp_dir) + " && " + shell_quote(exe) + " compress --backend fixed-rice alias-name.lds");
-    require(std::filesystem::exists(alias_native_fixed), "fixed-rice alias default output name was not .flac.ldf");
+    require(std::filesystem::exists(alias_native_fixed), "fixed-rice alias default output name was not .ldf");
     run_ok(shell_quote(exe) + " compress --backend native-fixed --backend cpu " + shell_quote(lds) + " " + shell_quote(backend_order_cpu));
     require(read_file(backend_order_cpu).substr(0, 4) == "OggS",
         "final cpu backend did not restore implicit Ogg container");
@@ -1032,7 +1029,7 @@ void test_cli(const std::filesystem::path& exe)
         require(read_file(opencl_threads_out) == fixture,
             "OpenCL threaded writer round trip changed LDS bytes");
         run_ok("cd " + shell_quote(temp_dir) + " && " + shell_quote(exe) + " compress --backend opencl" + opencl_device_arg + " opencl-default.lds");
-        require(std::filesystem::exists(opencl_default), "OpenCL default output name was not .flac.ldf");
+        require(std::filesystem::exists(opencl_default), "OpenCL default output name was not .ldf");
         run_ok(shell_quote(exe) + " decompress " + shell_quote(opencl_default) + " " + shell_quote(opencl_default_out));
         require(read_file(opencl_default_out) == fixture,
             "OpenCL default-name round trip changed LDS bytes");

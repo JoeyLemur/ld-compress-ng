@@ -129,8 +129,7 @@ Compress an `.lds` capture with automatic backend selection:
 build/ld-compress-ng compress capture.lds
 ```
 
-This writes `capture.flac.ldf` when it selects Metal, Vulkan, or OpenCL, and
-`capture.ldf` when it falls back to CPU. To always write the portable Ogg form:
+This writes `capture.ldf`. To always write the portable Ogg form:
 
 ```sh
 build/ld-compress-ng compress --backend cpu capture.lds
@@ -195,13 +194,13 @@ be cleaned up. This applies to every compression backend.
 
 | Backend | Output | Notes |
 | --- | --- | --- |
-| `auto` | Native FLAC `.flac.ldf` or Ogg FLAC `.ldf` | Default. Chooses Metal, then a usable non-CPU Vulkan device with `shaderInt64`, then a GPU/accelerator-class OpenCL device, then CPU/libFLAC. Explicit `--level` or `--container ogg` selects CPU/libFLAC. |
+| `auto` | Native FLAC or Ogg FLAC `.ldf` | Default. Chooses Metal, then a usable non-CPU Vulkan device with `shaderInt64`, then a GPU/accelerator-class OpenCL device, then CPU/libFLAC. Explicit `--level` or `--container ogg` selects CPU/libFLAC. |
 | `cpu` | Ogg FLAC `.ldf` by default | Portable, uses system `libFLAC`/`libogg`; supports `--level` and can write native FLAC with `--container flac`. |
-| `opencl` | Native FLAC `.flac.ldf` | GPU-assisted native encoder; list devices with `devices`, select one with `--device INDEX` or `--opencl-device INDEX`. |
-| `vulkan` | Native FLAC `.flac.ldf` | Linux-first acceleration backend with Vulkan exact costing for fixed/Rice and GPU-generated LPC candidates; validated locally on NVIDIA and intended for standard Vulkan compute devices; select one with `--device INDEX` or `--vulkan-device INDEX`. |
-| `metal` | Native FLAC `.flac.ldf` | macOS acceleration backend using Apple Metal runtime source compilation for generated LPC and exact costing; select one with `--device INDEX` or `--metal-device INDEX`. |
-| `native-fixed` | Native FLAC `.flac.ldf` | Reference/debug scalar encoder for analysis parity, native writer coverage, and tuning sweeps. |
-| `native-verbatim` | Native FLAC `.flac.ldf` | Reference/debug path using verbatim FLAC frames. |
+| `opencl` | Native FLAC `.ldf` | GPU-assisted native encoder; list devices with `devices`, select one with `--device INDEX` or `--opencl-device INDEX`. |
+| `vulkan` | Native FLAC `.ldf` | Linux-first acceleration backend with Vulkan exact costing for fixed/Rice and GPU-generated LPC candidates; validated locally on NVIDIA and intended for standard Vulkan compute devices; select one with `--device INDEX` or `--vulkan-device INDEX`. |
+| `metal` | Native FLAC `.ldf` | macOS acceleration backend using Apple Metal runtime source compilation for generated LPC and exact costing; select one with `--device INDEX` or `--metal-device INDEX`. |
+| `native-fixed` | Native FLAC `.ldf` | Reference/debug scalar encoder for analysis parity, native writer coverage, and tuning sweeps. |
+| `native-verbatim` | Native FLAC `.ldf` | Reference/debug path using verbatim FLAC frames. |
 
 Use the scalar native reference backend for diagnostics or tuning comparison:
 

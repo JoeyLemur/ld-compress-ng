@@ -234,8 +234,7 @@ struct Options {
         << "Commands:\n"
         << "  compress      Compress packed LDS input. Default backend is auto: Metal, Vulkan,\n"
         << "                hardware OpenCL, then CPU. --level or --container ogg selects CPU.\n"
-        << "                Output is INPUT.ldf for cpu and INPUT.flac.ldf\n"
-        << "                for native-fixed/opencl/vulkan/metal/native-verbatim.\n"
+        << "                Output is INPUT.ldf for every backend.\n"
         << "  decompress    Decode Ogg/native FLAC RF input back to packed LDS output.\n"
         << "  verify        Print compressed and decoded MD5; compare with --source when set.\n"
         << "  convert       Convert between packed LDS and signed 16-bit little-endian PCM.\n"
@@ -464,9 +463,6 @@ std::string default_convert_output(const Options& options)
 std::string default_compress_output(const Options& options)
 {
     const std::filesystem::path input_path(options.input);
-    if (is_native_flac_backend(options.backend) || options.container == ldcompress::FlacContainer::Native) {
-        return input_path.stem().string() + ".flac.ldf";
-    }
     return input_path.stem().string() + ".ldf";
 }
 
