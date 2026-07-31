@@ -125,9 +125,20 @@ void require_compression_progress(std::string_view text, const char* message_pre
         throw std::runtime_error(
             std::string(message_prefix) + " did not report compact bytes and samples");
     }
-    if (text.find("/s") == std::string_view::npos) {
+    if (text.find("average ") == std::string_view::npos ||
+        text.find("/s") == std::string_view::npos) {
         throw std::runtime_error(
-            std::string(message_prefix) + " did not report input throughput");
+            std::string(message_prefix) + " did not report final average throughput");
+    }
+    if (text.find("input complete; finalizing") == std::string_view::npos) {
+        throw std::runtime_error(
+            std::string(message_prefix) + " did not explain the post-input finalization phase");
+    }
+    const auto final_progress = text.rfind("\rcompressing:");
+    if (final_progress == std::string_view::npos ||
+        text.find(", complete", final_progress) == std::string_view::npos) {
+        throw std::runtime_error(
+            std::string(message_prefix) + " did not mark final progress as complete");
     }
     if (text.find("s\ncompressed ") == std::string_view::npos) {
         throw std::runtime_error(

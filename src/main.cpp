@@ -1338,7 +1338,7 @@ public:
 
     ~CompressionProgressReporter()
     {
-        finish();
+        finish(false);
     }
 
     void report(std::uint64_t consumed_input_bytes, std::uint64_t consumed_samples)
@@ -1351,28 +1351,33 @@ public:
         consumed_samples_ = consumed_samples;
         have_progress_ = true;
         const auto now = std::chrono::steady_clock::now();
-        if (!rendered_ || now - last_render_ >= kUpdateInterval) {
-            render(now);
+        if (!rendered_ || now - last_render_ >= kUpdateInterval || input_is_complete()) {
+            render(now, false);
         }
     }
 
     void finish() noexcept
+    {
+        finish(true);
+    }
+
+private:
+    static constexpr auto kUpdateInterval = std::chrono::milliseconds(250);
+
+    void finish(bool completed) noexcept
     {
         if (!enabled_ || finished_ || !have_progress_) {
             return;
         }
 
         try {
-            render(std::chrono::steady_clock::now());
+            render(std::chrono::steady_clock::now(), completed);
             std::cerr << '\n' << std::flush;
         } catch (...) {
             // Progress reporting must never obscure the compression result.
         }
         finished_ = true;
     }
-
-private:
-    static constexpr auto kUpdateInterval = std::chrono::milliseconds(250);
 
     static std::string format_binary_size(std::uint64_t value)
     {
@@ -1459,9 +1464,32 @@ private:
             static_cast<double>(consumed_input_bytes_ - rendered_input_bytes_) / elapsed);
     }
 
-    void render(std::chrono::steady_clock::time_point now)
+    bool input_is_complete() const
     {
-        update_rate(now);
+        return total_input_bytes_.has_value() && *total_input_bytes_ != 0 &&
+            consumed_input_bytes_ >= *total_input_bytes_;
+    }
+
+    std::optional<std::uint64_t> average_rate(
+        std::chrono::steady_clock::time_point now) const
+    {
+        if (consumed_input_bytes_ == 0) {
+            return std::nullopt;
+        }
+        const auto elapsed = std::chrono::duration<double>(now - started_).count();
+        if (elapsed <= 0.0) {
+            return std::nullopt;
+        }
+        return static_cast<std::uint64_t>(
+            static_cast<double>(consumed_input_bytes_) / elapsed);
+    }
+
+    void render(std::chrono::steady_clock::time_point now, bool completed)
+    {
+        const bool input_complete = input_is_complete();
+        if (!completed && !input_complete) {
+            update_rate(now);
+        }
         std::cerr << "\rcompressing: ";
         if (total_input_bytes_.has_value() && *total_input_bytes_ != 0) {
             if (consumed_input_bytes_ > *total_input_bytes_) {
@@ -1480,17 +1508,28 @@ private:
             std::cerr << format_binary_size(consumed_input_bytes_) << ", "
                       << format_sample_count(consumed_samples_);
         }
-        if (bytes_per_second_.has_value()) {
-            std::cerr << ", " << format_binary_size(*bytes_per_second_) << "/s" << std::flush;
-        }
         const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - started_);
-        std::cerr << ", elapsed " << elapsed.count() << "s" << std::flush;
-        if (total_input_bytes_.has_value() && *total_input_bytes_ > consumed_input_bytes_ &&
-            bytes_per_second_.has_value() && *bytes_per_second_ != 0) {
-            const auto remaining_bytes = *total_input_bytes_ - consumed_input_bytes_;
-            const auto eta_seconds = (remaining_bytes / *bytes_per_second_) +
-                ((remaining_bytes % *bytes_per_second_) == 0 ? 0U : 1U);
-            std::cerr << ", ETA " << format_eta(eta_seconds) << std::flush;
+        if (completed) {
+            std::cerr << ", complete";
+            if (const auto rate = average_rate(now); rate.has_value()) {
+                std::cerr << ", average " << format_binary_size(*rate) << "/s";
+            }
+            std::cerr << ", elapsed " << elapsed.count() << "s" << std::flush;
+        } else if (input_complete) {
+            std::cerr << ", input complete; finalizing, elapsed " << elapsed.count() << "s"
+                      << std::flush;
+        } else {
+            if (bytes_per_second_.has_value()) {
+                std::cerr << ", input " << format_binary_size(*bytes_per_second_) << "/s";
+            }
+            std::cerr << ", elapsed " << elapsed.count() << "s" << std::flush;
+            if (total_input_bytes_.has_value() && *total_input_bytes_ > consumed_input_bytes_ &&
+                bytes_per_second_.has_value() && *bytes_per_second_ != 0) {
+                const auto remaining_bytes = *total_input_bytes_ - consumed_input_bytes_;
+                const auto eta_seconds = (remaining_bytes / *bytes_per_second_) +
+                    ((remaining_bytes % *bytes_per_second_) == 0 ? 0U : 1U);
+                std::cerr << ", ETA " << format_eta(eta_seconds) << std::flush;
+            }
         }
         if (::isatty(STDERR_FILENO) != 0) {
             std::cerr << "\x1b[K" << std::flush;

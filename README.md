@@ -144,10 +144,13 @@ build/ld-compress-ng decompress capture.ldf
 This writes `capture.lds` by default.
 
 For long captures, `compress --progress` updates one stderr line with compact
-LDS input progress and current input throughput, followed by elapsed time and
-(once a rate is available) an ETA. Its percentage is based on the initial size
-of a regular input file; the final `compressed ...` line confirms that output
-finalization and transactional publication succeeded:
+LDS input progress, current input throughput, elapsed time, and (once a rate is
+available) an ETA. Once all input is consumed it reports `input complete;
+finalizing` rather than treating a short final read as a throughput result. The
+final progress update reports the end-to-end average rate and elapsed time. Its
+percentage is based on the initial size of a regular input file; the final
+`compressed ...` line confirms that output finalization and transactional
+publication succeeded:
 
 ```sh
 build/ld-compress-ng compress --progress capture.lds
