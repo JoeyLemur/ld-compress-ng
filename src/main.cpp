@@ -1492,6 +1492,9 @@ private:
                 ((remaining_bytes % *bytes_per_second_) == 0 ? 0U : 1U);
             std::cerr << ", ETA " << format_eta(eta_seconds) << std::flush;
         }
+        if (::isatty(STDERR_FILENO) != 0) {
+            std::cerr << "\x1b[K" << std::flush;
+        }
         last_render_ = now;
         rendered_input_bytes_ = consumed_input_bytes_;
         have_rendered_progress_ = true;
