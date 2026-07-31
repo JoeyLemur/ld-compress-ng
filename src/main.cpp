@@ -1480,11 +1480,11 @@ private:
             std::cerr << format_binary_size(consumed_input_bytes_) << ", "
                       << format_sample_count(consumed_samples_);
         }
-        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - started_);
-        std::cerr << ", " << elapsed.count() << "s" << std::flush;
         if (bytes_per_second_.has_value()) {
             std::cerr << ", " << format_binary_size(*bytes_per_second_) << "/s" << std::flush;
         }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - started_);
+        std::cerr << ", elapsed " << elapsed.count() << "s" << std::flush;
         if (total_input_bytes_.has_value() && *total_input_bytes_ > consumed_input_bytes_ &&
             bytes_per_second_.has_value() && *bytes_per_second_ != 0) {
             const auto remaining_bytes = *total_input_bytes_ - consumed_input_bytes_;

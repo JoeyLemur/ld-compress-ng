@@ -715,6 +715,9 @@ void test_cli(const std::filesystem::path& exe)
         "truncated LDS input");
     require(failed_cpu_progress_text.find("ETA ") != std::string::npos,
         "incomplete compress --progress did not report an ETA");
+    const auto eta_position = failed_cpu_progress_text.rfind("ETA ");
+    require(failed_cpu_progress_text.rfind("elapsed ", eta_position) != std::string::npos,
+        "incomplete compress --progress did not list elapsed time before ETA");
     require(read_file(protected_cpu_compress_output) == "keep this CPU output",
         "failed progress-enabled CPU compression replaced an existing output");
     run_ok(shell_quote(exe) + " compress --backend cpu --overwrite " + shell_quote(lds) +
