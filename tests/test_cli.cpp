@@ -686,6 +686,15 @@ void test_cli(const std::filesystem::path& exe)
         "implicit auto backend did not follow the documented priority");
     require(read_file(compressed).substr(0, 4) == automatic_container_magic,
         "implicit auto backend selected the wrong FLAC container");
+    std::ostringstream automatic_compression_percentage;
+    automatic_compression_percentage << std::fixed << std::setprecision(2)
+                                     << (static_cast<double>(std::filesystem::file_size(compressed)) *
+                                             100.0 /
+                                         static_cast<double>(fixture.size()))
+                                     << '%';
+    require(automatic_compress_stderr.find(automatic_compression_percentage.str()) !=
+            std::string::npos,
+        "compression summary did not include the compressed-size percentage");
     const auto cpu_progress_text = run_ok_with_stderr(
         shell_quote(exe) + " compress --backend cpu --progress " + shell_quote(lds) + " " +
             shell_quote(compressed_progress),

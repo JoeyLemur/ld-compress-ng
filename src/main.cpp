@@ -1828,6 +1828,21 @@ void print_native_stats(const ldcompress::NativeCompressionStats& stats)
     }
 }
 
+std::string format_compression_percentage(
+    std::uint64_t input_bytes,
+    std::uint64_t output_bytes)
+{
+    if (input_bytes == 0) {
+        return "n/a";
+    }
+
+    const double percentage = (static_cast<double>(output_bytes) * 100.0) /
+        static_cast<double>(input_bytes);
+    std::ostringstream output;
+    output << std::fixed << std::setprecision(2) << percentage << '%';
+    return output.str();
+}
+
 int run_compress(const Options& options)
 {
     ensure_distinct_input_output(options.input, options.output);
@@ -1877,7 +1892,9 @@ int run_compress(const Options& options)
 
     progress_reporter.finish();
     std::cerr << "compressed " << stats.input_bytes << " bytes to "
-              << stats.output_bytes << " bytes (" << stats.samples
+              << stats.output_bytes << " bytes ("
+              << format_compression_percentage(stats.input_bytes, stats.output_bytes)
+              << ", " << stats.samples
               << " samples, " << ldcompress::backend_name(options.backend)
               << " backend, " << options.threads << " thread"
               << (options.threads == 1 ? "" : "s") << ")\n";
