@@ -2094,6 +2094,7 @@ BenchResult run_bench_case(
         .native_max_rice_partition_order = bench_case.native_max_rice_partition_order,
         .native_analysis_profile = bench_case.native_analysis_profile,
         .native_stats = collect_native_stats ? &native_stats : nullptr,
+        .progress_callback = {},
         .opencl_device_index = bench_case.opencl_device_index,
         .vulkan_device_index = bench_case.vulkan_device_index,
         .metal_device_index = bench_case.metal_device_index,
@@ -2117,6 +2118,7 @@ BenchResult run_bench_case(
                 .analysis_profile = bench_case.native_analysis_profile,
                 .device_index = bench_case.opencl_device_index,
                 .native_stats = collect_native_stats ? &native_stats : nullptr,
+                .progress_callback = {},
             });
     } else if (vulkan_session != nullptr &&
         bench_case.backend == ldcompress::CompressionBackend::VulkanNativeFlac) {
@@ -2134,6 +2136,7 @@ BenchResult run_bench_case(
                 .analysis_profile = bench_case.native_analysis_profile,
                 .device_index = bench_case.vulkan_device_index,
                 .native_stats = collect_native_stats ? &native_stats : nullptr,
+                .progress_callback = {},
             });
     } else if (metal_session != nullptr &&
         bench_case.backend == ldcompress::CompressionBackend::MetalNativeFlac) {
@@ -2151,6 +2154,7 @@ BenchResult run_bench_case(
                 .analysis_profile = bench_case.native_analysis_profile,
                 .device_index = bench_case.metal_device_index,
                 .native_stats = collect_native_stats ? &native_stats : nullptr,
+                .progress_callback = {},
             });
     } else {
         stats = ldcompress::compress_lds(input, output_path.string(), compress_options);
